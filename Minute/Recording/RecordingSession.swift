@@ -42,6 +42,9 @@ final class RecordingSession: Identifiable {
     /// Set the moment the user discards; a finish() resuming from an await
     /// afterwards must not save the meeting they just threw away.
     private var didDiscard = false
+    /// Set after a successful save; a stale queued finish() must not insert a
+    /// second meeting referencing the same audio file.
+    private var didSave = false
 
     init(title: String) {
         self.title = title
@@ -128,10 +131,10 @@ final class RecordingSession: Identifiable {
     /// persistence fails — the session enters `.failed` with the audio intact,
     /// and calling finish again retries just the save.
     func finish(in context: ModelContext) async -> Meeting? {
-        // One finish at a time: a second tap racing the first (which may be
-        // suspended finalizing the transcript) would otherwise build a second
-        // meeting sharing the same audio file. And never save after a discard.
-        guard phase != .saving, !didDiscard else { return nil }
+        // One finish at a time, never after a discard, and never again after
+        // a successful save — a stale second call would otherwise build a
+        // second meeting sharing the same audio file.
+        guard phase != .saving, !didDiscard, !didSave else { return nil }
         phase = .saving
 
         if finishedRecording == nil {
@@ -156,6 +159,8 @@ final class RecordingSession: Identifiable {
         context.insert(meeting)
         do {
             try context.save()
+            didSave = true
+            self.finishedRecording = nil
             phase = .idle
             return meeting
         } catch {

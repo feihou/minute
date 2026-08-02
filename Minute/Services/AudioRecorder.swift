@@ -253,8 +253,20 @@ final class AudioRecorder {
         // The hardware format may have changed while paused (route change) —
         // reinstall the tap so it matches, avoiding a format-mismatch crash.
         engine.inputNode.removeTap(onBus: 0)
-        try installTap()
-        try engine.start()
+        do {
+            try installTap()
+            try engine.start()
+        } catch {
+            // Resume failed after the session was reactivated above — release
+            // it so other apps' audio isn't left interrupted while we stay
+            // paused; the next resume attempt reactivates it.
+            do {
+                try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            } catch {
+                Self.logger.error("Deactivating session after failed resume failed: \(error.localizedDescription)")
+            }
+            throw error
+        }
         segmentStartedAt = Date()
         state = .recording
     }
