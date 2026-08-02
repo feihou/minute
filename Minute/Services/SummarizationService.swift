@@ -142,9 +142,24 @@ struct SummarizationService {
 
     private let options = GenerationOptions(temperature: 0.3)
 
+    /// Renders the user's background context as a fenced prompt block, or nil
+    /// when there is nothing usable. Clamped so it can ride along with every
+    /// request without eating the shared context window.
+    static func contextBlock(from context: String) -> String? {
+        let trimmed = context.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return """
+            Background context from the user (not part of the meeting; use it only to spell names and terms correctly):
+            <user_context>
+            \(trimmed.prefix(500))
+            </user_context>
+            """
+    }
+
     func summarize(
         transcript: String,
         template: SummaryTemplate = .standard,
+        context: String = "",
         onProgress: (@MainActor @Sendable (String) -> Void)? = nil
     ) async throws -> MeetingSummary {
         if let message = Self.availabilityMessage {
@@ -153,10 +168,11 @@ struct SummarizationService {
         // Characters-per-token varies wildly by language (CJK is ~1:1), so the
         // chunk budget adapts: halve on context overflow down to a floor that
         // is safely inside the 4,096-token window for any script.
+        let contextBlock = Self.contextBlock(from: context)
         var maxChars = TranscriptChunker.defaultMaxChars
         while true {
             do {
-                return try await summarize(transcript: transcript, template: template, maxChars: maxChars, onProgress: onProgress)
+                return try await summarize(transcript: transcript, template: template, contextBlock: contextBlock, maxChars: maxChars, onProgress: onProgress)
             } catch let error as LanguageModelSession.GenerationError {
                 if case .exceededContextWindowSize = error, maxChars > 750 {
                     maxChars /= 2
@@ -170,6 +186,7 @@ struct SummarizationService {
     private func summarize(
         transcript: String,
         template: SummaryTemplate,
+        contextBlock: String?,
         maxChars: Int,
         onProgress: (@MainActor @Sendable (String) -> Void)?
     ) async throws -> MeetingSummary {
@@ -177,7 +194,7 @@ struct SummarizationService {
         guard !chunks.isEmpty else { throw SummarizerError.emptyTranscript }
 
         if chunks.count == 1 {
-            return try await summarizeWhole(chunks[0], template: template)
+            return try await summarizeWhole(chunks[0], template: template, contextBlock: contextBlock)
         } else {
             var notes: [ChunkNotes] = []
             var lastSkippedError: LanguageModelSession.GenerationError?
@@ -185,7 +202,7 @@ struct SummarizationService {
                 try Task.checkCancellation()
                 await onProgress?("Reading part \(index + 1) of \(chunks.count)…")
                 do {
-                    notes.append(try await extractNotes(from: chunk, part: index + 1, of: chunks.count))
+                    notes.append(try await extractNotes(from: chunk, part: index + 1, of: chunks.count, contextBlock: contextBlock))
                 } catch let error as LanguageModelSession.GenerationError {
                     // Context overflow must reach the budget-halving retry;
                     // any other failure skips just this chunk so one bad
@@ -202,7 +219,7 @@ struct SummarizationService {
             }
             try Task.checkCancellation()
             await onProgress?("Combining notes…")
-            return try await merge(notes, template: template, maxChars: maxChars)
+            return try await merge(notes, template: template, contextBlock: contextBlock, maxChars: maxChars)
         }
     }
 
@@ -216,12 +233,13 @@ struct SummarizationService {
         """
     }
 
-    private func summarizeWhole(_ transcript: String, template: SummaryTemplate) async throws -> MeetingSummary {
+    private func summarizeWhole(_ transcript: String, template: SummaryTemplate, contextBlock: String?) async throws -> MeetingSummary {
         let session = LanguageModelSession(instructions: Self.groundingRules)
+        let context = contextBlock.map { "\n\($0)\n" } ?? ""
         if template.isStandard {
             let prompt = """
                 Create structured notes for this meeting transcript.
-
+                \(context)
                 <transcript>
                 \(transcript)
                 </transcript>
@@ -231,7 +249,7 @@ struct SummarizationService {
         let prompt = """
             Create structured notes for this meeting transcript.
             \(sectionBlock(for: template))
-
+            \(context)
             <transcript>
             \(transcript)
             </transcript>
@@ -239,14 +257,15 @@ struct SummarizationService {
         return normalized(try await session.respond(to: prompt, generating: TemplatedDraft.self, options: options).content)
     }
 
-    private func extractNotes(from chunk: String, part: Int, of total: Int) async throws -> ChunkNotes {
+    private func extractNotes(from chunk: String, part: Int, of total: Int, contextBlock: String?) async throws -> ChunkNotes {
         // A fresh session per chunk keeps each request inside the context window.
         let session = LanguageModelSession(instructions: Self.groundingRules)
+        let context = contextBlock.map { "\n\($0)\n" } ?? ""
         let prompt = """
             Extract structured notes from part \(part) of \(total) of a meeting transcript. \
             Parts overlap slightly and this part may begin or end mid-discussion — \
             note only what this part actually shows.
-
+            \(context)
             <transcript>
             \(chunk)
             </transcript>
@@ -254,7 +273,7 @@ struct SummarizationService {
         return try await session.respond(to: prompt, generating: ChunkNotes.self, options: options).content
     }
 
-    private func merge(_ notes: [ChunkNotes], template: SummaryTemplate, maxChars: Int) async throws -> MeetingSummary {
+    private func merge(_ notes: [ChunkNotes], template: SummaryTemplate, contextBlock: String?, maxChars: Int) async throws -> MeetingSummary {
         // Condense in groups until the combined notes fit one request.
         var current = notes
         while current.count > 1, rendered(current).count > maxChars {
@@ -271,6 +290,7 @@ struct SummarizationService {
         }
 
         let session = LanguageModelSession(instructions: Self.groundingRules)
+        let context = contextBlock.map { "\n\($0)\n" } ?? ""
         if template.isStandard {
             let prompt = """
                 These are notes taken from consecutive, overlapping parts of one meeting. \
@@ -280,7 +300,7 @@ struct SummarizationService {
                 - Drop any open question that another part shows was answered; if the answer matters, \
                 keep it as a key point or decision instead.
                 - Keep the wording faithful to the notes and do not add anything new.
-
+                \(context)
                 Notes:
                 \(rendered(current))
                 """
@@ -293,7 +313,7 @@ struct SummarizationService {
             keeping the most specific wording and preferring versions that name an owner or deadline.
             - Keep the wording faithful to the notes and do not add anything new.
             \(sectionBlock(for: template))
-
+            \(context)
             Notes:
             \(rendered(current))
             """

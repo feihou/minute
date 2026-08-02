@@ -8,6 +8,7 @@ enum AppSettings {
     static let liveTranscriptionKey = "recording.liveTranscription"
     static let autoSummarizeKey = "recording.autoSummarize"
     static let summaryTemplateKey = "summary.template"
+    static let summaryContextKey = "summary.context"
 
     /// Encoder quality applied to new recordings.
     static var audioQuality: AudioQuality {
@@ -27,6 +28,12 @@ enum AppSettings {
     /// The notes template used when generating summaries.
     static var summaryTemplate: SummaryTemplate {
         SummaryTemplate.template(for: UserDefaults.standard.string(forKey: summaryTemplateKey) ?? SummaryTemplate.standard.id)
+    }
+
+    /// Optional user-provided background (attendee names, projects, terms)
+    /// injected into summary generation so the model spells them correctly.
+    static var summaryContext: String {
+        UserDefaults.standard.string(forKey: summaryContextKey) ?? ""
     }
 }
 
