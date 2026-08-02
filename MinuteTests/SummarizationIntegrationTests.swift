@@ -27,6 +27,24 @@ struct SummarizationIntegrationTests {
         }
     }
 
+    @Test(.enabled(if: SummarizationService.availabilityMessage == nil))
+    func standupTemplateProducesSections() async throws {
+        let transcript = """
+            Quick standup. Yesterday I finished the login screen and Maria fixed the crash on iPad.
+            Today I'm starting on the settings page, and Maria is reviewing the API changes.
+            One blocker: I'm still waiting on the new app icons from design.
+            """
+
+        let summary = try await SummarizationService().summarize(transcript: transcript, template: .standup)
+
+        let sections = try #require(summary.sections)
+        #expect(!sections.isEmpty)
+        #expect(sections.contains { !$0.items.isEmpty })
+        // The fixed fields belong to the standard template only.
+        #expect(summary.keyPoints.isEmpty)
+        #expect(summary.openQuestions.isEmpty)
+    }
+
     @Test func throwsOnEmptyTranscriptWhenModelAvailable() async {
         guard SummarizationService.availabilityMessage == nil else { return }
         await #expect(throws: SummarizerError.self) {

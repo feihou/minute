@@ -11,6 +11,14 @@ struct MeetingSummary: Codable, Hashable, Sendable {
     /// has its default "Meeting <date>" title. Optional so older stored
     /// summaries keep decoding.
     var suggestedTitle: String? = nil
+    /// Template-defined sections (e.g. Yesterday/Today/Blockers). Nil for
+    /// standard-template summaries, which use the fixed fields above.
+    var sections: [SummarySection]? = nil
+}
+
+struct SummarySection: Codable, Hashable, Sendable {
+    var title: String
+    var items: [String]
 }
 
 struct ActionItem: Codable, Hashable, Sendable {

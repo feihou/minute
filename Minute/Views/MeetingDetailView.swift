@@ -25,6 +25,7 @@ struct MeetingDetailView: View {
     @State private var showingEditor = false
     @State private var confirmingDelete = false
     @State private var selectedTab: Tab = .summary
+    @AppStorage(AppSettings.summaryTemplateKey) private var summaryTemplateID = SummaryTemplate.standard.id
 
     var body: some View {
         List {
@@ -73,6 +74,14 @@ struct MeetingDetailView: View {
                               systemImage: "sparkles")
                     }
                     .disabled(!meeting.hasTranscript || isGenerating)
+                    Picker(selection: $summaryTemplateID) {
+                        ForEach(SummaryTemplate.all) { template in
+                            Text(template.name).tag(template.id)
+                        }
+                    } label: {
+                        Label("Summary Template", systemImage: "square.grid.2x2")
+                    }
+                    .disabled(isGenerating)
                     Divider()
                     Button(role: .destructive) {
                         confirmingDelete = true
@@ -199,6 +208,11 @@ struct MeetingDetailView: View {
                     Text(summary.overview)
                 } header: {
                     Label("Overview", systemImage: "text.alignleft")
+                }
+            }
+            if let sections = summary.sections {
+                ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
+                    bulletSection(section.title, systemImage: "list.bullet", items: section.items)
                 }
             }
             bulletSection("Key Points", systemImage: "list.bullet", items: summary.keyPoints)
@@ -328,9 +342,10 @@ struct MeetingDetailView: View {
         summaryError = nil
         generationStatus = nil
         let transcript = meeting.timestampedTranscriptText
+        let template = SummaryTemplate.template(for: summaryTemplateID)
         generationTask = Task {
             do {
-                let summary = try await SummarizationService().summarize(transcript: transcript) { status in
+                let summary = try await SummarizationService().summarize(transcript: transcript, template: template) { status in
                     generationStatus = status
                 }
                 // The meeting may have been deleted while the model was working.
