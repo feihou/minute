@@ -49,6 +49,18 @@ final class MinuteUITests: XCTestCase {
         snap(app, "02-new-meeting")
 
         app.buttons["Start Recording"].tap()
+
+        // A fresh environment shows the system microphone-permission alert;
+        // grant it so the tour doesn't depend on prior runs' permission state.
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let permissionAlert = springboard.alerts.firstMatch
+        if permissionAlert.waitForExistence(timeout: 3) {
+            for label in ["Allow", "OK"] where permissionAlert.buttons[label].exists {
+                permissionAlert.buttons[label].tap()
+                break
+            }
+        }
+
         XCTAssertTrue(app.staticTexts["Recording"].waitForExistence(timeout: 15))
         // Let the level meter and elapsed time move before capturing.
         sleep(3)

@@ -18,6 +18,7 @@ struct SettingsView: View {
     @State private var transcriptionStatus = "Checking…"
     @State private var usage: (fileCount: Int, totalBytes: Int64) = (0, 0)
     @State private var confirmingDeleteAll = false
+    @State private var deleteAllFailed = false
 
     var body: some View {
         NavigationStack {
@@ -54,6 +55,11 @@ struct SettingsView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Every meeting, recording, transcript, and summary will be permanently deleted from this iPhone.")
+            }
+            .alert("Some meetings couldn't be deleted", isPresented: $deleteAllFailed) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Storage may be unavailable. The remaining meetings are still in your library — try again later.")
             }
         }
     }
@@ -102,10 +108,12 @@ struct SettingsView: View {
             Toggle(isOn: $autoSummarize) {
                 settingsLabel("Auto-Summarize", systemImage: "sparkles", tint: .purple)
             }
+            // Without a transcript there is nothing to summarize.
+            .disabled(!liveTranscription)
         } header: {
             Text("Recording")
         } footer: {
-            Text("\(selectedQuality.label): \(selectedQuality.detail). Live transcription and auto-summarize apply to new recordings; the summary is generated on device right after a meeting is saved.")
+            Text("\(selectedQuality.label): \(selectedQuality.detail). Settings apply to new recordings. Auto-Summarize generates the summary on device right after a meeting is saved — it needs Live Transcription to produce the transcript it summarizes.")
         }
     }
 
@@ -240,10 +248,14 @@ struct SettingsView: View {
     // MARK: - Actions
 
     private func deleteAllMeetings() {
+        var allSucceeded = true
         for meeting in meetings {
-            MeetingStore.delete(meeting, context: context)
+            if !MeetingStore.delete(meeting, context: context) {
+                allSucceeded = false
+            }
         }
         usage = MeetingStore.recordingsUsage()
+        deleteAllFailed = !allSucceeded
     }
 
     private func refreshTranscriptionStatus() async {

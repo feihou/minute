@@ -89,7 +89,10 @@ enum MeetingStore {
     /// remains. The database deletion commits FIRST: if it fails, the audio is
     /// untouched (a meeting must never reappear pointing at deleted audio),
     /// and a crash in between leaves an orphan the launch sweep cleans up.
-    static func delete(_ meeting: Meeting, context: ModelContext) {
+    /// Returns false when the deletion couldn't be committed, so bulk actions
+    /// can tell the user instead of silently claiming success.
+    @discardableResult
+    static func delete(_ meeting: Meeting, context: ModelContext) -> Bool {
         let audioFileName = meeting.audioFileName
         context.delete(meeting)
         do {
@@ -99,11 +102,12 @@ enum MeetingStore {
             // The delete stays pending in the context; if a later save
             // commits it, the audio becomes an orphan and the launch sweep
             // removes it. Never delete audio for an uncommitted row-delete.
-            return
+            return false
         }
         if let audioFileName {
             deleteAudioFile(named: audioFileName)
         }
+        return true
     }
 
     /// Removes audio files that no meeting references (e.g. left behind by a
