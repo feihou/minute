@@ -38,6 +38,29 @@ struct MeetingStoreTests {
         #expect(MeetingStore.audioURL(for: meeting) == nil)
     }
 
+    @Test func recordingsDirectoryIsExcludedFromBackups() throws {
+        let directory = try MeetingStore.recordingsDirectory()
+        let base = directory.deletingLastPathComponent()
+        let values = try base.resourceValues(forKeys: [.isExcludedFromBackupKey])
+        #expect(values.isExcludedFromBackup == true)
+    }
+
+    @Test func ephemeralModeRoutesAudioToTemporaryDirectoryAndWipesIt() throws {
+        MeetingStore.useEphemeralStorage = true
+        defer { MeetingStore.useEphemeralStorage = false }
+
+        let directory = try MeetingStore.recordingsDirectory()
+        #expect(directory.path.hasPrefix(FileManager.default.temporaryDirectory.path))
+
+        let fileName = MeetingStore.newAudioFileName()
+        let url = try MeetingStore.audioURL(fileName: fileName)
+        try Data("session audio".utf8).write(to: url)
+        #expect(FileManager.default.fileExists(atPath: url.path))
+
+        MeetingStore.removeEphemeralRecordings()
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
     @Test func removeOrphanedAudioDeletesOnlyUnreferencedFiles() throws {
         let keptName = MeetingStore.newAudioFileName()
         let orphanName = MeetingStore.newAudioFileName()

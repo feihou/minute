@@ -34,6 +34,14 @@ final class RecordingSession: Identifiable {
     private var audioFileName: String?
     private var transcriptionTask: Task<Void, Never>?
     private let startedAt = Date()
+    /// Captured once when recording stops; kept until a save succeeds so a
+    /// failed context.save() can be retried without touching the recorder.
+    /// Value data (not a Meeting instance) so every save attempt inserts a
+    /// fresh model object and a failed attempt can be discarded cleanly.
+    private var finishedRecording: (duration: TimeInterval, segments: [TranscriptSegment])?
+    /// Set the moment the user discards; a finish() resuming from an await
+    /// afterwards must not save the meeting they just threw away.
+    private var didDiscard = false
 
     init(title: String) {
         self.title = title
@@ -54,6 +62,14 @@ final class RecordingSession: Identifiable {
             self.notice = "Recording was paused by the system (a call or audio change). Tap resume to continue."
         }
 
+        recorder.onWriteError = { [weak self] _ in
+            guard let self, self.phase == .recording else { return }
+            // The recorder already paused itself; keep the UI in sync and
+            // tell the user why instead of pretending the recording is healthy.
+            self.phase = .paused
+            self.notice = "Recording paused — audio couldn't be written (storage may be full). Free up space and resume, or stop to save what's been captured."
+        }
+
         // Start capturing audio immediately — recording never waits on the
         // speech model. Transcription attaches below once it's ready.
         do {
@@ -65,6 +81,9 @@ final class RecordingSession: Identifiable {
             didStartRecording = true
             phase = .recording
         } catch {
+            // The session may already be active — release it so other apps'
+            // audio isn't left interrupted by a recording that never began.
+            recorder.cleanupAfterFailedStart()
             phase = .failed("Recording couldn't start: \(error.localizedDescription)")
             return
         }
@@ -76,6 +95,10 @@ final class RecordingSession: Identifiable {
             guard let format = self.recorder.recordingFormat else { return }
             let handler = await self.transcription.start(inputFormat: format)
             guard !Task.isCancelled, self.phase == .recording || self.phase == .paused else { return }
+            // The analyzer's clock starts at the first buffer it receives, but
+            // the file already contains everything recorded while the model
+            // prepared — offset segment timestamps so taps seek correctly.
+            self.transcription.timestampOffset = self.recorder.elapsed
             self.recorder.setBufferHandler(handler)
         }
     }
@@ -101,33 +124,55 @@ final class RecordingSession: Identifiable {
         }
     }
 
-    /// Stops everything, saves the meeting, and returns it.
-    func finish(in context: ModelContext) async -> Meeting {
+    /// Stops everything, saves the meeting, and returns it. Returns nil when
+    /// persistence fails — the session enters `.failed` with the audio intact,
+    /// and calling finish again retries just the save.
+    func finish(in context: ModelContext) async -> Meeting? {
+        // One finish at a time: a second tap racing the first (which may be
+        // suspended finalizing the transcript) would otherwise build a second
+        // meeting sharing the same audio file. And never save after a discard.
+        guard phase != .saving, !didDiscard else { return nil }
         phase = .saving
-        transcriptionTask?.cancel()
-        let duration = recorder.stop()
-        let segments = await transcription.finish()
+
+        if finishedRecording == nil {
+            transcriptionTask?.cancel()
+            let duration = recorder.stop()
+            let segments = await transcription.finish()
+            // The user may have discarded while the transcript finalized —
+            // never resurrect a recording they threw away.
+            guard !didDiscard else { return nil }
+            finishedRecording = (duration, segments)
+        }
+        guard let finishedRecording else { return nil }
 
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let meeting = Meeting(
             title: trimmedTitle.isEmpty ? Self.defaultTitle(for: startedAt) : trimmedTitle,
             createdAt: startedAt,
-            duration: duration,
+            duration: finishedRecording.duration,
             audioFileName: audioFileName,
-            segments: segments
+            segments: finishedRecording.segments
         )
         context.insert(meeting)
         do {
             try context.save()
+            phase = .idle
+            return meeting
         } catch {
             Self.logger.error("Saving meeting failed: \(error.localizedDescription)")
+            // Cancel only THIS pending insert — a context-wide rollback()
+            // would also destroy unrelated unsaved edits in the shared main
+            // context. Declaring the meeting saved instead would let the next
+            // orphan sweep delete its audio.
+            context.delete(meeting)
+            phase = .failed("The meeting couldn't be saved — storage may be full. Free up space and tap Save Recording to try again.")
+            return nil
         }
-        phase = .idle
-        return meeting
     }
 
     /// Stops everything and deletes the partial audio file (user discarded).
     func discard() async {
+        didDiscard = true
         transcriptionTask?.cancel()
         recorder.stop()
         await transcription.cancel()
@@ -135,6 +180,7 @@ final class RecordingSession: Identifiable {
             MeetingStore.deleteAudioFile(named: audioFileName)
         }
         audioFileName = nil
+        finishedRecording = nil
         didStartRecording = false
         phase = .idle
     }

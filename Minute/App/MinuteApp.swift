@@ -21,6 +21,11 @@ struct MinuteApp: App {
         } else {
             fatalError("Unable to create a SwiftData container for Meeting")
         }
+        // In fallback mode, route new audio to a session-only directory; wipe
+        // whatever a previous fallback session left there — no meeting can
+        // reference those files anymore.
+        MeetingStore.useEphemeralStorage = storeIsEphemeral
+        MeetingStore.removeEphemeralRecordings()
     }
 
     var body: some Scene {

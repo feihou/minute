@@ -1,25 +1,34 @@
 import AVFoundation
 import Foundation
 import Observation
+import os
 import OSLog
 
 enum RecorderError: LocalizedError {
     case noAudioInput
+    case formatConversionFailed
 
     var errorDescription: String? {
         switch self {
         case .noAudioInput:
             return "No microphone input is available."
+        case .formatConversionFailed:
+            return "The microphone's audio format changed and couldn't be converted."
         }
     }
 }
 
 /// Box the audio tap reads on every buffer, so live transcription can attach
 /// after recording has already started (e.g. while the speech model downloads).
-/// ponytail: @unchecked Sendable — one writer (main actor), reads on the tap
-/// thread; worst case a single buffer goes to the previous handler.
-final class BufferHandlerBox: @unchecked Sendable {
-    var handler: (@Sendable (AVAudioPCMBuffer) -> Void)?
+/// A lock guards the closure: the main actor writes it while the realtime tap
+/// thread reads it, and an unsynchronized ARC handoff would be a data race.
+final class BufferHandlerBox: Sendable {
+    private let storage = OSAllocatedUnfairLock<(@Sendable (AVAudioPCMBuffer) -> Void)?>(initialState: nil)
+
+    var handler: (@Sendable (AVAudioPCMBuffer) -> Void)? {
+        get { storage.withLock { $0 } }
+        set { storage.withLock { $0 = newValue } }
+    }
 }
 
 /// Records microphone audio to an AAC file with pause/resume, level metering,
@@ -42,6 +51,12 @@ final class AudioRecorder {
     /// Called after the system auto-pauses recording (phone call, Siri, or an
     /// audio route/configuration change), so the owner can reflect it in UI.
     var onAutoPause: (() -> Void)?
+
+    /// Called once per recording when writing audio to disk starts failing
+    /// (e.g. storage full). The recorder auto-pauses first, so everything
+    /// captured so far stays saveable.
+    var onWriteError: ((Error) -> Void)?
+    private var didReportWriteError = false
 
     private let engine = AVAudioEngine()
     private let tapHandler = BufferHandlerBox()
@@ -134,11 +149,29 @@ final class AudioRecorder {
         ]
         file = try AVAudioFile(forWriting: url, settings: settings)
 
+        didReportWriteError = false
         try installTap()
         engine.prepare()
         try engine.start()
         segmentStartedAt = Date()
         state = .recording
+    }
+
+    /// Releases everything a partially failed start may have claimed — the
+    /// tap, the file, and the audio session, which would otherwise keep
+    /// interrupting other apps' audio. stop() can't do this: it returns early
+    /// while the state is still `.idle`.
+    func cleanupAfterFailedStart() {
+        guard state == .idle else { return }
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        tapHandler.handler = nil
+        file = nil
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            Self.logger.error("Deactivating audio session after failed start failed: \(error.localizedDescription)")
+        }
     }
 
     /// Installs the tap against the CURRENT hardware format, converting to the
@@ -150,9 +183,17 @@ final class AudioRecorder {
             throw RecorderError.noAudioInput
         }
 
-        let converter: AudioBufferConverter? = hardwareFormat == file.processingFormat
-            ? nil
-            : AudioBufferConverter(from: hardwareFormat, to: file.processingFormat)
+        // nil converter means "formats already match" — a FAILED converter
+        // construction must not be conflated with that, or the tap would write
+        // mismatched-format buffers into the file.
+        let converter: AudioBufferConverter?
+        if hardwareFormat == file.processingFormat {
+            converter = nil
+        } else if let created = AudioBufferConverter(from: hardwareFormat, to: file.processingFormat) {
+            converter = created
+        } else {
+            throw RecorderError.formatConversionFailed
+        }
 
         let handlerBox = tapHandler
         engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: hardwareFormat) { [weak self] buffer, _ in
@@ -169,6 +210,9 @@ final class AudioRecorder {
                 try file.write(from: normalized)
             } catch {
                 Self.logger.error("Audio write failed: \(error.localizedDescription)")
+                Task { @MainActor [weak self] in
+                    self?.reportWriteFailure(error)
+                }
             }
             handlerBox.handler?(normalized)
             let rms = Self.rmsLevel(of: normalized)
@@ -189,11 +233,23 @@ final class AudioRecorder {
         state = .paused
     }
 
+    /// Pauses and surfaces the first disk-write failure of a recording, so a
+    /// full disk shows up as a visible, saveable state instead of a silently
+    /// truncated file.
+    private func reportWriteFailure(_ error: Error) {
+        guard !didReportWriteError, state == .recording else { return }
+        didReportWriteError = true
+        pause()
+        onWriteError?(error)
+    }
+
     func resume() throws {
         guard state == .paused else { return }
         // An interruption deactivates the session; reactivate before
         // restarting the engine or start() throws.
         try AVAudioSession.sharedInstance().setActive(true)
+        // Give writes another chance after resume (the user may have freed space).
+        didReportWriteError = false
         // The hardware format may have changed while paused (route change) —
         // reinstall the tap so it matches, avoiding a format-mismatch crash.
         engine.inputNode.removeTap(onBus: 0)

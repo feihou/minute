@@ -28,6 +28,12 @@ final class TranscriptionService {
     /// Non-nil while the speech model is downloading.
     private(set) var downloadProgress: Progress?
 
+    /// Seconds of audio already written to the file before the first buffer
+    /// reaches the analyzer (transcription can attach late, e.g. after a model
+    /// download). Added to every segment timestamp so transcript taps and
+    /// exports seek the right spot in the recording. Set before buffers flow.
+    var timestampOffset: TimeInterval = 0
+
     private var transcriber: SpeechTranscriber?
     private var analyzer: SpeechAnalyzer?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
@@ -95,8 +101,8 @@ final class TranscriptionService {
                         if !text.isEmpty {
                             self.segments.append(TranscriptSegment(
                                 text: text,
-                                start: result.range.start.seconds,
-                                end: result.range.end.seconds
+                                start: self.timestampOffset + result.range.start.seconds,
+                                end: self.timestampOffset + result.range.end.seconds
                             ))
                         }
                         self.volatileText = ""
@@ -154,7 +160,7 @@ final class TranscriptionService {
 
         // Anything still volatile after finalization is kept rather than lost.
         if !volatileText.isEmpty {
-            let lastEnd = segments.last?.end ?? 0
+            let lastEnd = segments.last?.end ?? timestampOffset
             segments.append(TranscriptSegment(text: volatileText, start: lastEnd, end: lastEnd))
             volatileText = ""
         }
