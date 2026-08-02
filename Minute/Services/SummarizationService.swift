@@ -55,6 +55,34 @@ struct SummaryDraft {
     var openQuestions: [String]
 }
 
+@Generable(description: "A complete structured summary of a meeting, organized into the requested sections.")
+struct TemplatedDraft {
+    @Guide(description: """
+        An overview of the meeting in 2 to 4 sentences: why it happened, the main topics, \
+        and the most important outcome. Mention specific names, numbers, and dates when stated. \
+        Avoid vague phrasing like 'various topics were discussed'.
+        """)
+    var overview: String
+
+    @Guide(description: "A short, descriptive title for this meeting, at most 8 words, in the meeting's language. No quotes, and nothing generic like 'Team Meeting'.")
+    var title: String
+
+    @Guide(description: "One entry per requested section, in the requested order, using the exact requested section names.")
+    var sections: [DraftSection]
+
+    @Guide(description: "Action items explicitly mentioned. Empty if none.")
+    var actionItems: [DraftActionItem]
+}
+
+@Generable(description: "One named section of meeting notes.")
+struct DraftSection {
+    @Guide(description: "The section name, exactly as requested.")
+    var name: String
+
+    @Guide(description: "Short, concrete items for this section. Empty if nothing in the meeting fits.")
+    var items: [String]
+}
+
 // MARK: - Service
 
 enum SummarizerError: LocalizedError {
@@ -116,6 +144,7 @@ struct SummarizationService {
 
     func summarize(
         transcript: String,
+        template: SummaryTemplate = .standard,
         onProgress: (@MainActor @Sendable (String) -> Void)? = nil
     ) async throws -> MeetingSummary {
         if let message = Self.availabilityMessage {
@@ -127,7 +156,7 @@ struct SummarizationService {
         var maxChars = TranscriptChunker.defaultMaxChars
         while true {
             do {
-                return try await summarize(transcript: transcript, maxChars: maxChars, onProgress: onProgress)
+                return try await summarize(transcript: transcript, template: template, maxChars: maxChars, onProgress: onProgress)
             } catch let error as LanguageModelSession.GenerationError {
                 if case .exceededContextWindowSize = error, maxChars > 750 {
                     maxChars /= 2
@@ -140,15 +169,15 @@ struct SummarizationService {
 
     private func summarize(
         transcript: String,
+        template: SummaryTemplate,
         maxChars: Int,
         onProgress: (@MainActor @Sendable (String) -> Void)?
     ) async throws -> MeetingSummary {
         let chunks = TranscriptChunker.chunks(from: transcript, maxChars: maxChars)
         guard !chunks.isEmpty else { throw SummarizerError.emptyTranscript }
 
-        let draft: SummaryDraft
         if chunks.count == 1 {
-            draft = try await summarizeWhole(chunks[0])
+            return try await summarizeWhole(chunks[0], template: template)
         } else {
             var notes: [ChunkNotes] = []
             var lastSkippedError: LanguageModelSession.GenerationError?
@@ -173,21 +202,41 @@ struct SummarizationService {
             }
             try Task.checkCancellation()
             await onProgress?("Combining notes…")
-            draft = try await merge(notes, maxChars: maxChars)
+            return try await merge(notes, template: template, maxChars: maxChars)
         }
-        return normalized(draft)
     }
 
-    private func summarizeWhole(_ transcript: String) async throws -> SummaryDraft {
+    /// Instructions describing the template's sections, appended to the
+    /// final-pass prompts for non-standard templates.
+    private func sectionBlock(for template: SummaryTemplate) -> String {
+        """
+        Organize the notes into exactly these sections, in this order, using these exact section names:
+        \(template.sections.map { "- \($0.name): \($0.definition)." }.joined(separator: "\n"))
+        If nothing in the meeting fits a section, give it an empty items list.
+        """
+    }
+
+    private func summarizeWhole(_ transcript: String, template: SummaryTemplate) async throws -> MeetingSummary {
         let session = LanguageModelSession(instructions: Self.groundingRules)
+        if template.isStandard {
+            let prompt = """
+                Create structured notes for this meeting transcript.
+
+                <transcript>
+                \(transcript)
+                </transcript>
+                """
+            return normalized(try await session.respond(to: prompt, generating: SummaryDraft.self, options: options).content)
+        }
         let prompt = """
             Create structured notes for this meeting transcript.
+            \(sectionBlock(for: template))
 
             <transcript>
             \(transcript)
             </transcript>
             """
-        return try await session.respond(to: prompt, generating: SummaryDraft.self, options: options).content
+        return normalized(try await session.respond(to: prompt, generating: TemplatedDraft.self, options: options).content)
     }
 
     private func extractNotes(from chunk: String, part: Int, of total: Int) async throws -> ChunkNotes {
@@ -205,7 +254,7 @@ struct SummarizationService {
         return try await session.respond(to: prompt, generating: ChunkNotes.self, options: options).content
     }
 
-    private func merge(_ notes: [ChunkNotes], maxChars: Int) async throws -> SummaryDraft {
+    private func merge(_ notes: [ChunkNotes], template: SummaryTemplate, maxChars: Int) async throws -> MeetingSummary {
         // Condense in groups until the combined notes fit one request.
         var current = notes
         while current.count > 1, rendered(current).count > maxChars {
@@ -222,19 +271,33 @@ struct SummarizationService {
         }
 
         let session = LanguageModelSession(instructions: Self.groundingRules)
+        if template.isStandard {
+            let prompt = """
+                These are notes taken from consecutive, overlapping parts of one meeting. \
+                Merge them into a single summary of the whole meeting:
+                - The parts overlap, so expect repeats: combine duplicate or overlapping items into one, \
+                keeping the most specific wording and preferring versions that name an owner or deadline.
+                - Drop any open question that another part shows was answered; if the answer matters, \
+                keep it as a key point or decision instead.
+                - Keep the wording faithful to the notes and do not add anything new.
+
+                Notes:
+                \(rendered(current))
+                """
+            return normalized(try await session.respond(to: prompt, generating: SummaryDraft.self, options: options).content)
+        }
         let prompt = """
             These are notes taken from consecutive, overlapping parts of one meeting. \
             Merge them into a single summary of the whole meeting:
             - The parts overlap, so expect repeats: combine duplicate or overlapping items into one, \
             keeping the most specific wording and preferring versions that name an owner or deadline.
-            - Drop any open question that another part shows was answered; if the answer matters, \
-            keep it as a key point or decision instead.
             - Keep the wording faithful to the notes and do not add anything new.
+            \(sectionBlock(for: template))
 
             Notes:
             \(rendered(current))
             """
-        return try await session.respond(to: prompt, generating: SummaryDraft.self, options: options).content
+        return normalized(try await session.respond(to: prompt, generating: TemplatedDraft.self, options: options).content)
     }
 
     private func condense(_ notes: [ChunkNotes]) async throws -> ChunkNotes {
@@ -292,6 +355,31 @@ struct SummarizationService {
             openQuestions: cleaned(draft.openQuestions),
             generatedAt: .now,
             suggestedTitle: normalizedTitle(draft.title)
+        )
+    }
+
+    private func normalized(_ draft: TemplatedDraft) -> MeetingSummary {
+        MeetingSummary(
+            overview: draft.overview.trimmingCharacters(in: .whitespacesAndNewlines),
+            keyPoints: [],
+            decisions: [],
+            actionItems: draft.actionItems.compactMap { item in
+                let task = item.task.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !task.isEmpty else { return nil }
+                return ActionItem(
+                    task: task,
+                    owner: normalizedField(item.owner),
+                    deadline: normalizedField(item.deadline)
+                )
+            },
+            openQuestions: [],
+            generatedAt: .now,
+            suggestedTitle: normalizedTitle(draft.title),
+            sections: draft.sections.compactMap { section in
+                let title = section.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !title.isEmpty else { return nil }
+                return SummarySection(title: title, items: cleaned(section.items))
+            }
         )
     }
 

@@ -14,6 +14,10 @@ struct SummaryEditorView: View {
     @State private var decisions: String
     @State private var actionItems: String
     @State private var openQuestions: String
+    /// Template-defined sections (titles fixed, items editable); empty for
+    /// standard-template summaries.
+    private let sectionTitles: [String]
+    @State private var sectionTexts: [String]
 
     init(meeting: Meeting) {
         self.meeting = meeting
@@ -25,6 +29,9 @@ struct SummaryEditorView: View {
             .map { "\($0.task) | \($0.owner) | \($0.deadline)" }
             .joined(separator: "\n"))
         _openQuestions = State(initialValue: (summary?.openQuestions ?? []).joined(separator: "\n"))
+        let sections = summary?.sections ?? []
+        sectionTitles = sections.map(\.title)
+        _sectionTexts = State(initialValue: sections.map { $0.items.joined(separator: "\n") })
     }
 
     var body: some View {
@@ -34,21 +41,34 @@ struct SummaryEditorView: View {
                     TextEditor(text: $overview)
                         .frame(minHeight: 80)
                 }
-                Section {
-                    TextEditor(text: $keyPoints)
-                        .frame(minHeight: 80)
-                } header: {
-                    Text("Key Points")
-                } footer: {
-                    Text("One item per line.")
-                }
-                Section {
-                    TextEditor(text: $decisions)
-                        .frame(minHeight: 60)
-                } header: {
-                    Text("Decisions")
-                } footer: {
-                    Text("One item per line.")
+                if sectionTitles.isEmpty {
+                    Section {
+                        TextEditor(text: $keyPoints)
+                            .frame(minHeight: 80)
+                    } header: {
+                        Text("Key Points")
+                    } footer: {
+                        Text("One item per line.")
+                    }
+                    Section {
+                        TextEditor(text: $decisions)
+                            .frame(minHeight: 60)
+                    } header: {
+                        Text("Decisions")
+                    } footer: {
+                        Text("One item per line.")
+                    }
+                } else {
+                    ForEach(sectionTitles.indices, id: \.self) { index in
+                        Section {
+                            TextEditor(text: $sectionTexts[index])
+                                .frame(minHeight: 60)
+                        } header: {
+                            Text(sectionTitles[index])
+                        } footer: {
+                            Text("One item per line.")
+                        }
+                    }
                 }
                 Section {
                     TextEditor(text: $actionItems)
@@ -58,13 +78,15 @@ struct SummaryEditorView: View {
                 } footer: {
                     Text("One per line, as: task | owner | deadline")
                 }
-                Section {
-                    TextEditor(text: $openQuestions)
-                        .frame(minHeight: 60)
-                } header: {
-                    Text("Open Questions")
-                } footer: {
-                    Text("One item per line.")
+                if sectionTitles.isEmpty {
+                    Section {
+                        TextEditor(text: $openQuestions)
+                            .frame(minHeight: 60)
+                    } header: {
+                        Text("Open Questions")
+                    } footer: {
+                        Text("One item per line.")
+                    }
                 }
             }
             .navigationTitle("Edit Summary")
@@ -90,7 +112,11 @@ struct SummaryEditorView: View {
             decisions: Self.parseList(decisions),
             actionItems: Self.parseActionItems(actionItems),
             openQuestions: Self.parseList(openQuestions),
-            generatedAt: meeting.summary?.generatedAt ?? .now
+            generatedAt: meeting.summary?.generatedAt ?? .now,
+            suggestedTitle: meeting.summary?.suggestedTitle,
+            sections: sectionTitles.isEmpty ? nil : zip(sectionTitles, sectionTexts).map {
+                SummarySection(title: $0, items: Self.parseList($1))
+            }
         )
         do {
             try context.save()

@@ -14,6 +14,9 @@ enum NotesExporter {
                 lines.append("## Overview")
                 lines.append(summary.overview)
             }
+            for section in summary.sections ?? [] {
+                appendSection(title: section.title, items: section.items, to: &lines)
+            }
             appendSection(title: "Key Points", items: summary.keyPoints, to: &lines)
             appendSection(title: "Decisions", items: summary.decisions, to: &lines)
             if !summary.actionItems.isEmpty {

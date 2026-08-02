@@ -35,4 +35,29 @@ struct NotesExporterTests {
         #expect(text.contains("# Empty Meeting"))
         #expect(!text.contains("## "))
     }
+
+    @Test func exportIncludesTemplateSections() {
+        let meeting = Meeting(
+            title: "Standup",
+            summary: MeetingSummary(
+                overview: "Daily sync.",
+                keyPoints: [],
+                decisions: [],
+                actionItems: [],
+                openQuestions: [],
+                generatedAt: .now,
+                sections: [
+                    SummarySection(title: "Yesterday", items: ["Shipped the exporter"]),
+                    SummarySection(title: "Blockers", items: []),
+                ]
+            )
+        )
+
+        let text = NotesExporter.notesText(for: meeting)
+
+        #expect(text.contains("## Yesterday"))
+        #expect(text.contains("- Shipped the exporter"))
+        // Empty template sections are skipped like every other empty section.
+        #expect(!text.contains("## Blockers"))
+    }
 }

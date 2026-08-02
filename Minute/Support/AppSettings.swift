@@ -7,6 +7,7 @@ enum AppSettings {
     static let audioQualityKey = "recording.audioQuality"
     static let liveTranscriptionKey = "recording.liveTranscription"
     static let autoSummarizeKey = "recording.autoSummarize"
+    static let summaryTemplateKey = "summary.template"
 
     /// Encoder quality applied to new recordings.
     static var audioQuality: AudioQuality {
@@ -21,6 +22,11 @@ enum AppSettings {
     /// Whether a summary is generated automatically after a recording is saved.
     static var autoSummarizeEnabled: Bool {
         UserDefaults.standard.bool(forKey: autoSummarizeKey)
+    }
+
+    /// The notes template used when generating summaries.
+    static var summaryTemplate: SummaryTemplate {
+        SummaryTemplate.template(for: UserDefaults.standard.string(forKey: summaryTemplateKey) ?? SummaryTemplate.standard.id)
     }
 }
 

@@ -14,6 +14,7 @@ struct SettingsView: View {
     @AppStorage(AppSettings.audioQualityKey) private var audioQualityRaw = AudioQuality.high.rawValue
     @AppStorage(AppSettings.liveTranscriptionKey) private var liveTranscription = true
     @AppStorage(AppSettings.autoSummarizeKey) private var autoSummarize = false
+    @AppStorage(AppSettings.summaryTemplateKey) private var summaryTemplate = SummaryTemplate.standard.id
 
     @State private var transcriptionStatus = "Checking…"
     @State private var usage: (fileCount: Int, totalBytes: Int64) = (0, 0)
@@ -111,10 +112,19 @@ struct SettingsView: View {
             }
             // Without a transcript there is nothing to summarize.
             .disabled(!liveTranscription)
+
+            Picker(selection: $summaryTemplate) {
+                ForEach(SummaryTemplate.all) { template in
+                    Text(template.name).tag(template.id)
+                }
+            } label: {
+                settingsLabel("Summary Template", systemImage: "square.grid.2x2", tint: .teal)
+            }
+            .pickerStyle(.menu)
         } header: {
             Text("Recording")
         } footer: {
-            Text("\(selectedQuality.label): \(selectedQuality.detail). Settings apply to new recordings. Auto-Summarize generates the summary on device right after a meeting is saved — it needs Live Transcription to produce the transcript it summarizes.")
+            Text("\(selectedQuality.label): \(selectedQuality.detail). Settings apply to new recordings. Auto-Summarize generates the summary on device right after a meeting is saved — it needs Live Transcription to produce the transcript it summarizes. The template controls how notes are organized (e.g. Yesterday/Today/Blockers for standups).")
         }
     }
 
