@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Minute uses the microphone to record meetings you start. Audio is stored only on this iPhone and is never uploaded.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Minute transcribes your recordings entirely on this iPhone. Transcripts never leave your device.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+</dict>
+</plist>
