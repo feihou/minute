@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="142 272 740 480" width="740" height="480">
+  <!-- Minute waveform mark (light). Geometry matches Minute/Assets.xcassets/AppIcon.appiconset. -->
+  <g fill="#6E86F2" opacity="0.13">
+    <rect x="355.6" y="367" width="108.8" height="290" rx="54.4"/>
+    <rect x="253.6" y="417" width="108.8" height="190" rx="54.4"/>
+    <rect x="559.6" y="367" width="108.8" height="290" rx="54.4"/>
+    <rect x="661.6" y="417" width="108.8" height="190" rx="54.4"/>
+  </g>
+  <rect x="172" y="437" width="68" height="150" rx="34" fill="#C9D9FB"/>
+  <rect x="274" y="392" width="68" height="240" rx="34" fill="#A5BFF9"/>
+  <rect x="376" y="347" width="68" height="330" rx="34" fill="#7D9DF6"/>
+  <rect x="478" y="302" width="68" height="420" rx="34" fill="#4A5CEC"/>
+  <rect x="580" y="347" width="68" height="330" rx="34" fill="#7D9DF6"/>
+  <rect x="682" y="392" width="68" height="240" rx="34" fill="#A5BFF9"/>
+  <rect x="784" y="437" width="68" height="150" rx="34" fill="#C9D9FB"/>
+</svg>
