@@ -19,11 +19,11 @@ Meeting audio is some of the most sensitive data on your phone. Most meeting-not
 
 ## Features
 
-- 🎙️ **One-tap recording** with pause/resume, background recording, and graceful handling of phone calls and AirPods switches — captured audio is never force-discarded, even when something goes wrong
+- 🎙️ **One-tap recording** with pause/resume, background recording, and graceful handling of phone calls and AirPods switches — on any handled failure (interruption, route change, stop error) the app always offers to save the audio captured so far
 - 📝 **Live on-device transcript** while you record (`SpeechAnalyzer`/`SpeechTranscriber`, iOS 26), with timestamped segments — tap a line to jump playback there
 - ✨ **On-device AI summary** via Apple's FoundationModels: overview, key points, decisions, action items (owner/deadline are `Not specified` unless actually said — the model is instructed never to invent facts), and open questions
 - 📚 **Long-meeting support**: transcripts are chunked, noted per chunk, and merged, staying inside the model's 4,096-token context window — including for dense-token languages like Chinese and Japanese
-- ▶️ **Playback** with scrubbing, plus **edit / copy / share / delete** for all notes
+- ▶️ **Playback** with scrubbing; **edit** the meeting title and summary, **copy / share / delete** everything (transcripts are read-only today)
 - 🗑️ **Real deletion**: deleting a meeting deletes its audio file and notes from disk; a startup sweep removes any audio orphaned by a crash
 - ♿ System-native UI: light/dark mode, Dynamic Type, VoiceOver labels
 
@@ -31,11 +31,13 @@ Meeting audio is some of the most sensitive data on your phone. Most meeting-not
 
 | Guarantee | How |
 |---|---|
-| Audio, transcripts, summaries stay on device | Stored in the app sandbox (Application Support + SwiftData); the app makes **zero network calls** |
+| Audio, transcripts, summaries stay on device | Stored in the app sandbox (Application Support + SwiftData); **no meeting content is ever sent anywhere** |
 | No account, no analytics, no tracking | There is no server, SDK, or telemetry of any kind — grep the source |
 | Transcription is local | Apple `SpeechTranscriber` with on-device model assets |
 | Summarization is local | Apple `FoundationModels` (Apple Intelligence on-device model) |
 | Delete means delete | Removing a meeting removes its `.m4a` and database row; orphaned audio is swept at launch |
+
+> The one network operation in the app's lifetime: when transcription is first prepared, iOS downloads Apple's on-device speech model assets (`AssetInventory`). That is Apple system infrastructure fetching a model — it never includes your recordings, transcripts, or any meeting content.
 
 ## Requirements
 
@@ -84,7 +86,7 @@ Minute/
 
 The flow: `RecordingSession` starts the recorder immediately (audio capture never waits on anything), then attaches transcription asynchronously once the speech model is ready. On stop, the transcript is finalized and the meeting saved; summaries are generated on demand from the detail screen.
 
-**AI grounding rules** (enforced in `SummarizationService` instructions and post-processing): summaries may only use information present in the transcript; owners/deadlines fall back to the literal `"Not specified"`; output is structured via `@Generable`, not parsed from prose.
+**AI grounding**: the model is *instructed* to use only information present in the transcript and to leave owner/deadline as the literal `"Not specified"` when unstated; post-processing in `SummarizationService` normalizes placeholders and deduplicates, but it cannot fact-check the model's output against the transcript. Like any LLM output, review a summary before acting on it. Output is structured via `@Generable`, not parsed from prose.
 
 ## Roadmap / known limitations
 
@@ -93,6 +95,7 @@ Contributions welcome on any of these — see [CONTRIBUTING.md](CONTRIBUTING.md)
 - [ ] Speaker awareness in transcripts (diarization) when Apple exposes it
 - [ ] Structured per-field editor for action items (currently `task | owner | deadline` lines)
 - [ ] Handling of media-services resets during very long recordings (rare; currently pauses safely)
+- [ ] Crash recovery for in-progress recordings — today, audio from a recording interrupted by an app crash is removed by the orphan sweep at next launch rather than recovered
 - [ ] Localization of the UI (transcription already follows the device locale)
 - [ ] Export formats beyond plain text/Markdown (PDF, calendar follow-ups)
 - [ ] CI (GitHub Actions with an Xcode 26 runner image)
