@@ -21,6 +21,20 @@ struct SummarySection: Codable, Hashable, Sendable {
     var items: [String]
 }
 
+extension MeetingSummary {
+    /// True when any field the app presents as the meeting's notes contains
+    /// the query — including template sections.
+    func matches(_ query: String) -> Bool {
+        var fields = [overview] + keyPoints + decisions + openQuestions
+            + actionItems.flatMap { [$0.task, $0.owner, $0.deadline] }
+        for section in sections ?? [] {
+            fields.append(section.title)
+            fields.append(contentsOf: section.items)
+        }
+        return fields.contains { $0.localizedCaseInsensitiveContains(query) }
+    }
+}
+
 struct ActionItem: Codable, Hashable, Sendable {
     /// Canonical placeholder when the transcript never named an owner or deadline.
     static let notSpecified = "Not specified"
