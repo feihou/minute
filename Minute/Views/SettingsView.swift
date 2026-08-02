@@ -137,7 +137,7 @@ struct SettingsView: View {
         } header: {
             Text("Models")
         } footer: {
-            Text("Both models are built into iOS and run entirely on this iPhone. Support for custom models may come in a future update.")
+            Text("Both are Apple models that run entirely on this iPhone. The transcription model may need a one-time download before first use. Support for custom models may come in a future update.")
         }
     }
 
