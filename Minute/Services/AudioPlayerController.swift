@@ -82,10 +82,12 @@ final class AudioPlayerController: NSObject, AVAudioPlayerDelegate {
 
     private func deactivateSessionIfNeeded() {
         guard sessionActivated else { return }
-        sessionActivated = false
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            sessionActivated = false
         } catch {
+            // Keep the flag set so a later pause/stop/finish retries the
+            // deactivation instead of leaving the session active for good.
             Self.logger.error("Deactivating playback session failed: \(error.localizedDescription)")
         }
     }

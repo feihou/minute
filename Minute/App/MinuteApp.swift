@@ -26,6 +26,10 @@ struct MinuteApp: App {
         // reference those files anymore.
         MeetingStore.useEphemeralStorage = storeIsEphemeral
         MeetingStore.removeEphemeralRecordings()
+        // Even in fallback mode, a (possibly corrupt) store and existing
+        // recordings may still sit in Application Support — keep them out of
+        // device backups regardless of which directory receives new audio.
+        MeetingStore.excludeAppSupportFromBackups()
     }
 
     var body: some Scene {

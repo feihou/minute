@@ -13,28 +13,40 @@ enum MeetingStore {
     /// Recordings directory. Set once at app startup, before any recording.
     nonisolated(unsafe) static var useEphemeralStorage = false
 
-    static func recordingsDirectory() throws -> URL {
-        if useEphemeralStorage {
-            let directory = ephemeralRecordingsDirectory
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            return directory
-        }
-        var base = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        // Meeting data must never leave the device — not even inside an
-        // iCloud/computer device backup. Excluding the whole app-support tree
-        // covers the recordings and the SwiftData store.
+    /// Marks the app's Application Support tree (recordings + SwiftData
+    /// store) as excluded from iCloud/computer backups. Meeting data must
+    /// never leave the device — including any corrupt store and older
+    /// recordings still sitting there while the in-memory fallback is active,
+    /// so this runs at launch independently of where new audio routes.
+    static func excludeAppSupportFromBackups() {
         do {
+            var base = try FileManager.default.url(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
             var values = URLResourceValues()
             values.isExcludedFromBackup = true
             try base.setResourceValues(values)
         } catch {
             logger.error("Excluding meeting data from backups failed: \(error.localizedDescription)")
         }
+    }
+
+    static func recordingsDirectory() throws -> URL {
+        excludeAppSupportFromBackups()
+        if useEphemeralStorage {
+            let directory = ephemeralRecordingsDirectory
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            return directory
+        }
+        let base = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
         let directory = base.appendingPathComponent("Recordings", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
