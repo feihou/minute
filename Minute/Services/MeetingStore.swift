@@ -72,6 +72,20 @@ enum MeetingStore {
         UUID().uuidString + ".m4a"
     }
 
+    /// Audio containers the app accepts for import; recordings are always m4a.
+    static let audioFileExtensions: Set<String> = ["m4a", "mp3", "wav", "aac", "aiff", "aif", "caf", "flac"]
+
+    /// File name for imported audio, keeping the source container so playback
+    /// and re-reads never depend on a misleading extension.
+    static func importedAudioFileName(originalExtension: String) -> String {
+        let ext = originalExtension.lowercased()
+        return UUID().uuidString + "." + (audioFileExtensions.contains(ext) ? ext : "m4a")
+    }
+
+    private static func isAudioFile(_ name: String) -> Bool {
+        audioFileExtensions.contains(URL(fileURLWithPath: name).pathExtension.lowercased())
+    }
+
     static func audioURL(fileName: String) throws -> URL {
         try recordingsDirectory().appendingPathComponent(fileName)
     }
@@ -116,7 +130,7 @@ enum MeetingStore {
         guard let directory = try? recordingsDirectory(),
               let files = try? FileManager.default.contentsOfDirectory(atPath: directory.path)
         else { return }
-        for name in files where name.hasSuffix(".m4a") && !referencedFileNames.contains(name) {
+        for name in files where isAudioFile(name) && !referencedFileNames.contains(name) {
             deleteAudioFile(named: name)
         }
     }
@@ -132,7 +146,7 @@ enum MeetingStore {
         else { return (0, 0) }
         var count = 0
         var bytes: Int64 = 0
-        for url in files where url.pathExtension == "m4a" {
+        for url in files where isAudioFile(url.lastPathComponent) {
             count += 1
             bytes += Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
         }
