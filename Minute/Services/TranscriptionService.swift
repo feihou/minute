@@ -139,6 +139,52 @@ final class TranscriptionService {
         }
     }
 
+    /// Transcribes a whole audio file (the import path). Unlike the live path,
+    /// failures throw — the caller decides whether an import without a
+    /// transcript is still worth keeping.
+    func transcribe(file: AVAudioFile) async throws -> [TranscriptSegment] {
+        guard availability == .available, let transcriber else {
+            throw CocoaError(.featureUnsupported)
+        }
+        segments = []
+        volatileText = ""
+
+        resultsTask = Task { @MainActor [weak self] in
+            do {
+                for try await result in transcriber.results {
+                    guard let self else { break }
+                    let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if result.isFinal, !text.isEmpty {
+                        self.segments.append(TranscriptSegment(
+                            text: text,
+                            start: result.range.start.seconds,
+                            end: result.range.end.seconds
+                        ))
+                    }
+                }
+            } catch {
+                Self.logger.error("File transcription results stream failed: \(error.localizedDescription)")
+            }
+        }
+
+        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        do {
+            if let lastSample = try await analyzer.analyzeSequence(from: file) {
+                try await analyzer.finalizeAndFinish(through: lastSample)
+            } else {
+                await analyzer.cancelAndFinishNow()
+            }
+        } catch {
+            await analyzer.cancelAndFinishNow()
+            resultsTask?.cancel()
+            resultsTask = nil
+            throw error
+        }
+        await resultsTask?.value
+        resultsTask = nil
+        return segments
+    }
+
     /// Flushes remaining audio, waits for final results, and returns them.
     func finish() async -> [TranscriptSegment] {
         inputContinuation?.finish()

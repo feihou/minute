@@ -1,5 +1,6 @@
 import SwiftData
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct MeetingListView: View {
     var storeIsEphemeral = false
@@ -14,6 +15,10 @@ struct MeetingListView: View {
     @State private var activeSession: RecordingSession?
     @State private var justFinished: Meeting?
     @State private var didSweepOrphans = false
+    @State private var showingImporter = false
+    @State private var importingFileName: String?
+    @State private var importTask: Task<Void, Never>?
+    @State private var importError: String?
 
     var body: some View {
         NavigationStack {
@@ -32,6 +37,45 @@ struct MeetingListView: View {
                     } label: {
                         Label("Settings", systemImage: "gearshape")
                     }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showingImporter = true
+                    } label: {
+                        Label("Import Audio", systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(importingFileName != nil)
+                }
+            }
+            .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.audio]) { result in
+                if case .success(let url) = result {
+                    startImport(url)
+                }
+            }
+            .alert("Import Failed", isPresented: Binding(
+                get: { importError != nil },
+                set: { if !$0 { importError = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(importError ?? "")
+            }
+            .safeAreaInset(edge: .top) {
+                if let importingFileName {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Importing \(importingFileName)…")
+                            .font(.footnote)
+                            .lineLimit(1)
+                        Spacer()
+                        Button("Cancel") {
+                            importTask?.cancel()
+                        }
+                        .font(.footnote.weight(.medium))
+                    }
+                    .padding(10)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    .padding(.horizontal)
                 }
             }
             .navigationDestination(item: $justFinished) { meeting in
@@ -242,6 +286,24 @@ struct MeetingListView: View {
     private func beginNewMeeting() {
         draftTitle = RecordingSession.defaultTitle()
         showingNewMeeting = true
+    }
+
+    private func startImport(_ url: URL) {
+        importingFileName = url.lastPathComponent
+        importTask = Task {
+            do {
+                let meeting = try await AudioImporter.importAudio(from: url, context: context)
+                // Reuses the post-recording destination, so Auto-Summarize
+                // kicks in for imports too.
+                justFinished = meeting
+            } catch is CancellationError {
+                // User cancelled — nothing to report.
+            } catch {
+                importError = error.localizedDescription
+            }
+            importingFileName = nil
+            importTask = nil
+        }
     }
 }
 

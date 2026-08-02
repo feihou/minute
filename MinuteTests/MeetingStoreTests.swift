@@ -61,6 +61,27 @@ struct MeetingStoreTests {
         #expect(!FileManager.default.fileExists(atPath: url.path))
     }
 
+    @Test func importedAudioFileNameKeepsKnownExtensionsAndDefaultsUnknownToM4a() {
+        #expect(MeetingStore.importedAudioFileName(originalExtension: "MP3").hasSuffix(".mp3"))
+        #expect(MeetingStore.importedAudioFileName(originalExtension: "wav").hasSuffix(".wav"))
+        #expect(MeetingStore.importedAudioFileName(originalExtension: "xyz").hasSuffix(".m4a"))
+        #expect(MeetingStore.importedAudioFileName(originalExtension: "").hasSuffix(".m4a"))
+    }
+
+    @Test func removeOrphanedAudioSweepsImportedFormats() throws {
+        let orphanName = MeetingStore.importedAudioFileName(originalExtension: "mp3")
+        let orphanURL = try MeetingStore.audioURL(fileName: orphanName)
+        try Data("orphan mp3".utf8).write(to: orphanURL)
+
+        // Reference every other file on disk so concurrently running tests
+        // keep their fixtures; only our orphan is sweepable.
+        let directory = try MeetingStore.recordingsDirectory()
+        let existing = Set((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? [])
+        MeetingStore.removeOrphanedAudio(referencedFileNames: existing.subtracting([orphanName]))
+
+        #expect(!FileManager.default.fileExists(atPath: orphanURL.path))
+    }
+
     @Test func removeOrphanedAudioDeletesOnlyUnreferencedFiles() throws {
         let keptName = MeetingStore.newAudioFileName()
         let orphanName = MeetingStore.newAudioFileName()
