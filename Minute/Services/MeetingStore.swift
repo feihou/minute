@@ -89,7 +89,10 @@ enum MeetingStore {
     /// remains. The database deletion commits FIRST: if it fails, the audio is
     /// untouched (a meeting must never reappear pointing at deleted audio),
     /// and a crash in between leaves an orphan the launch sweep cleans up.
-    static func delete(_ meeting: Meeting, context: ModelContext) {
+    /// Returns false when the deletion couldn't be committed, so bulk actions
+    /// can tell the user instead of silently claiming success.
+    @discardableResult
+    static func delete(_ meeting: Meeting, context: ModelContext) -> Bool {
         let audioFileName = meeting.audioFileName
         context.delete(meeting)
         do {
@@ -99,11 +102,12 @@ enum MeetingStore {
             // The delete stays pending in the context; if a later save
             // commits it, the audio becomes an orphan and the launch sweep
             // removes it. Never delete audio for an uncommitted row-delete.
-            return
+            return false
         }
         if let audioFileName {
             deleteAudioFile(named: audioFileName)
         }
+        return true
     }
 
     /// Removes audio files that no meeting references (e.g. left behind by a
@@ -115,6 +119,24 @@ enum MeetingStore {
         for name in files where name.hasSuffix(".m4a") && !referencedFileNames.contains(name) {
             deleteAudioFile(named: name)
         }
+    }
+
+    /// Number of recording files on disk and their combined size, for the
+    /// storage row in Settings.
+    static func recordingsUsage() -> (fileCount: Int, totalBytes: Int64) {
+        guard let directory = try? recordingsDirectory(),
+              let files = try? FileManager.default.contentsOfDirectory(
+                  at: directory,
+                  includingPropertiesForKeys: [.fileSizeKey]
+              )
+        else { return (0, 0) }
+        var count = 0
+        var bytes: Int64 = 0
+        for url in files where url.pathExtension == "m4a" {
+            count += 1
+            bytes += Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        return (count, bytes)
     }
 
     static func deleteAudioFile(named name: String) {
