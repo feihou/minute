@@ -6,8 +6,18 @@ enum TranscriptChunker {
     /// ~6,000 chars ≈ 1,500 tokens, leaving headroom for instructions and output.
     static let defaultMaxChars = 6_000
 
-    static func chunks(from text: String, maxChars: Int = defaultMaxChars) -> [String] {
+    /// Trailing lines of each chunk are repeated at the start of the next, so
+    /// a discussion that spans a boundary is seen whole at least once.
+    static let defaultOverlapChars = 600
+
+    static func chunks(
+        from text: String,
+        maxChars: Int = defaultMaxChars,
+        overlapChars: Int = defaultOverlapChars
+    ) -> [String] {
         precondition(maxChars > 0, "maxChars must be positive")
+        // Cap the overlap so every chunk still makes real forward progress.
+        let overlap = min(max(overlapChars, 0), maxChars / 2)
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
         guard trimmed.count > maxChars else { return [trimmed] }
@@ -28,19 +38,38 @@ enum TranscriptChunker {
         }
 
         var chunks: [String] = []
-        var current = ""
+        var current: [String] = []
+        var currentCount = 0
+
         for piece in pieces {
-            if current.isEmpty {
-                current = piece
-            } else if current.count + 1 + piece.count <= maxChars {
-                current += "\n" + piece
-            } else {
-                chunks.append(current)
-                current = piece
+            let addition = current.isEmpty ? piece.count : piece.count + 1
+            if !current.isEmpty, currentCount + addition > maxChars {
+                chunks.append(current.joined(separator: "\n"))
+
+                // Seed the next chunk with the tail of this one (the overlap).
+                var tail: [String] = []
+                var tailCount = 0
+                for line in current.reversed() {
+                    let lineAddition = tail.isEmpty ? line.count : line.count + 1
+                    guard tailCount + lineAddition <= overlap else { break }
+                    tail.insert(line, at: 0)
+                    tailCount += lineAddition
+                }
+                current = tail
+                currentCount = tailCount
+
+                // The overlap must never push a chunk over budget; shed the
+                // oldest carried lines until the incoming piece fits.
+                while !current.isEmpty, currentCount + piece.count + 1 > maxChars {
+                    let removed = current.removeFirst()
+                    currentCount -= current.isEmpty ? removed.count : removed.count + 1
+                }
             }
+            currentCount += current.isEmpty ? piece.count : piece.count + 1
+            current.append(piece)
         }
         if !current.isEmpty {
-            chunks.append(current)
+            chunks.append(current.joined(separator: "\n"))
         }
         return chunks
     }

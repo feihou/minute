@@ -13,7 +13,7 @@ struct TranscriptChunkerTests {
     @Test func splitsOnLineBoundariesWithoutLosingContent() {
         let lines = (1...10).map { "line number \($0)" }
         let text = lines.joined(separator: "\n")
-        let chunks = TranscriptChunker.chunks(from: text, maxChars: 40)
+        let chunks = TranscriptChunker.chunks(from: text, maxChars: 40, overlapChars: 0)
 
         #expect(chunks.count > 1)
         #expect(chunks.allSatisfy { $0.count <= 40 })
@@ -23,9 +23,48 @@ struct TranscriptChunkerTests {
 
     @Test func hardSplitsOversizedSingleLine() {
         let text = String(repeating: "a", count: 55)
-        let chunks = TranscriptChunker.chunks(from: text, maxChars: 20)
+        let chunks = TranscriptChunker.chunks(from: text, maxChars: 20, overlapChars: 0)
 
         #expect(chunks.allSatisfy { $0.count <= 20 })
         #expect(chunks.map(\.count).reduce(0, +) == 55)
+    }
+
+    @Test func overlapRepeatsTrailingLinesInNextChunk() {
+        let lines = (1...10).map { "line number \($0)" }
+        let text = lines.joined(separator: "\n")
+        let chunks = TranscriptChunker.chunks(from: text, maxChars: 40, overlapChars: 15)
+
+        #expect(chunks.count > 1)
+        #expect(chunks.allSatisfy { $0.count <= 40 })
+        for index in 1..<chunks.count {
+            let previousLines = chunks[index - 1].split(separator: "\n")
+            let firstLine = chunks[index].split(separator: "\n").first
+            #expect(previousLines.last == firstLine)
+        }
+        // Every original line survives, in order, despite the repeats.
+        var remaining = lines[...]
+        for line in chunks.joined(separator: "\n").split(separator: "\n").map(String.init) {
+            if line == remaining.first {
+                remaining = remaining.dropFirst()
+            }
+        }
+        #expect(remaining.isEmpty)
+    }
+
+    @Test func overlapNeverPushesChunksOverBudget() {
+        // Long lines close to the budget leave no room for carried lines;
+        // the chunker must shed the overlap rather than exceed maxChars.
+        let lines = (1...6).map { String(repeating: "x\($0)", count: 8) }
+        let chunks = TranscriptChunker.chunks(from: lines.joined(separator: "\n"), maxChars: 20, overlapChars: 10)
+
+        #expect(chunks.allSatisfy { $0.count <= 20 })
+    }
+
+    @Test func defaultOverlapStaysWithinBudget() {
+        let text = (1...400).map { "segment \($0) with some spoken words in it" }.joined(separator: "\n")
+        let chunks = TranscriptChunker.chunks(from: text)
+
+        #expect(chunks.count > 1)
+        #expect(chunks.allSatisfy { $0.count <= TranscriptChunker.defaultMaxChars })
     }
 }

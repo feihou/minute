@@ -33,6 +33,12 @@ final class Meeting {
         segments.map(\.text).joined(separator: "\n")
     }
 
+    /// Transcript with one "[mm:ss] text" line per segment — the summarizer's
+    /// input, so the model can follow the meeting's flow across chunks.
+    var timestampedTranscriptText: String {
+        segments.map { "[\($0.start.clockString)] \($0.text)" }.joined(separator: "\n")
+    }
+
     var hasTranscript: Bool {
         !segments.isEmpty
     }

@@ -7,6 +7,10 @@ struct MeetingSummary: Codable, Hashable, Sendable {
     var actionItems: [ActionItem]
     var openQuestions: [String]
     var generatedAt: Date
+    /// Model-suggested meeting title; applied only while the meeting still
+    /// has its default "Meeting <date>" title. Optional so older stored
+    /// summaries keep decoding.
+    var suggestedTitle: String? = nil
 }
 
 struct ActionItem: Codable, Hashable, Sendable {
