@@ -15,6 +15,7 @@ struct SettingsView: View {
     @AppStorage(AppSettings.liveTranscriptionKey) private var liveTranscription = true
     @AppStorage(AppSettings.autoSummarizeKey) private var autoSummarize = false
     @AppStorage(AppSettings.summaryTemplateKey) private var summaryTemplate = SummaryTemplate.standard.id
+    @AppStorage(AppSettings.summaryContextKey) private var summaryContext = ""
 
     @State private var transcriptionStatus = "Checking…"
     @State private var usage: (fileCount: Int, totalBytes: Int64) = (0, 0)
@@ -26,6 +27,7 @@ struct SettingsView: View {
             List {
                 identitySection
                 recordingSection
+                summaryContextSection
                 modelsSection
                 // In ephemeral-fallback mode the real recordings directory
                 // isn't in use, so the usage figure and the "delete all"
@@ -125,6 +127,17 @@ struct SettingsView: View {
             Text("Recording")
         } footer: {
             Text("\(selectedQuality.label): \(selectedQuality.detail). Settings apply to new recordings. Auto-Summarize generates the summary on device right after a meeting is saved — it needs Live Transcription to produce the transcript it summarizes. The template controls how notes are organized (e.g. Yesterday/Today/Blockers for standups).")
+        }
+    }
+
+    private var summaryContextSection: some View {
+        Section {
+            TextField("Names, projects, terms…", text: $summaryContext, axis: .vertical)
+                .lineLimit(2...5)
+        } header: {
+            Text("Summary Context")
+        } footer: {
+            Text("Optional background the AI reads with every summary — attendee names, project names, and terms it should spell correctly. Stays on device.")
         }
     }
 
