@@ -344,11 +344,13 @@ struct MeetingDetailView: View {
         let transcript = meeting.timestampedTranscriptText
         let template = SummaryTemplate.template(for: summaryTemplateID)
         let context = AppSettings.summaryContext
+        let language = AppSettings.summaryLanguage
         generationTask = Task {
             do {
-                let summary = try await SummarizationService().summarize(transcript: transcript, template: template, context: context) { status in
-                    generationStatus = status
-                }
+                let summary = try await SummarizationService(language: language)
+                    .summarize(transcript: transcript, template: template, context: context) { status in
+                        generationStatus = status
+                    }
                 // The meeting may have been deleted while the model was working.
                 if !meeting.isDeleted {
                     meeting.summary = summary
