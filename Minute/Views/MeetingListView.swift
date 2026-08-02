@@ -136,16 +136,8 @@ struct MeetingListView: View {
         return meetings.filter { meeting in
             meeting.title.localizedCaseInsensitiveContains(query)
                 || meeting.transcriptText.localizedCaseInsensitiveContains(query)
-                || summaryMatches(meeting.summary, query: query)
+                || meeting.summary?.matches(query) == true
         }
-    }
-
-    /// Searches every field the app presents as the meeting's notes.
-    private func summaryMatches(_ summary: MeetingSummary?, query: String) -> Bool {
-        guard let summary else { return false }
-        let fields = [summary.overview] + summary.keyPoints + summary.decisions
-            + summary.openQuestions + summary.actionItems.flatMap { [$0.task, $0.owner, $0.deadline] }
-        return fields.contains { $0.localizedCaseInsensitiveContains(query) }
     }
 
     private var groupedMeetings: [(title: String, items: [Meeting])] {
