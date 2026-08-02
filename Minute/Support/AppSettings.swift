@@ -9,6 +9,7 @@ enum AppSettings {
     static let autoSummarizeKey = "recording.autoSummarize"
     static let summaryTemplateKey = "summary.template"
     static let summaryContextKey = "summary.context"
+    static let summaryLanguageKey = "summary.language"
 
     /// Encoder quality applied to new recordings.
     static var audioQuality: AudioQuality {
@@ -35,6 +36,20 @@ enum AppSettings {
     static var summaryContext: String {
         UserDefaults.standard.string(forKey: summaryContextKey) ?? ""
     }
+
+    /// English name of the language summaries are written in; nil means
+    /// "match the meeting's language". English names because the model
+    /// follows "in Spanish" far more reliably than a code like "es".
+    static var summaryLanguage: String? {
+        let value = UserDefaults.standard.string(forKey: summaryLanguageKey) ?? ""
+        return value.isEmpty ? nil : value
+    }
+
+    /// Languages offered by the picker — the on-device model's supported set.
+    static let summaryLanguageOptions = [
+        "English", "Spanish", "French", "German", "Italian",
+        "Portuguese", "Japanese", "Korean", "Chinese",
+    ]
 }
 
 /// AAC encoder quality for new recordings. The sample rate always follows the

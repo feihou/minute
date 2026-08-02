@@ -16,6 +16,7 @@ struct SettingsView: View {
     @AppStorage(AppSettings.autoSummarizeKey) private var autoSummarize = false
     @AppStorage(AppSettings.summaryTemplateKey) private var summaryTemplate = SummaryTemplate.standard.id
     @AppStorage(AppSettings.summaryContextKey) private var summaryContext = ""
+    @AppStorage(AppSettings.summaryLanguageKey) private var summaryLanguage = ""
 
     @State private var transcriptionStatus = "Checking…"
     @State private var usage: (fileCount: Int, totalBytes: Int64) = (0, 0)
@@ -121,6 +122,16 @@ struct SettingsView: View {
                 }
             } label: {
                 settingsLabel("Summary Template", systemImage: "square.grid.2x2", tint: .teal)
+            }
+            .pickerStyle(.menu)
+
+            Picker(selection: $summaryLanguage) {
+                Text("Match Meeting").tag("")
+                ForEach(AppSettings.summaryLanguageOptions, id: \.self) { language in
+                    Text(language).tag(language)
+                }
+            } label: {
+                settingsLabel("Summary Language", systemImage: "globe", tint: .cyan)
             }
             .pickerStyle(.menu)
         } header: {
