@@ -25,6 +25,7 @@ struct SettingsView: View {
             List {
                 identitySection
                 recordingSection
+                modelsSection
                 // In ephemeral-fallback mode the real recordings directory
                 // isn't in use, so the usage figure and the "delete all"
                 // promise would both be wrong — hide the section entirely.
@@ -114,6 +115,29 @@ struct SettingsView: View {
             Text("Recording")
         } footer: {
             Text("\(selectedQuality.label): \(selectedQuality.detail). Settings apply to new recordings. Auto-Summarize generates the summary on device right after a meeting is saved — it needs Live Transcription to produce the transcript it summarizes.")
+        }
+    }
+
+    // ponytail: display-only rows — becomes a Picker when there is more than
+    // one model to choose from (e.g. user-downloaded models).
+    private var modelsSection: some View {
+        Section {
+            LabeledContent {
+                Text("Apple Speech")
+                    .foregroundStyle(.secondary)
+            } label: {
+                settingsLabel("Transcription Model", systemImage: "text.bubble", tint: .blue)
+            }
+            LabeledContent {
+                Text("Apple Intelligence")
+                    .foregroundStyle(.secondary)
+            } label: {
+                settingsLabel("Summary Model", systemImage: "brain", tint: .purple)
+            }
+        } header: {
+            Text("Models")
+        } footer: {
+            Text("Both models are built into iOS and run entirely on this iPhone. Support for custom models may come in a future update.")
         }
     }
 
