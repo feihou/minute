@@ -40,7 +40,7 @@ xcodebuild -project Minute.xcodeproj -scheme Minute \
 
 Every PR must keep these true. They are the product:
 
-1. **No network calls. Ever.** No cloud transcription, no cloud LLMs, no telemetry, no crash reporters, no analytics SDKs, no remote fonts. If a feature needs a server, it doesn't belong in Minute.
+1. **No app-owned network calls, and no user data on the wire. Ever.** No cloud transcription, no cloud LLMs, no telemetry, no crash reporters, no analytics SDKs, no remote fonts. The sole permitted network activity is iOS itself downloading Apple's on-device model assets (speech / Apple Intelligence) — system-mediated and never carrying meeting content. If a feature needs a server, it doesn't belong in Minute.
 2. **No new data at rest without a delete path.** Anything written to disk must be removed by `MeetingStore.delete` (or the orphan sweep). Deleting a meeting must leave zero bytes of it behind.
 3. **AI output stays grounded.** Summarization instructions must forbid invented decisions, owners, deadlines, names, or facts; missing owner/deadline is the literal `"Not specified"`. Don't weaken the instructions or the normalization in `SummarizationService`.
 4. **Recording never depends on optional capabilities.** Transcription and summarization are best-effort extras; audio capture must start fast and survive their absence or failure.
@@ -70,7 +70,7 @@ Every PR must keep these true. They are the product:
 ## Reporting bugs & security issues
 
 - Bugs and feature requests: open a [GitHub issue](https://github.com/feihou/minute/issues) using the templates.
-- Anything privacy- or security-sensitive (e.g. data left behind after deletion): please use GitHub's **private vulnerability reporting** on this repository ("Security" tab → "Report a vulnerability") instead of a public issue.
+- Anything privacy- or security-sensitive (e.g. data left behind after deletion): please use GitHub's **private vulnerability reporting** on this repository ("Security" tab → "Report a vulnerability") instead of a public issue. If that option isn't visible, contact the maintainer directly via [@feihou](https://github.com/feihou).
 
 ## Code of conduct
 
