@@ -19,6 +19,8 @@ struct MeetingDetailView: View {
 
     @State private var player = AudioPlayerController()
     @State private var isGenerating = false
+    @State private var generationStatus: String?
+    @State private var generationTask: Task<Void, Never>?
     @State private var summaryError: String?
     @State private var showingEditor = false
     @State private var confirmingDelete = false
@@ -174,8 +176,14 @@ struct MeetingDetailView: View {
                 if isGenerating {
                     HStack(spacing: 12) {
                         ProgressView()
-                        Text("Summarizing on device…")
+                        Text(generationStatus ?? "Summarizing on device…")
                             .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Stop") {
+                            generationTask?.cancel()
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.subheadline.weight(.medium))
                     }
                 }
                 if let summaryError {
@@ -318,22 +326,38 @@ struct MeetingDetailView: View {
         guard !isGenerating else { return }
         isGenerating = true
         summaryError = nil
-        let transcript = meeting.transcriptText
-        Task {
+        generationStatus = nil
+        let transcript = meeting.timestampedTranscriptText
+        generationTask = Task {
             do {
-                let summary = try await SummarizationService().summarize(transcript: transcript)
+                let summary = try await SummarizationService().summarize(transcript: transcript) { status in
+                    generationStatus = status
+                }
                 // The meeting may have been deleted while the model was working.
                 if !meeting.isDeleted {
                     meeting.summary = summary
+                    applySuggestedTitleIfDefault(summary)
                     saveQuietly()
                 }
+            } catch is CancellationError {
+                // The user tapped Stop — nothing to report.
             } catch {
-                if !meeting.isDeleted {
+                if !meeting.isDeleted, !Task.isCancelled {
                     summaryError = error.localizedDescription
                 }
             }
             isGenerating = false
+            generationStatus = nil
+            generationTask = nil
         }
+    }
+
+    /// Adopts the model's title only while the meeting still carries the
+    /// default "Meeting <date>" name — never over a user-chosen title.
+    private func applySuggestedTitleIfDefault(_ summary: MeetingSummary) {
+        guard let suggested = summary.suggestedTitle,
+              meeting.title == RecordingSession.defaultTitle(for: meeting.createdAt) else { return }
+        meeting.title = suggested
     }
 
     private func saveQuietly() {
