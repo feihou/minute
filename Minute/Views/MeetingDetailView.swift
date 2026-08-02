@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftData
 import SwiftUI
 import UIKit
@@ -24,6 +25,9 @@ struct MeetingDetailView: View {
     @State private var summaryError: String?
     @State private var showingEditor = false
     @State private var confirmingDelete = false
+    @State private var confirmingRetranscribe = false
+    @State private var isRetranscribing = false
+    @State private var transcriptError: String?
     @State private var selectedTab: Tab = .summary
     @AppStorage(AppSettings.summaryTemplateKey) private var summaryTemplateID = SummaryTemplate.standard.id
 
@@ -82,6 +86,12 @@ struct MeetingDetailView: View {
                         Label("Summary Template", systemImage: "square.grid.2x2")
                     }
                     .disabled(isGenerating)
+                    Button {
+                        confirmingRetranscribe = true
+                    } label: {
+                        Label("Re-transcribe Audio", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(MeetingStore.audioURL(for: meeting) == nil || isRetranscribing || isGenerating)
                     Divider()
                     Button(role: .destructive) {
                         confirmingDelete = true
@@ -109,6 +119,18 @@ struct MeetingDetailView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("The recording, transcript, and summary will be permanently deleted from this iPhone.")
+        }
+        .confirmationDialog(
+            "Re-transcribe this meeting?",
+            isPresented: $confirmingRetranscribe,
+            titleVisibility: .visible
+        ) {
+            Button("Replace Transcript") {
+                retranscribe()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The current transcript will be replaced using the on-device speech model. The summary stays until you regenerate it.")
         }
         .task {
             guard autoGenerateSummary, meeting.summary == nil, meeting.hasTranscript,
@@ -306,6 +328,22 @@ struct MeetingDetailView: View {
     // MARK: - Transcript
 
     @ViewBuilder private var transcriptSection: some View {
+        if isRetranscribing || transcriptError != nil {
+            Section {
+                if isRetranscribing {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                        Text("Re-transcribing on device…")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let transcriptError {
+                    Text(transcriptError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            }
+        }
         Section {
             if meeting.hasTranscript {
                 ForEach(Array(meeting.segments.enumerated()), id: \.offset) { _, segment in
@@ -367,6 +405,35 @@ struct MeetingDetailView: View {
             isGenerating = false
             generationStatus = nil
             generationTask = nil
+        }
+    }
+
+    private func retranscribe() {
+        guard !isRetranscribing, let url = MeetingStore.audioURL(for: meeting) else { return }
+        isRetranscribing = true
+        transcriptError = nil
+        selectedTab = .transcript
+        Task {
+            let transcription = TranscriptionService()
+            await transcription.prepare()
+            if case .unavailable(let message) = transcription.availability {
+                transcriptError = message
+                isRetranscribing = false
+                return
+            }
+            do {
+                let file = try AVAudioFile(forReading: url)
+                let segments = try await transcription.transcribe(file: file)
+                if !meeting.isDeleted {
+                    meeting.segments = segments
+                    saveQuietly()
+                }
+            } catch {
+                if !meeting.isDeleted {
+                    transcriptError = "Re-transcription failed: \(error.localizedDescription)"
+                }
+            }
+            isRetranscribing = false
         }
     }
 
