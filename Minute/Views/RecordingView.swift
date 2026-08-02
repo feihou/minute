@@ -37,8 +37,11 @@ struct RecordingView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
+                    // Disabled while saving: discarding mid-save races the
+                    // finish that's finalizing the transcript.
                     Button("Discard") { confirmingDiscard = true }
                         .tint(.red)
+                        .disabled(session.phase == .saving)
                 }
             }
             .confirmationDialog(
@@ -80,8 +83,11 @@ struct RecordingView: View {
                         // Never force the user to throw away captured audio.
                         Button("Save Recording") {
                             Task {
-                                let meeting = await session.finish(in: context)
-                                onFinish(meeting)
+                                // nil = save failed; the session stays in
+                                // .failed so this screen remains for a retry.
+                                if let meeting = await session.finish(in: context) {
+                                    onFinish(meeting)
+                                }
                             }
                         }
                         .buttonStyle(.borderedProminent)
@@ -197,8 +203,11 @@ struct RecordingView: View {
 
             Button {
                 Task {
-                    let meeting = await session.finish(in: context)
-                    onFinish(meeting)
+                    // nil = save failed; the session enters .failed and this
+                    // screen shows Save Recording / Discard instead of closing.
+                    if let meeting = await session.finish(in: context) {
+                        onFinish(meeting)
+                    }
                 }
             } label: {
                 Image(systemName: "stop.circle.fill")

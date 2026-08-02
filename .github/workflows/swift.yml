@@ -1,5 +1,7 @@
-# This workflow will build a Swift project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-swift
+# Compile check for the Minute Xcode project (this repo is not a Swift
+# package, so `swift build` cannot work here). Runs the app scheme against
+# the iOS Simulator SDK with signing disabled. Full unit/UI tests currently
+# run locally — see CONTRIBUTING.md; wiring them into CI is on the roadmap.
 
 name: Swift
 
@@ -12,11 +14,20 @@ on:
 jobs:
   build:
 
-    runs-on: macos-latest
+    runs-on: macos-26
 
     steps:
     - uses: actions/checkout@v4
+    - name: Select newest Xcode 26
+      run: |
+        XCODE_APP="$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
+        echo "Using $XCODE_APP"
+        sudo xcode-select -s "$XCODE_APP"
+        xcodebuild -version
     - name: Build
-      run: swift build -v
-    - name: Run tests
-      run: swift test -v
+      run: |
+        xcodebuild build \
+          -project Minute.xcodeproj \
+          -scheme Minute \
+          -destination 'generic/platform=iOS Simulator' \
+          CODE_SIGNING_ALLOWED=NO

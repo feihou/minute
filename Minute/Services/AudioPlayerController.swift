@@ -11,6 +11,9 @@ final class AudioPlayerController: NSObject, AVAudioPlayerDelegate {
 
     private var player: AVAudioPlayer?
     private var ticker: Task<Void, Never>?
+    /// Tracks whether we activated the playback session, so stopping can
+    /// deactivate it and let other apps' audio resume.
+    private var sessionActivated = false
 
     private(set) var isPlaying = false
     private(set) var duration: TimeInterval = 0
@@ -43,6 +46,7 @@ final class AudioPlayerController: NSObject, AVAudioPlayerDelegate {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .spokenAudio)
             try session.setActive(true)
+            sessionActivated = true
         } catch {
             Self.logger.error("Audio session for playback failed: \(error.localizedDescription)")
         }
@@ -55,6 +59,9 @@ final class AudioPlayerController: NSObject, AVAudioPlayerDelegate {
         player?.pause()
         isPlaying = false
         stopTicker()
+        // Release the non-mixable session while paused so other apps' audio
+        // resumes; play() reactivates it.
+        deactivateSessionIfNeeded()
     }
 
     func seek(to time: TimeInterval) {
@@ -70,6 +77,17 @@ final class AudioPlayerController: NSObject, AVAudioPlayerDelegate {
         currentTime = 0
         duration = 0
         stopTicker()
+        deactivateSessionIfNeeded()
+    }
+
+    private func deactivateSessionIfNeeded() {
+        guard sessionActivated else { return }
+        sessionActivated = false
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            Self.logger.error("Deactivating playback session failed: \(error.localizedDescription)")
+        }
     }
 
     private func startTicker() {
@@ -90,9 +108,14 @@ final class AudioPlayerController: NSObject, AVAudioPlayerDelegate {
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         Task { @MainActor in
+            // Stale callback: playback was restarted (or a new file loaded)
+            // between the delegate firing and this task running — don't tear
+            // down the session the new playback just activated.
+            guard self.player === player, !player.isPlaying else { return }
             self.isPlaying = false
             self.currentTime = 0
             self.stopTicker()
+            self.deactivateSessionIfNeeded()
         }
     }
 }
