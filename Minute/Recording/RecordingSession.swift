@@ -24,6 +24,9 @@ final class RecordingSession: Identifiable {
 
     let recorder = AudioRecorder()
     let transcription = TranscriptionService()
+    /// Captured when the session is created so a settings change mid-recording
+    /// can't half-apply.
+    let isTranscriptionEnabled = AppSettings.liveTranscriptionEnabled
 
     private(set) var phase: Phase = .idle
     /// True once audio capture began — a later failure should offer to keep it.
@@ -80,7 +83,7 @@ final class RecordingSession: Identifiable {
             let fileName = MeetingStore.newAudioFileName()
             let url = try MeetingStore.audioURL(fileName: fileName)
             audioFileName = fileName
-            try recorder.start(writingTo: url)
+            try recorder.start(writingTo: url, quality: AppSettings.audioQuality.encoderQuality)
             didStartRecording = true
             phase = .recording
         } catch {
@@ -91,6 +94,7 @@ final class RecordingSession: Identifiable {
             return
         }
 
+        guard isTranscriptionEnabled else { return }
         transcriptionTask = Task { [weak self] in
             guard let self else { return }
             await self.transcription.prepare()

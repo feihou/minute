@@ -132,8 +132,8 @@ final class AudioRecorder {
         tapHandler.handler = handler
     }
 
-    /// Starts recording to `url`.
-    func start(writingTo url: URL) throws {
+    /// Starts recording to `url` at the given encoder quality.
+    func start(writingTo url: URL, quality: AVAudioQuality = .high) throws {
         guard state == .idle else { return }
 
         let format = engine.inputNode.outputFormat(forBus: 0)
@@ -145,7 +145,7 @@ final class AudioRecorder {
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: format.sampleRate,
             AVNumberOfChannelsKey: format.channelCount,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+            AVEncoderAudioQualityKey: quality.rawValue,
         ]
         file = try AVAudioFile(forWriting: url, settings: settings)
 

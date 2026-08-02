@@ -117,6 +117,24 @@ enum MeetingStore {
         }
     }
 
+    /// Number of recording files on disk and their combined size, for the
+    /// storage row in Settings.
+    static func recordingsUsage() -> (fileCount: Int, totalBytes: Int64) {
+        guard let directory = try? recordingsDirectory(),
+              let files = try? FileManager.default.contentsOfDirectory(
+                  at: directory,
+                  includingPropertiesForKeys: [.fileSizeKey]
+              )
+        else { return (0, 0) }
+        var count = 0
+        var bytes: Int64 = 0
+        for url in files where url.pathExtension == "m4a" {
+            count += 1
+            bytes += Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        return (count, bytes)
+    }
+
     static func deleteAudioFile(named name: String) {
         do {
             let url = try audioURL(fileName: name)

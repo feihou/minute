@@ -1,39 +1,41 @@
 import SwiftData
 import SwiftUI
 
-/// Full-screen recording UI: title, elapsed time, level meter, live transcript,
-/// and pause/resume/stop controls.
+/// Full-screen recording studio: title, status, elapsed time, live waveform,
+/// live transcript, and pause/resume/stop controls on a dark backdrop.
 struct RecordingView: View {
     @Environment(\.modelContext) private var context
     @Bindable var session: RecordingSession
     let onFinish: (Meeting?) -> Void
 
     @State private var confirmingDiscard = false
+    @State private var levels: [Float] = Array(repeating: 0, count: 42)
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 20) {
-                TextField("Meeting title", text: $session.title)
-                    .font(.title3.weight(.semibold))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-                    .accessibilityLabel("Meeting title")
+            ZStack {
+                LinearGradient.studioBackdrop
+                    .ignoresSafeArea()
 
-                statusHeader
+                VStack(spacing: 18) {
+                    TextField("Meeting title", text: $session.title)
+                        .font(.title3.weight(.semibold))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                        .accessibilityLabel("Meeting title")
 
-                ProgressView(value: Double(session.recorder.level))
-                    .progressViewStyle(.linear)
-                    .tint(.red)
-                    .padding(.horizontal, 40)
-                    .accessibilityLabel("Microphone level")
+                    statusHeader
 
-                transcriptArea
-                    .frame(maxHeight: .infinity)
+                    waveform
 
-                controls
-                    .padding(.bottom, 24)
+                    transcriptCard
+                        .frame(maxHeight: .infinity)
+
+                    controls
+                        .padding(.bottom, 18)
+                }
+                .padding(.top)
             }
-            .padding(.top)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -60,18 +62,29 @@ struct RecordingView: View {
                 Text("The audio and transcript so far will be deleted from this iPhone.")
             }
         }
+        .preferredColorScheme(.dark)
         .interactiveDismissDisabled()
         .task { await session.start() }
+        .task {
+            // Feed the waveform: sample the smoothed mic level ~12×/sec.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(80))
+                levels.removeFirst()
+                levels.append(session.recorder.level)
+            }
+        }
     }
 
-    // MARK: - Pieces
+    // MARK: - Status
 
     @ViewBuilder private var statusHeader: some View {
         switch session.phase {
         case .preparing:
             ProgressView("Preparing…")
+                .padding(.vertical, 20)
         case .saving:
             ProgressView("Finishing transcript…")
+                .padding(.vertical, 20)
         case .failed(let message):
             VStack(spacing: 12) {
                 Label(message, systemImage: "exclamationmark.triangle")
@@ -103,16 +116,24 @@ struct RecordingView: View {
             }
             .padding(.horizontal)
         default:
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(session.phase == .recording ? Color.red : Color.orange)
-                    .frame(width: 12, height: 12)
-                Text(session.phase == .recording ? "Recording" : "Paused")
-                    .font(.headline)
-                    .foregroundStyle(session.phase == .recording ? Color.red : Color.orange)
+            let isRecording = session.phase == .recording
+            VStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(isRecording ? Color.red : Color.orange)
+                        .frame(width: 9, height: 9)
+                    Text(isRecording ? "Recording" : "Paused")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(isRecording ? Color.red : Color.orange)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(.white.opacity(0.08), in: Capsule())
+
                 TimelineView(.periodic(from: .now, by: 0.5)) { _ in
                     Text(session.recorder.elapsed.clockString)
-                        .font(.title2.monospacedDigit().weight(.medium))
+                        .font(.system(size: 54, weight: .medium, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.white)
                 }
             }
             .accessibilityElement(children: .combine)
@@ -126,30 +147,76 @@ struct RecordingView: View {
         }
     }
 
-    @ViewBuilder private var transcriptArea: some View {
-        switch session.transcription.availability {
-        case .downloadingModel:
-            VStack(spacing: 8) {
-                ProgressView("Downloading transcription model…")
-                Text("Recording continues while the model downloads — the live transcript starts once it's ready. This only happens once.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+    // MARK: - Waveform
+
+    private var waveform: some View {
+        HStack(alignment: .center, spacing: 3.5) {
+            ForEach(levels.indices, id: \.self) { index in
+                Capsule()
+                    .fill(.white.opacity(session.phase == .recording ? 0.85 : 0.3))
+                    .frame(width: 3, height: 6 + CGFloat(levels[index]) * 54)
             }
-            .padding()
-        case .unavailable(let reason):
+        }
+        .frame(height: 64)
+        .animation(.linear(duration: 0.08), value: levels)
+        .accessibilityLabel("Microphone level")
+        .accessibilityValue("\(Int(session.recorder.level * 100)) percent")
+        .accessibilityAddTraits(.updatesFrequently)
+    }
+
+    // MARK: - Transcript
+
+    private var transcriptCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Live Transcript", systemImage: "text.quote")
+                .font(.caption.weight(.semibold))
+                .textCase(.uppercase)
+                .foregroundStyle(.white.opacity(0.55))
+            transcriptArea
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .padding(16)
+        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .padding(.horizontal)
+    }
+
+    @ViewBuilder private var transcriptArea: some View {
+        if !session.isTranscriptionEnabled {
             VStack(spacing: 8) {
-                Image(systemName: "text.bubble")
+                Image(systemName: "waveform.slash")
                     .font(.title2)
                     .foregroundStyle(.secondary)
-                Text(reason)
+                Text("Live transcription is turned off. The audio is still being recorded — turn transcription on in Settings for future meetings.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
-            .padding()
-        default:
-            liveTranscript
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            switch session.transcription.availability {
+            case .downloadingModel:
+                VStack(spacing: 8) {
+                    ProgressView("Downloading transcription model…")
+                    Text("Recording continues while the model downloads — the live transcript starts once it's ready. This only happens once.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .unavailable(let reason):
+                VStack(spacing: 8) {
+                    Image(systemName: "text.bubble")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                    Text(reason)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            default:
+                liveTranscript
+            }
         }
     }
 
@@ -163,6 +230,7 @@ struct RecordingView: View {
                     }
                     ForEach(Array(session.transcription.segments.enumerated()), id: \.offset) { _, segment in
                         Text(segment.text)
+                            .foregroundStyle(.white.opacity(0.92))
                     }
                     if !session.transcription.volatileText.isEmpty {
                         Text(session.transcription.volatileText)
@@ -172,8 +240,8 @@ struct RecordingView: View {
                         .frame(height: 1)
                         .id("transcript-bottom")
                 }
+                .font(.callout)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal)
             }
             .onChange(of: session.transcription.segments.count) {
                 withAnimation { proxy.scrollTo("transcript-bottom", anchor: .bottom) }
@@ -184,38 +252,62 @@ struct RecordingView: View {
         }
     }
 
+    // MARK: - Controls
+
     @ViewBuilder private var controls: some View {
         let isActive = session.phase == .recording || session.phase == .paused
-        HStack(spacing: 56) {
-            Button {
-                if session.phase == .recording {
-                    session.pause()
-                } else {
-                    session.resume()
-                }
-            } label: {
-                Image(systemName: session.phase == .recording ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 56))
-                    .foregroundStyle(.primary)
-            }
-            .disabled(!isActive)
-            .accessibilityLabel(session.phase == .recording ? "Pause recording" : "Resume recording")
-
-            Button {
-                Task {
-                    // nil = save failed; the session enters .failed and this
-                    // screen shows Save Recording / Discard instead of closing.
-                    if let meeting = await session.finish(in: context) {
-                        onFinish(meeting)
+        HStack(spacing: 52) {
+            VStack(spacing: 6) {
+                Button {
+                    if session.phase == .recording {
+                        session.pause()
+                    } else {
+                        session.resume()
                     }
+                } label: {
+                    Image(systemName: session.phase == .recording ? "pause.fill" : "play.fill")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 64, height: 64)
+                        .background(.white.opacity(0.12), in: Circle())
                 }
-            } label: {
-                Image(systemName: "stop.circle.fill")
-                    .font(.system(size: 72))
-                    .foregroundStyle(.red)
+                .buttonStyle(PressableButtonStyle())
+                .disabled(!isActive)
+                .accessibilityLabel(session.phase == .recording ? "Pause recording" : "Resume recording")
+                Text(session.phase == .recording ? "Pause" : "Resume")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.6))
             }
-            .disabled(!isActive)
-            .accessibilityLabel("Stop and save recording")
+
+            VStack(spacing: 6) {
+                Button {
+                    Task {
+                        // nil = save failed; the session enters .failed and this
+                        // screen shows Save Recording / Discard instead of closing.
+                        if let meeting = await session.finish(in: context) {
+                            onFinish(meeting)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 30, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 78, height: 78)
+                        .background(
+                            LinearGradient(colors: [.red, .red.opacity(0.75)],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing),
+                            in: Circle()
+                        )
+                        .shadow(color: .red.opacity(0.4), radius: 14, y: 6)
+                }
+                .buttonStyle(PressableButtonStyle())
+                .disabled(!isActive)
+                .accessibilityLabel("Stop and save recording")
+                Text("Stop & Save")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.6))
+            }
         }
+        .opacity(isActive ? 1 : 0.4)
     }
 }

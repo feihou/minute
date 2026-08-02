@@ -14,7 +14,8 @@ final class MinuteUITests: XCTestCase {
 
         app.buttons["Settings"].firstMatch.tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Recording Consent"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["Audio Quality"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.switches["Live Transcription"].exists)
 
         app.buttons["Done"].tap()
         XCTAssertTrue(app.navigationBars["Minute"].waitForExistence(timeout: 5))
@@ -31,5 +32,52 @@ final class MinuteUITests: XCTestCase {
 
         app.buttons["Cancel"].tap()
         XCTAssertTrue(app.navigationBars["Minute"].waitForExistence(timeout: 5))
+    }
+
+    /// Walks record → save → detail → settings, attaching a screenshot at every
+    /// stage. Doubles as the visual-regression tour for the redesigned UI.
+    @MainActor
+    func testFullTourWithScreenshots() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        XCTAssertTrue(app.navigationBars["Minute"].waitForExistence(timeout: 5))
+        snap(app, "01-home")
+
+        app.buttons["New Meeting"].firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["New Meeting"].waitForExistence(timeout: 5))
+        snap(app, "02-new-meeting")
+
+        app.buttons["Start Recording"].tap()
+        XCTAssertTrue(app.staticTexts["Recording"].waitForExistence(timeout: 15))
+        // Let the level meter and elapsed time move before capturing.
+        sleep(3)
+        snap(app, "03-recording")
+
+        app.buttons["Stop and save recording"].tap()
+        XCTAssertTrue(app.buttons["More"].waitForExistence(timeout: 20))
+        snap(app, "04-detail-summary")
+
+        app.buttons["Transcript"].tap()
+        snap(app, "05-detail-transcript")
+
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["Minute"].waitForExistence(timeout: 5))
+        snap(app, "06-home-with-meeting")
+
+        app.buttons["Settings"].firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+        snap(app, "07-settings-top")
+
+        app.swipeUp()
+        snap(app, "08-settings-bottom")
+    }
+
+    @MainActor
+    private func snap(_ app: XCUIApplication, _ name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 }

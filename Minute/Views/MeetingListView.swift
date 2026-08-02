@@ -7,6 +7,7 @@ struct MeetingListView: View {
     @Environment(\.modelContext) private var context
     @Query(sort: \Meeting.createdAt, order: .reverse) private var meetings: [Meeting]
 
+    @State private var searchText = ""
     @State private var draftTitle = ""
     @State private var showingNewMeeting = false
     @State private var showingSettings = false
@@ -18,25 +19,9 @@ struct MeetingListView: View {
         NavigationStack {
             Group {
                 if meetings.isEmpty {
-                    ContentUnavailableView {
-                        Label("No Meetings", systemImage: "mic")
-                    } description: {
-                        Text("Record a meeting and Minute will transcribe and summarize it — entirely on this iPhone.")
-                    } actions: {
-                        Button("New Meeting") { beginNewMeeting() }
-                            .buttonStyle(.borderedProminent)
-                    }
+                    emptyState
                 } else {
-                    List {
-                        ForEach(meetings) { meeting in
-                            NavigationLink {
-                                MeetingDetailView(meeting: meeting)
-                            } label: {
-                                MeetingRowView(meeting: meeting)
-                            }
-                        }
-                        .onDelete(perform: deleteMeetings)
-                    }
+                    meetingList
                 }
             }
             .navigationTitle("Minute")
@@ -48,16 +33,15 @@ struct MeetingListView: View {
                         Label("Settings", systemImage: "gearshape")
                     }
                 }
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        beginNewMeeting()
-                    } label: {
-                        Label("New Meeting", systemImage: "plus")
-                    }
-                }
             }
             .navigationDestination(item: $justFinished) { meeting in
-                MeetingDetailView(meeting: meeting)
+                MeetingDetailView(meeting: meeting, autoGenerateSummary: AppSettings.autoSummarizeEnabled)
+            }
+            .safeAreaInset(edge: .bottom) {
+                if !meetings.isEmpty {
+                    recordButton
+                        .padding(.bottom, 6)
+                }
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -97,44 +81,229 @@ struct MeetingListView: View {
         }
     }
 
+    // MARK: - List
+
+    private var meetingList: some View {
+        List {
+            ForEach(groupedMeetings, id: \.title) { group in
+                Section(group.title) {
+                    ForEach(group.items) { meeting in
+                        NavigationLink {
+                            MeetingDetailView(meeting: meeting)
+                        } label: {
+                            MeetingRowView(meeting: meeting)
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                MeetingStore.delete(meeting, context: context)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                        .contextMenu {
+                            Button {
+                                UIPasteboard.general.string = NotesExporter.notesText(for: meeting)
+                            } label: {
+                                Label("Copy Notes", systemImage: "doc.on.doc")
+                            }
+                            ShareLink(item: NotesExporter.notesText(for: meeting)) {
+                                Label("Share Notes", systemImage: "square.and.arrow.up")
+                            }
+                            Divider()
+                            Button(role: .destructive) {
+                                MeetingStore.delete(meeting, context: context)
+                            } label: {
+                                Label("Delete Meeting", systemImage: "trash")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .searchable(text: $searchText, prompt: "Search titles, transcripts, notes")
+        .overlay {
+            if groupedMeetings.isEmpty, !searchText.isEmpty {
+                ContentUnavailableView.search(text: searchText)
+            }
+        }
+    }
+
+    private var filteredMeetings: [Meeting] {
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return meetings.map { $0 } }
+        // ponytail: linear scan of full transcripts per keystroke; switch to an
+        // indexed fetch predicate if libraries ever get huge.
+        return meetings.filter { meeting in
+            meeting.title.localizedCaseInsensitiveContains(query)
+                || meeting.transcriptText.localizedCaseInsensitiveContains(query)
+                || summaryMatches(meeting.summary, query: query)
+        }
+    }
+
+    /// Searches every field the app presents as the meeting's notes.
+    private func summaryMatches(_ summary: MeetingSummary?, query: String) -> Bool {
+        guard let summary else { return false }
+        let fields = [summary.overview] + summary.keyPoints + summary.decisions
+            + summary.openQuestions + summary.actionItems.flatMap { [$0.task, $0.owner] }
+        return fields.contains { $0.localizedCaseInsensitiveContains(query) }
+    }
+
+    private var groupedMeetings: [(title: String, items: [Meeting])] {
+        var order: [String] = []
+        var byTitle: [String: [Meeting]] = [:]
+        for meeting in filteredMeetings {
+            let title = MeetingDateGroup.title(for: meeting.createdAt)
+            if byTitle[title] == nil {
+                order.append(title)
+            }
+            byTitle[title, default: []].append(meeting)
+        }
+        return order.map { (title: $0, items: byTitle[$0] ?? []) }
+    }
+
+    // MARK: - Empty state
+
+    private var emptyState: some View {
+        // ScrollView keeps the primary action reachable at accessibility
+        // Dynamic Type sizes, where the content exceeds the screen height.
+        ScrollView {
+            VStack(spacing: 0) {
+                emptyStateContent
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 36)
+            .padding(.bottom, 28)
+        }
+    }
+
+    @ViewBuilder private var emptyStateContent: some View {
+            ZStack {
+                Circle()
+                    .fill(LinearGradient.brand)
+                    .frame(width: 96, height: 96)
+                    .shadow(color: Color.accentColor.opacity(0.35), radius: 18, y: 8)
+                Image(systemName: "waveform")
+                    .font(.system(size: 40, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .accessibilityHidden(true)
+            .padding(.bottom, 24)
+
+            Text("Capture your first meeting")
+                .font(.title2.bold())
+                .padding(.bottom, 6)
+            Text("Record the room, watch the live transcript, and let on-device intelligence write the notes.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 36)
+                .padding(.bottom, 28)
+
+            VStack(alignment: .leading, spacing: 16) {
+                featureRow("mic.fill", "Record", "High-quality audio with pause and resume")
+                featureRow("text.quote", "Transcribe", "Live speech-to-text as the meeting happens")
+                featureRow("sparkles", "Summarize", "Key points, decisions, and action items")
+                featureRow("lock.fill", "Private", "Everything stays on this iPhone")
+            }
+            .padding(.horizontal, 44)
+
+            recordButton
+                .padding(.top, 36)
+    }
+
+    private func featureRow(_ systemImage: String, _ title: String, _ caption: String) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: systemImage)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 34, height: 34)
+                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(caption)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    // MARK: - Record button
+
+    private var recordButton: some View {
+        Button {
+            beginNewMeeting()
+        } label: {
+            Label("New Meeting", systemImage: "mic.fill")
+                .font(.headline)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 30)
+                .padding(.vertical, 15)
+                .background(LinearGradient.brand, in: Capsule())
+                .shadow(color: Color.accentColor.opacity(0.35), radius: 14, y: 6)
+        }
+        .buttonStyle(PressableButtonStyle())
+        .accessibilityHint("Starts a new recording")
+    }
+
     private func beginNewMeeting() {
         draftTitle = RecordingSession.defaultTitle()
         showingNewMeeting = true
     }
-
-    private func deleteMeetings(at offsets: IndexSet) {
-        for index in offsets {
-            MeetingStore.delete(meetings[index], context: context)
-        }
-    }
 }
+
+// MARK: - Row
 
 struct MeetingRowView: View {
     let meeting: Meeting
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(meeting.title)
-                .font(.headline)
-                .lineLimit(1)
-            HStack(spacing: 6) {
-                Text(meeting.createdAt.formatted(date: .abbreviated, time: .shortened))
-                if meeting.duration > 0 {
-                    Text("·")
-                    Text(meeting.duration.clockString)
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(LinearGradient.brand)
+                Image(systemName: "waveform")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 42, height: 42)
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(meeting.title)
+                    .font(.headline)
+                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(meeting.createdAt.formatted(date: .abbreviated, time: .shortened))
+                    if meeting.duration > 0 {
+                        Text("·")
+                        Text(meeting.duration.clockString)
+                    }
                 }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
                 if meeting.summary != nil {
-                    Text("·")
-                    Label("Summarized", systemImage: "sparkles")
-                        .labelStyle(.titleOnly)
+                    statusChip("Summarized", systemImage: "sparkles", tint: .accentColor)
+                } else if meeting.hasTranscript {
+                    statusChip("Transcript", systemImage: "text.quote", tint: .secondary)
                 }
             }
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
+    }
+
+    private func statusChip(_ text: String, systemImage: String, tint: Color) -> some View {
+        Label(text, systemImage: systemImage)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(tint.opacity(0.12), in: Capsule())
     }
 }
+
+// MARK: - New meeting sheet
 
 struct NewMeetingSheet: View {
     @Binding var title: String
@@ -144,24 +313,65 @@ struct NewMeetingSheet: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Title") {
-                    TextField("Meeting title", text: $title)
-                        .submitLabel(.done)
+            // ScrollView keeps Start Recording and the consent notice
+            // reachable with the keyboard up or at large Dynamic Type.
+            ScrollView {
+            VStack(spacing: 0) {
+                ZStack {
+                    Circle()
+                        .fill(LinearGradient.brand)
+                        .frame(width: 68, height: 68)
+                        .shadow(color: Color.accentColor.opacity(0.3), radius: 12, y: 5)
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(.white)
                 }
-                Section {
-                    Button {
-                        dismiss()
-                        onStart()
-                    } label: {
-                        Label("Start Recording", systemImage: "record.circle.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .listRowInsets(EdgeInsets())
-                } footer: {
-                    Text("Minute records with the microphone and keeps everything on this iPhone. Make sure everyone in the room knows the meeting is being recorded.")
+                .accessibilityHidden(true)
+                .padding(.top, 28)
+                .padding(.bottom, 18)
+
+                Text("Give it a title you'll recognize later.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 14)
+
+                TextField("Meeting title", text: $title)
+                    .font(.body)
+                    .multilineTextAlignment(.center)
+                    .submitLabel(.done)
+                    .padding(13)
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 22)
+                    .accessibilityLabel("Meeting title")
+
+                Button {
+                    dismiss()
+                    onStart()
+                } label: {
+                    Label("Start Recording", systemImage: "record.circle.fill")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 15)
+                        .background(
+                            LinearGradient(colors: [.red, .red.opacity(0.78)],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing),
+                            in: Capsule()
+                        )
+                        .shadow(color: .red.opacity(0.3), radius: 12, y: 5)
                 }
+                .buttonStyle(PressableButtonStyle())
+                .padding(.horizontal, 24)
+                .padding(.bottom, 14)
+
+                Label("Recording stays on this iPhone. Make sure everyone in the room knows the meeting is being recorded.",
+                      systemImage: "lock.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, 16)
+            }
             }
             .navigationTitle("New Meeting")
             .navigationBarTitleDisplayMode(.inline)
@@ -171,7 +381,7 @@ struct NewMeetingSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
     }
 }
 
