@@ -59,6 +59,20 @@ enum MeetingStore {
         ModelConfiguration(isStoredInMemoryOnly: inMemory, cloudKitDatabase: .none)
     }
 
+    #if DEBUG
+    /// Throw-free in-memory container for SwiftUI previews, which can't
+    /// handle a throwing initializer. An in-memory store has nothing to
+    /// fail on, so the fallback only fires if SwiftData itself is broken.
+    @MainActor
+    static func previewContainer() -> ModelContainer {
+        do {
+            return try ModelContainer(for: Meeting.self, configurations: modelConfiguration(inMemory: true))
+        } catch {
+            fatalError("Unable to create the in-memory preview container: \(error)")
+        }
+    }
+    #endif
+
     static func recordingsDirectory() throws -> URL {
         applyBackupPolicy()
         if useEphemeralStorage {

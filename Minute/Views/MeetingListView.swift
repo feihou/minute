@@ -452,7 +452,5 @@ struct NewMeetingSheet: View {
 
 #Preview {
     MeetingListView()
-        .modelContainer(
-            try! ModelContainer(for: Meeting.self, configurations: MeetingStore.modelConfiguration(inMemory: true))
-        )
+        .modelContainer(MeetingStore.previewContainer())
 }
