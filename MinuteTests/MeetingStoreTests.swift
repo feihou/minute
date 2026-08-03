@@ -90,7 +90,12 @@ struct MeetingStoreTests {
         try Data("kept".utf8).write(to: keptURL)
         try Data("orphan".utf8).write(to: orphanURL)
 
-        MeetingStore.removeOrphanedAudio(referencedFileNames: [keptName])
+        // Reference every other file on disk so concurrently running tests
+        // (e.g. AudioImporterTests mid-import) keep their fixtures; only our
+        // orphan is sweepable.
+        let directory = try MeetingStore.recordingsDirectory()
+        let existing = Set((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? [])
+        MeetingStore.removeOrphanedAudio(referencedFileNames: existing.subtracting([orphanName]))
 
         #expect(FileManager.default.fileExists(atPath: keptURL.path))
         #expect(!FileManager.default.fileExists(atPath: orphanURL.path))

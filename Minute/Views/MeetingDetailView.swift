@@ -77,7 +77,10 @@ struct MeetingDetailView: View {
                         Label(meeting.summary == nil ? "Generate Summary" : "Regenerate Summary",
                               systemImage: "sparkles")
                     }
-                    .disabled(!meeting.hasTranscript || isGenerating)
+                    // Also blocked during re-transcription: summarizing a
+                    // transcript that's being replaced would save notes for
+                    // text the user never sees again.
+                    .disabled(!meeting.hasTranscript || isGenerating || isRetranscribing)
                     Picker(selection: $summaryTemplateID) {
                         ForEach(SummaryTemplate.all) { template in
                             Text(template.name).tag(template.id)
@@ -385,7 +388,7 @@ struct MeetingDetailView: View {
     // MARK: - Actions
 
     private func generateSummary() {
-        guard !isGenerating else { return }
+        guard !isGenerating, !isRetranscribing else { return }
         isGenerating = true
         summaryError = nil
         generationStatus = nil
@@ -419,7 +422,7 @@ struct MeetingDetailView: View {
     }
 
     private func retranscribe() {
-        guard !isRetranscribing, let url = MeetingStore.audioURL(for: meeting) else { return }
+        guard !isRetranscribing, !isGenerating, let url = MeetingStore.audioURL(for: meeting) else { return }
         isRetranscribing = true
         transcriptError = nil
         selectedTab = .transcript

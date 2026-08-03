@@ -139,32 +139,30 @@ final class TranscriptionService {
         }
     }
 
-    /// Transcribes a whole audio file (the import path). Unlike the live path,
-    /// failures throw — the caller decides whether an import without a
-    /// transcript is still worth keeping.
+    /// Transcribes a whole audio file (the import and re-transcribe path).
+    /// Unlike the live path, ANY failure throws — including a failure of the
+    /// results stream after partial output. Callers replacing an existing
+    /// transcript must never mistake a partial result for a complete one.
     func transcribe(file: AVAudioFile) async throws -> [TranscriptSegment] {
         guard availability == .available, let transcriber else {
             throw CocoaError(.featureUnsupported)
         }
-        segments = []
-        volatileText = ""
 
-        resultsTask = Task { @MainActor [weak self] in
-            do {
-                for try await result in transcriber.results {
-                    guard let self else { break }
-                    let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-                    if result.isFinal, !text.isEmpty {
-                        self.segments.append(TranscriptSegment(
-                            text: text,
-                            start: result.range.start.seconds,
-                            end: result.range.end.seconds
-                        ))
-                    }
+        // Collected locally (not via the live path's shared state) so a
+        // stream error propagates instead of being logged away.
+        let collector = Task { @MainActor () throws -> [TranscriptSegment] in
+            var collected: [TranscriptSegment] = []
+            for try await result in transcriber.results {
+                let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+                if result.isFinal, !text.isEmpty {
+                    collected.append(TranscriptSegment(
+                        text: text,
+                        start: result.range.start.seconds,
+                        end: result.range.end.seconds
+                    ))
                 }
-            } catch {
-                Self.logger.error("File transcription results stream failed: \(error.localizedDescription)")
             }
+            return collected
         }
 
         let analyzer = SpeechAnalyzer(modules: [transcriber])
@@ -176,13 +174,10 @@ final class TranscriptionService {
             }
         } catch {
             await analyzer.cancelAndFinishNow()
-            resultsTask?.cancel()
-            resultsTask = nil
+            collector.cancel()
             throw error
         }
-        await resultsTask?.value
-        resultsTask = nil
-        return segments
+        return try await collector.value
     }
 
     /// Flushes remaining audio, waits for final results, and returns them.
