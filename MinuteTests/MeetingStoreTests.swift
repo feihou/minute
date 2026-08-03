@@ -8,7 +8,7 @@ struct MeetingStoreTests {
     @Test func deleteRemovesMeetingAndAudioFile() throws {
         let container = try ModelContainer(
             for: Meeting.self,
-            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+            configurations: MeetingStore.modelConfiguration(inMemory: true)
         )
         let context = container.mainContext
 

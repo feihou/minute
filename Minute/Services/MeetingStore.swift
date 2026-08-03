@@ -51,6 +51,14 @@ enum MeetingStore {
         try url.setResourceValues(values)
     }
 
+    /// A local-only SwiftData configuration. The iCloud Documents
+    /// entitlement makes SwiftData's `.automatic` mode assume CloudKit
+    /// mirroring and reject the schema — Minute copies files to iCloud,
+    /// it never syncs the database.
+    static func modelConfiguration(inMemory: Bool = false) -> ModelConfiguration {
+        ModelConfiguration(isStoredInMemoryOnly: inMemory, cloudKitDatabase: .none)
+    }
+
     static func recordingsDirectory() throws -> URL {
         applyBackupPolicy()
         if useEphemeralStorage {
