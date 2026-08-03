@@ -48,8 +48,13 @@ struct MeetingListView: View {
                 }
             }
             .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.audio]) { result in
-                if case .success(let url) = result {
+                switch result {
+                case .success(let url):
                     startImport(url)
+                case .failure(let error):
+                    // E.g. the provider couldn't materialize the file —
+                    // silence here would look like the tap did nothing.
+                    importError = error.localizedDescription
                 }
             }
             .alert("Import Failed", isPresented: Binding(

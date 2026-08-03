@@ -46,8 +46,14 @@ enum AudioImporter {
         let destination: URL
         do {
             destination = try MeetingStore.audioURL(fileName: fileName)
-            try FileManager.default.copyItem(at: sourceURL, to: destination)
+            // Copying happens off the main actor: large files (or files a
+            // provider must download first) would otherwise freeze the UI
+            // and make the Cancel button untappable.
+            try await Self.copyFile(from: sourceURL, to: destination)
         } catch {
+            // A failed copy can leave a partial file behind; never let it
+            // linger invisibly in Recordings.
+            MeetingStore.deleteAudioFile(named: fileName)
             throw ImportError.copyFailed
         }
 
@@ -91,5 +97,11 @@ enum AudioImporter {
             throw ImportError.saveFailed
         }
         return meeting
+    }
+
+    /// Runs off the main actor (nonisolated async), keeping the UI live
+    /// while large files copy.
+    private nonisolated static func copyFile(from source: URL, to destination: URL) async throws {
+        try FileManager.default.copyItem(at: source, to: destination)
     }
 }
