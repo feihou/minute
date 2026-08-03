@@ -84,8 +84,9 @@ struct MeetingListView: View {
                         }
                         .font(.footnote.weight(.medium))
                     }
-                    .padding(10)
-                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 16))
                     .padding(.horizontal)
                 }
             }
@@ -106,7 +107,7 @@ struct MeetingListView: View {
                     .font(.footnote)
                     .padding(10)
                     .frame(maxWidth: .infinity)
-                    .background(.yellow.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
+                    .glassEffect(.regular.tint(.yellow.opacity(0.35)), in: .rect(cornerRadius: 16))
                     .padding(.horizontal)
             }
         }
@@ -284,13 +285,11 @@ struct MeetingListView: View {
         } label: {
             Label("New Meeting", systemImage: "mic.fill")
                 .font(.headline)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 30)
-                .padding(.vertical, 15)
-                .background(LinearGradient.brand, in: Capsule())
-                .shadow(color: Color.accentColor.opacity(0.35), radius: 14, y: 6)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
         }
-        .buttonStyle(PressableButtonStyle())
+        .buttonStyle(.glassProminent)
+        .controlSize(.large)
         .accessibilityHint("Starts a new recording")
     }
 
@@ -416,17 +415,12 @@ struct NewMeetingSheet: View {
                 } label: {
                     Label("Start Recording", systemImage: "record.circle.fill")
                         .font(.headline)
-                        .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 15)
-                        .background(
-                            LinearGradient(colors: [.red, .red.opacity(0.78)],
-                                           startPoint: .topLeading, endPoint: .bottomTrailing),
-                            in: Capsule()
-                        )
-                        .shadow(color: .red.opacity(0.3), radius: 12, y: 5)
+                        .padding(.vertical, 6)
                 }
-                .buttonStyle(PressableButtonStyle())
+                .buttonStyle(.glassProminent)
+                .controlSize(.large)
+                .tint(.red)
                 .padding(.horizontal, 24)
                 .padding(.bottom, 14)
 

@@ -128,7 +128,7 @@ struct RecordingView: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 7)
-                .background(.white.opacity(0.08), in: Capsule())
+                .glassEffect()
 
                 TimelineView(.periodic(from: .now, by: 0.5)) { _ in
                     Text(session.recorder.elapsed.clockString)
@@ -256,56 +256,53 @@ struct RecordingView: View {
 
     @ViewBuilder private var controls: some View {
         let isActive = session.phase == .recording || session.phase == .paused
-        HStack(spacing: 52) {
-            VStack(spacing: 6) {
-                Button {
-                    if session.phase == .recording {
-                        session.pause()
-                    } else {
-                        session.resume()
-                    }
-                } label: {
-                    Image(systemName: session.phase == .recording ? "pause.fill" : "play.fill")
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 64, height: 64)
-                        .background(.white.opacity(0.12), in: Circle())
-                }
-                .buttonStyle(PressableButtonStyle())
-                .disabled(!isActive)
-                .accessibilityLabel(session.phase == .recording ? "Pause recording" : "Resume recording")
-                Text(session.phase == .recording ? "Pause" : "Resume")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.6))
-            }
-
-            VStack(spacing: 6) {
-                Button {
-                    Task {
-                        // nil = save failed; the session enters .failed and this
-                        // screen shows Save Recording / Discard instead of closing.
-                        if let meeting = await session.finish(in: context) {
-                            onFinish(meeting)
+        GlassEffectContainer {
+            HStack(spacing: 52) {
+                VStack(spacing: 6) {
+                    Button {
+                        if session.phase == .recording {
+                            session.pause()
+                        } else {
+                            session.resume()
                         }
+                    } label: {
+                        Image(systemName: session.phase == .recording ? "pause.fill" : "play.fill")
+                            .font(.system(size: 24, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 64, height: 64)
+                            .glassEffect(.regular.interactive(), in: .circle)
                     }
-                } label: {
-                    Image(systemName: "stop.fill")
-                        .font(.system(size: 30, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 78, height: 78)
-                        .background(
-                            LinearGradient(colors: [.red, .red.opacity(0.75)],
-                                           startPoint: .topLeading, endPoint: .bottomTrailing),
-                            in: Circle()
-                        )
-                        .shadow(color: .red.opacity(0.4), radius: 14, y: 6)
+                    .buttonStyle(.plain)
+                    .disabled(!isActive)
+                    .accessibilityLabel(session.phase == .recording ? "Pause recording" : "Resume recording")
+                    Text(session.phase == .recording ? "Pause" : "Resume")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.6))
                 }
-                .buttonStyle(PressableButtonStyle())
-                .disabled(!isActive)
-                .accessibilityLabel("Stop and save recording")
-                Text("Stop & Save")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.6))
+
+                VStack(spacing: 6) {
+                    Button {
+                        Task {
+                            // nil = save failed; the session enters .failed and this
+                            // screen shows Save Recording / Discard instead of closing.
+                            if let meeting = await session.finish(in: context) {
+                                onFinish(meeting)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 30, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 78, height: 78)
+                            .glassEffect(.regular.tint(.red).interactive(), in: .circle)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!isActive)
+                    .accessibilityLabel("Stop and save recording")
+                    Text("Stop & Save")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.6))
+                }
             }
         }
         .opacity(isActive ? 1 : 0.4)

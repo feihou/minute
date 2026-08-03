@@ -326,12 +326,11 @@ struct MeetingDetailView: View {
                         } label: {
                             Label("Generate Summary", systemImage: "sparkles")
                                 .font(.headline)
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 22)
-                                .padding(.vertical, 11)
-                                .background(LinearGradient.brand, in: Capsule())
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 4)
                         }
-                        .buttonStyle(PressableButtonStyle())
+                        .buttonStyle(.glassProminent)
+                        .controlSize(.large)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 10)
