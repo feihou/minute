@@ -17,5 +17,5 @@ jobs:
     container:
       image: ghcr.io/realm/swiftlint:latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: swiftlint --reporter github-actions-logging
