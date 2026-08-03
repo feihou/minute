@@ -45,7 +45,7 @@ Meeting audio is some of the most sensitive data on your phone. Most meeting-not
 | | **iCloud Backup** | **iCloud Drive Folder** |
 |---|---|---|
 | Where it lands | Inside the iPhone's device backup blob — not browsable | `Files → iCloud Drive → Minute → <your iPhone>/<date> <title>/` |
-| What you see | Nothing in Files; the app appears in Settings → iCloud → iCloud Backup with its size | One folder per meeting containing `notes.md` and the audio file |
+| What you see | Nothing in Files; the app appears in Settings → iCloud → iCloud Backup with its size | One folder per meeting containing `notes.md` and the audio file (plus a hidden `.minute-<id>` marker the sync uses to recognize its own folders) |
 | When it updates | Whenever iOS runs a device backup (charging, locked, Wi-Fi) | When you leave the app |
 | Getting data back | Only by restoring the whole iPhone from that backup | Open or copy any file directly, on iPhone or Mac |
 
