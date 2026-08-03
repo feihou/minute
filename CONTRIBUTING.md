@@ -15,6 +15,8 @@ Thanks for helping build a meeting-notes app that respects privacy. This guide g
 
 The project uses Xcode's synchronized folder groups: any file you add under `Minute/`, `MinuteTests/`, or `MinuteUITests/` is picked up automatically — no project-file surgery needed.
 
+> **Note:** opening the project may dirty `project.pbxproj` and the scheme — Xcode inserts your personal signing team (needed for device builds) and version stamps. That's expected; keep those changes local and don't include them in commits.
+
 ## Simulator caveats (read this before filing a "transcription is broken" issue)
 
 | Capability | Simulator | Physical iPhone |
