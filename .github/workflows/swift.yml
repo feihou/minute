@@ -1,7 +1,9 @@
 # Compile check + unit tests for the Minute Xcode project (this repo is not
 # a Swift package, so `swift build` cannot work here). Signing is disabled.
-# Tests that need Apple Intelligence or SpeechTranscriber skip gracefully on
-# CI simulators, which have neither; they run fully on a developer device.
+# SummarizationIntegrationTests is excluded below: CI simulators REPORT
+# Apple Intelligence as available but ship no model assets, so generation
+# fails with ModelManagerError 1026 — the availability gate can't save us
+# here. Those tests run on developer machines, where the model exists.
 
 name: Swift
 
@@ -66,4 +68,5 @@ jobs:
           -scheme Minute \
           -destination "platform=iOS Simulator,id=$UDID" \
           -only-testing:MinuteTests \
+          -skip-testing:MinuteTests/SummarizationIntegrationTests \
           CODE_SIGNING_ALLOWED=NO
