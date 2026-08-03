@@ -23,6 +23,7 @@ struct SettingsView: View {
     @State private var usage: (fileCount: Int, totalBytes: Int64) = (0, 0)
     @State private var confirmingDeleteAll = false
     @State private var deleteAllFailed = false
+    @State private var backupPolicyFailed = false
 
     var body: some View {
         NavigationStack {
@@ -34,10 +35,13 @@ struct SettingsView: View {
                 // In ephemeral-fallback mode the real recordings directory
                 // isn't in use, so the usage figure and the "delete all"
                 // promise would both be wrong — hide the section entirely.
+                // In ephemeral-fallback mode new recordings live in the
+                // temporary directory and the store is in-memory — neither is
+                // ever backed up, so the backup promise would be false too.
                 if !MeetingStore.useEphemeralStorage {
                     storageSection
+                    backupSection
                 }
-                backupSection
                 privacySection
                 capabilitiesSection
                 aboutSection
@@ -62,6 +66,11 @@ struct SettingsView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Every meeting, recording, transcript, and summary will be permanently deleted from this iPhone.")
+            }
+            .alert("Couldn't update backup setting", isPresented: $backupPolicyFailed) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Storage may be unavailable. Your choice is saved and will be applied automatically the next time the app launches.")
             }
             .alert("Some meetings couldn't be deleted", isPresented: $deleteAllFailed) {
                 Button("OK", role: .cancel) {}
@@ -205,7 +214,9 @@ struct SettingsView: View {
                 settingsLabel("iCloud Backup", systemImage: "icloud", tint: .blue)
             }
             .onChange(of: iCloudBackup) {
-                MeetingStore.applyBackupPolicy()
+                // A privacy control must not fail silently; the choice is
+                // saved and re-applied at every launch, so it self-heals.
+                backupPolicyFailed = !MeetingStore.applyBackupPolicy()
             }
         } header: {
             Text("Backup")

@@ -20,8 +20,12 @@ enum MeetingStore {
     /// toggle in Settings. Covers any corrupt store and older recordings still
     /// sitting there while the in-memory fallback is active, so this runs at
     /// launch independently of where new audio routes — and again whenever the
-    /// toggle changes.
-    static func applyBackupPolicy() {
+    /// toggle changes. Returns false when the flag couldn't be applied so the
+    /// Settings toggle can tell the user instead of failing silently; the
+    /// policy is re-applied at every launch and recordings-directory access,
+    /// so a transient failure heals itself.
+    @discardableResult
+    static func applyBackupPolicy() -> Bool {
         do {
             let base = try FileManager.default.url(
                 for: .applicationSupportDirectory,
@@ -30,8 +34,10 @@ enum MeetingStore {
                 create: true
             )
             try setExcludedFromBackup(!AppSettings.iCloudBackupEnabled, at: base)
+            return true
         } catch {
             logger.error("Applying the backup policy failed: \(error.localizedDescription)")
+            return false
         }
     }
 

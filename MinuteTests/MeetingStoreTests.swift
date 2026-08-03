@@ -39,6 +39,13 @@ struct MeetingStoreTests {
     }
 
     @Test func recordingsDirectoryIsExcludedFromBackupsByDefault() throws {
+        // Pin the precondition: UserDefaults persist on the simulator, so a
+        // toggle flipped in the host app would otherwise leak into this test.
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: AppSettings.iCloudBackupKey)
+        defaults.removeObject(forKey: AppSettings.iCloudBackupKey)
+        defer { previous.map { defaults.set($0, forKey: AppSettings.iCloudBackupKey) } }
+
         let directory = try MeetingStore.recordingsDirectory()
         let base = directory.deletingLastPathComponent()
         let values = try base.resourceValues(forKeys: [.isExcludedFromBackupKey])
