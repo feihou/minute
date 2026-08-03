@@ -37,7 +37,7 @@ Meeting audio is some of the most sensitive data on your phone. Most meeting-not
 | Summarization is local | Apple `FoundationModels` (Apple Intelligence on-device model) |
 | Delete means delete | Removing a meeting removes its `.m4a` and database row; orphaned audio is swept at launch |
 
-> The one network operation in the app's lifetime: when transcription is first prepared, iOS downloads Apple's on-device speech model assets (`AssetInventory`). That is Apple system infrastructure fetching a model — it never includes your recordings, transcripts, or any meeting content.
+> Beyond the opt-in iCloud Backup above, the one network operation in the app's lifetime: when transcription is first prepared, iOS downloads Apple's on-device speech model assets (`AssetInventory`). That is Apple system infrastructure fetching a model — it never includes your recordings, transcripts, or any meeting content.
 
 ## Requirements
 
