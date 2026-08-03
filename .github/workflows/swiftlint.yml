@@ -15,7 +15,12 @@ jobs:
   swiftlint:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/realm/swiftlint:latest
+      # Pinned: a mutable `latest` would let a SwiftLint release with new
+      # default rules break every PR without any change in this repo.
+      # Bump deliberately.
+      image: ghcr.io/realm/swiftlint:0.59.1
     steps:
       - uses: actions/checkout@v7
-      - run: swiftlint --reporter github-actions-logging
+      # --strict: warnings fail the job too — without it the gate stays
+      # green while violations pile up as annotations nobody reads.
+      - run: swiftlint --strict --reporter github-actions-logging

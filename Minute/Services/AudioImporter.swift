@@ -57,6 +57,10 @@ enum AudioImporter {
             throw ImportError.copyFailed
         }
 
+        // The synchronous copy can't observe cancellation itself — honor a
+        // Cancel tapped during it before any further expensive work.
+        try Self.checkCancellation(cleaningUp: fileName)
+
         let audioFile: AVAudioFile
         do {
             audioFile = try AVAudioFile(forReading: destination)
@@ -75,12 +79,7 @@ enum AudioImporter {
 
         // The user may have cancelled while the model worked; don't keep a
         // half-imported meeting behind their back.
-        do {
-            try Task.checkCancellation()
-        } catch {
-            MeetingStore.deleteAudioFile(named: fileName)
-            throw error
-        }
+        try Self.checkCancellation(cleaningUp: fileName)
 
         let meeting = Meeting(
             title: sourceURL.deletingPathExtension().lastPathComponent,
@@ -103,5 +102,16 @@ enum AudioImporter {
     /// while large files copy.
     private nonisolated static func copyFile(from source: URL, to destination: URL) async throws {
         try FileManager.default.copyItem(at: source, to: destination)
+    }
+
+    /// Rethrows cancellation after removing the partially imported audio,
+    /// so a cancelled import never leaves files behind.
+    private static func checkCancellation(cleaningUp fileName: String) throws {
+        do {
+            try Task.checkCancellation()
+        } catch {
+            MeetingStore.deleteAudioFile(named: fileName)
+            throw error
+        }
     }
 }

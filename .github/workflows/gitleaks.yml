@@ -5,8 +5,9 @@
 name: Secret Scan
 
 on:
+  # Every branch: a secret pushed to a feature branch of a public repo is
+  # just as exposed as one on main.
   push:
-    branches: [ "main" ]
   pull_request:
   schedule:
     - cron: "37 6 * * 1"

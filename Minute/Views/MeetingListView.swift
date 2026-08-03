@@ -52,9 +52,15 @@ struct MeetingListView: View {
                 case .success(let url):
                     startImport(url)
                 case .failure(let error):
-                    // E.g. the provider couldn't materialize the file —
-                    // silence here would look like the tap did nothing.
-                    importError = error.localizedDescription
+                    // Some providers report the picker's own Cancel as an
+                    // error — that's not a failure worth alerting. Real
+                    // failures (e.g. the file couldn't be materialized)
+                    // must surface, or the tap looks like it did nothing.
+                    let isUserCancel = error is CancellationError
+                        || (error as? CocoaError)?.code == .userCancelled
+                    if !isUserCancel {
+                        importError = error.localizedDescription
+                    }
                 }
             }
             .alert("Import Failed", isPresented: Binding(
