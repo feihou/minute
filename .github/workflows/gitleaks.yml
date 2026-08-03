@@ -23,6 +23,6 @@ jobs:
           # Full history — a secret committed and later "removed" is still
           # exposed and must still fail the scan.
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
