@@ -15,3 +15,11 @@ disabled_rules:
   # Short names like `id`, `x`, `to` are idiomatic in this codebase.
   - identifier_name
   - todo
+  # `var x: T? = nil` is required for memberwise-initializer defaults on
+  # the summary models — removing the `= nil` breaks call sites.
+  - redundant_optional_initialization
+  # Multiline literals deliberately keep trailing commas for clean diffs.
+  - trailing_comma
+  # Would push side-effecting calls (e.g. MeetingStore.delete) into
+  # `for … where` headers, hiding mutation.
+  - for_where
