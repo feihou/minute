@@ -38,11 +38,38 @@ struct MeetingStoreTests {
         #expect(MeetingStore.audioURL(for: meeting) == nil)
     }
 
-    @Test func recordingsDirectoryIsExcludedFromBackups() throws {
+    @Test func recordingsDirectoryIsExcludedFromBackupsByDefault() throws {
+        // Pin the precondition: UserDefaults persist on the simulator, so a
+        // toggle flipped in the host app would otherwise leak into this test.
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: AppSettings.iCloudBackupKey)
+        defaults.removeObject(forKey: AppSettings.iCloudBackupKey)
+        defer { previous.map { defaults.set($0, forKey: AppSettings.iCloudBackupKey) } }
+
         let directory = try MeetingStore.recordingsDirectory()
         let base = directory.deletingLastPathComponent()
         let values = try base.resourceValues(forKeys: [.isExcludedFromBackupKey])
         #expect(values.isExcludedFromBackup == true)
+    }
+
+    // On a scratch directory, not the real Application Support tree, so tests
+    // running concurrently never observe a flipped flag there.
+    @Test func backupExclusionFlagFollowsTheRequestedValue() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try MeetingStore.setExcludedFromBackup(true, at: directory)
+        // Fresh URL each read — URL caches resource values per instance.
+        var values = try URL(fileURLWithPath: directory.path)
+            .resourceValues(forKeys: [.isExcludedFromBackupKey])
+        #expect(values.isExcludedFromBackup == true)
+
+        try MeetingStore.setExcludedFromBackup(false, at: directory)
+        values = try URL(fileURLWithPath: directory.path)
+            .resourceValues(forKeys: [.isExcludedFromBackupKey])
+        #expect(values.isExcludedFromBackup == false)
     }
 
     @Test func ephemeralModeRoutesAudioToTemporaryDirectoryAndWipesIt() throws {

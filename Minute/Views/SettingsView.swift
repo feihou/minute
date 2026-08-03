@@ -17,11 +17,13 @@ struct SettingsView: View {
     @AppStorage(AppSettings.summaryTemplateKey) private var summaryTemplate = SummaryTemplate.standard.id
     @AppStorage(AppSettings.summaryContextKey) private var summaryContext = ""
     @AppStorage(AppSettings.summaryLanguageKey) private var summaryLanguage = ""
+    @AppStorage(AppSettings.iCloudBackupKey) private var iCloudBackup = false
 
     @State private var transcriptionStatus = "Checking…"
     @State private var usage: (fileCount: Int, totalBytes: Int64) = (0, 0)
     @State private var confirmingDeleteAll = false
     @State private var deleteAllFailed = false
+    @State private var backupPolicyFailed = false
 
     var body: some View {
         NavigationStack {
@@ -33,8 +35,12 @@ struct SettingsView: View {
                 // In ephemeral-fallback mode the real recordings directory
                 // isn't in use, so the usage figure and the "delete all"
                 // promise would both be wrong — hide the section entirely.
+                // In ephemeral-fallback mode new recordings live in the
+                // temporary directory and the store is in-memory — neither is
+                // ever backed up, so the backup promise would be false too.
                 if !MeetingStore.useEphemeralStorage {
                     storageSection
+                    backupSection
                 }
                 privacySection
                 capabilitiesSection
@@ -60,6 +66,11 @@ struct SettingsView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Every meeting, recording, transcript, and summary will be permanently deleted from this iPhone.")
+            }
+            .alert("Couldn't update backup setting", isPresented: $backupPolicyFailed) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Storage may be unavailable. Your choice is saved and will be applied automatically the next time the app launches.")
             }
             .alert("Some meetings couldn't be deleted", isPresented: $deleteAllFailed) {
                 Button("OK", role: .cancel) {}
@@ -197,9 +208,26 @@ struct SettingsView: View {
         }
     }
 
+    private var backupSection: some View {
+        Section {
+            Toggle(isOn: $iCloudBackup) {
+                settingsLabel("iCloud Backup", systemImage: "icloud", tint: .blue)
+            }
+            .onChange(of: iCloudBackup) {
+                // A privacy control must not fail silently; the choice is
+                // saved and re-applied at every launch, so it self-heals.
+                backupPolicyFailed = !MeetingStore.applyBackupPolicy()
+            }
+        } header: {
+            Text("Backup")
+        } footer: {
+            Text("Off by default. When on, recordings, transcripts, and summaries are included in this iPhone's iCloud (or computer) backup and come back when you restore the iPhone from that backup. Turning it off keeps meeting data out of future backups. Nothing else is uploaded — there is still no account and no server.")
+        }
+    }
+
     private var privacySection: some View {
         Section("Privacy") {
-            settingsLabel("Recordings, transcripts, and summaries stay on this iPhone.",
+            settingsLabel("Recordings, transcripts, and summaries stay on this iPhone unless you turn on iCloud Backup.",
                           systemImage: "iphone", tint: .green)
             settingsLabel("Transcription and summarization run entirely on device.",
                           systemImage: "cpu", tint: .green)

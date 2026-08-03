@@ -250,7 +250,7 @@ struct MeetingListView: View {
                 featureRow("mic.fill", "Record", "High-quality audio with pause and resume")
                 featureRow("text.quote", "Transcribe", "Live speech-to-text as the meeting happens")
                 featureRow("sparkles", "Summarize", "Key points, decisions, and action items")
-                featureRow("lock.fill", "Private", "Everything stays on this iPhone")
+                featureRow("lock.fill", "Private", "Stays on this iPhone unless you opt into iCloud Backup")
             }
             .padding(.horizontal, 44)
 
@@ -430,7 +430,7 @@ struct NewMeetingSheet: View {
                 .padding(.horizontal, 24)
                 .padding(.bottom, 14)
 
-                Label("Recording stays on this iPhone. Make sure everyone in the room knows the meeting is being recorded.",
+                Label("Recording stays on this iPhone (and your iCloud backup, if enabled). Make sure everyone in the room knows the meeting is being recorded.",
                       systemImage: "lock.fill")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
