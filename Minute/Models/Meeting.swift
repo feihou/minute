@@ -15,6 +15,10 @@ final class Meeting {
     var audioFileName: String?
     var segments: [TranscriptSegment]
     var summary: MeetingSummary?
+    /// User-chosen names per speaker index; empty entries fall back to
+    /// "Speaker N". Nil until speakers are identified (and for meetings
+    /// stored before this field existed).
+    var speakerNames: [String]?
 
     init(
         id: UUID = UUID(),
@@ -24,7 +28,8 @@ final class Meeting {
         duration: TimeInterval = 0,
         audioFileName: String? = nil,
         segments: [TranscriptSegment] = [],
-        summary: MeetingSummary? = nil
+        summary: MeetingSummary? = nil,
+        speakerNames: [String]? = nil
     ) {
         self.id = id
         self.title = title
@@ -34,19 +39,48 @@ final class Meeting {
         self.audioFileName = audioFileName
         self.segments = segments
         self.summary = summary
+        self.speakerNames = speakerNames
     }
 
     var transcriptText: String {
         segments.map(\.text).joined(separator: "\n")
     }
 
-    /// Transcript with one "[mm:ss] text" line per segment — the summarizer's
-    /// input, so the model can follow the meeting's flow across chunks.
+    /// Transcript with one "[mm:ss] Name: text" line per segment — the
+    /// summarizer's input, so the model can follow the meeting's flow across
+    /// chunks and attribute ideas to speakers when they've been identified.
     var timestampedTranscriptText: String {
-        segments.map { "[\($0.start.clockString)] \($0.text)" }.joined(separator: "\n")
+        segments.map { segment in
+            let name = segment.speaker.map { "\(speakerName(for: $0)): " } ?? ""
+            return "[\(segment.start.clockString)] \(name)\(segment.text)"
+        }
+        .joined(separator: "\n")
     }
 
     var hasTranscript: Bool {
         !segments.isEmpty
+    }
+
+    var hasSpeakers: Bool {
+        segments.contains { $0.speaker != nil }
+    }
+
+    /// Display name for a speaker index: the user's rename when set,
+    /// otherwise "Speaker N".
+    func speakerName(for index: Int) -> String {
+        if let names = speakerNames, names.indices.contains(index) {
+            let trimmed = names[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return "Speaker \(index + 1)"
+    }
+
+    /// Speaker indices that appear in the transcript, in first-spoken order.
+    var speakerIndices: [Int] {
+        var seen = Set<Int>()
+        return segments.compactMap { segment in
+            guard let speaker = segment.speaker, seen.insert(speaker).inserted else { return nil }
+            return speaker
+        }
     }
 }

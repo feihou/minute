@@ -117,7 +117,9 @@ struct SummaryEditorView: View {
             sections: sectionTitles.isEmpty ? nil : zip(sectionTitles, sectionTexts).map {
                 SummarySection(title: $0, items: Self.parseList($1))
             },
-            skippedParts: meeting.summary?.skippedParts
+            skippedParts: meeting.summary?.skippedParts,
+            // Not editable here yet; keep whatever the model produced.
+            speakerPerspectives: meeting.summary?.speakerPerspectives
         )
         do {
             try context.save()
