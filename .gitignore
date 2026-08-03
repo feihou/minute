@@ -3,4 +3,5 @@ DerivedData/
 build/
 *.xcuserstate
 xcuserdata/
+contents.xcworkspacedata
 .omc/
