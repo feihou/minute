@@ -63,7 +63,7 @@ final class AudioRecorder {
     private var file: AVAudioFile?
     private var accumulatedTime: TimeInterval = 0
     private var segmentStartedAt: Date?
-    nonisolated(unsafe) private var observerTokens: [any NSObjectProtocol] = []
+    @ObservationIgnored nonisolated(unsafe) private var observerTokens: [any NSObjectProtocol] = []
 
     /// Total recorded time, excluding paused stretches.
     var elapsed: TimeInterval {
