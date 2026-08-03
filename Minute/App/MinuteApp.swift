@@ -30,6 +30,9 @@ struct MinuteApp: App {
         // recordings may still sit in Application Support — keep them out of
         // device backups regardless of which directory receives new audio.
         MeetingStore.excludeAppSupportFromBackups()
+        // A crash or force-quit mid-recording leaves its Live Activity on the
+        // lock screen; no recording survives process death, so clear them.
+        RecordingLiveActivityController.endOrphans()
     }
 
     var body: some Scene {

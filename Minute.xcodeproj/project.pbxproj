@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		AA0000000000000000000088 /* MinuteWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000081 /* MinuteWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		AA0000000000000000000027 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -21,12 +25,34 @@
 			remoteGlobalIDString = AA0000000000000000000010;
 			remoteInfo = Minute;
 		};
+		AA0000000000000000000089 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000080;
+			remoteInfo = MinuteWidgets;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		AA0000000000000000000087 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				AA0000000000000000000088 /* MinuteWidgets.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		AA0000000000000000000011 /* Minute.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Minute.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000021 /* MinuteTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MinuteTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000031 /* MinuteUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MinuteUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000081 /* MinuteWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = MinuteWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -36,6 +62,13 @@
 				Info.plist,
 			);
 			target = AA0000000000000000000010 /* Minute */;
+		};
+		AA0000000000000000000086 /* Exceptions for "MinuteWidgets" folder in "MinuteWidgets" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = AA0000000000000000000080 /* MinuteWidgets */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -70,6 +103,27 @@
 			path = MinuteUITests;
 			sourceTree = "<group>";
 		};
+		AA0000000000000000000085 /* MinuteWidgets */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				AA0000000000000000000086 /* Exceptions for "MinuteWidgets" folder in "MinuteWidgets" target */,
+			);
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = MinuteWidgets;
+			sourceTree = "<group>";
+		};
+		AA000000000000000000008B /* Shared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -94,6 +148,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA0000000000000000000083 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -101,6 +162,8 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000015 /* Minute */,
+				AA0000000000000000000085 /* MinuteWidgets */,
+				AA000000000000000000008B /* Shared */,
 				AA0000000000000000000025 /* MinuteTests */,
 				AA0000000000000000000035 /* MinuteUITests */,
 				AA0000000000000000000003 /* Products */,
@@ -113,6 +176,7 @@
 				AA0000000000000000000011 /* Minute.app */,
 				AA0000000000000000000021 /* MinuteTests.xctest */,
 				AA0000000000000000000031 /* MinuteUITests.xctest */,
+				AA0000000000000000000081 /* MinuteWidgets.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -127,13 +191,16 @@
 				AA0000000000000000000012 /* Sources */,
 				AA0000000000000000000013 /* Frameworks */,
 				AA0000000000000000000014 /* Resources */,
+				AA0000000000000000000087 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				AA000000000000000000008A /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				AA0000000000000000000015 /* Minute */,
+				AA000000000000000000008B /* Shared */,
 			);
 			name = Minute;
 			packageProductDependencies = (
@@ -141,6 +208,29 @@
 			productName = Minute;
 			productReference = AA0000000000000000000011 /* Minute.app */;
 			productType = "com.apple.product-type.application";
+		};
+		AA0000000000000000000080 /* MinuteWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000000000000000000090 /* Build configuration list for PBXNativeTarget "MinuteWidgets" */;
+			buildPhases = (
+				AA0000000000000000000082 /* Sources */,
+				AA0000000000000000000083 /* Frameworks */,
+				AA0000000000000000000084 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				AA0000000000000000000085 /* MinuteWidgets */,
+				AA000000000000000000008B /* Shared */,
+			);
+			name = MinuteWidgets;
+			packageProductDependencies = (
+			);
+			productName = MinuteWidgets;
+			productReference = AA0000000000000000000081 /* MinuteWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 		AA0000000000000000000020 /* MinuteTests */ = {
 			isa = PBXNativeTarget;
@@ -201,6 +291,9 @@
 					AA0000000000000000000010 = {
 						CreatedOnToolsVersion = 26.0;
 					};
+					AA0000000000000000000080 = {
+						CreatedOnToolsVersion = 26.0;
+					};
 					AA0000000000000000000020 = {
 						CreatedOnToolsVersion = 26.0;
 						TestTargetID = AA0000000000000000000010;
@@ -226,6 +319,7 @@
 			projectRoot = "";
 			targets = (
 				AA0000000000000000000010 /* Minute */,
+				AA0000000000000000000080 /* MinuteWidgets */,
 				AA0000000000000000000020 /* MinuteTests */,
 				AA0000000000000000000030 /* MinuteUITests */,
 			);
@@ -248,6 +342,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		AA0000000000000000000034 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000084 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -278,6 +379,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA0000000000000000000082 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -290,6 +398,11 @@
 			isa = PBXTargetDependency;
 			target = AA0000000000000000000010 /* Minute */;
 			targetProxy = AA0000000000000000000037 /* PBXContainerItemProxy */;
+		};
+		AA000000000000000000008A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0000000000000000000080 /* MinuteWidgets */;
+			targetProxy = AA0000000000000000000089 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -531,6 +644,52 @@
 			};
 			name = Release;
 		};
+		AA0000000000000000000091 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MinuteWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Minute;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.minuteapp.Minute.MinuteWidgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		AA0000000000000000000092 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MinuteWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Minute;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.minuteapp.Minute.MinuteWidgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -566,6 +725,15 @@
 			buildConfigurations = (
 				AA0000000000000000000071 /* Debug */,
 				AA0000000000000000000072 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA0000000000000000000090 /* Build configuration list for PBXNativeTarget "MinuteWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000091 /* Debug */,
+				AA0000000000000000000092 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
