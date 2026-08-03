@@ -27,9 +27,9 @@ struct MinuteApp: App {
         MeetingStore.useEphemeralStorage = storeIsEphemeral
         MeetingStore.removeEphemeralRecordings()
         // Even in fallback mode, a (possibly corrupt) store and existing
-        // recordings may still sit in Application Support — keep them out of
-        // device backups regardless of which directory receives new audio.
-        MeetingStore.excludeAppSupportFromBackups()
+        // recordings may still sit in Application Support — apply the user's
+        // backup choice to it regardless of which directory receives new audio.
+        MeetingStore.applyBackupPolicy()
         // A crash or force-quit mid-recording leaves its Live Activity on the
         // lock screen; no recording survives process death, so clear them.
         RecordingLiveActivityController.endOrphans()

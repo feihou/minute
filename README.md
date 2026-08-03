@@ -31,7 +31,7 @@ Meeting audio is some of the most sensitive data on your phone. Most meeting-not
 
 | Guarantee | How |
 |---|---|
-| Audio, transcripts, summaries stay on device | Stored in the app sandbox (Application Support + SwiftData), excluded from iCloud/computer device backups; **no meeting content is ever sent anywhere** |
+| Audio, transcripts, summaries stay on device | Stored in the app sandbox (Application Support + SwiftData), excluded from iCloud/computer device backups by default; an opt-in **iCloud Backup** toggle in Settings includes them in the iPhone's own encrypted device backup — **no meeting content is ever sent anywhere else** |
 | No account, no analytics, no tracking | There is no server, SDK, or telemetry of any kind — grep the source |
 | Transcription is local | Apple `SpeechTranscriber` with on-device model assets |
 | Summarization is local | Apple `FoundationModels` (Apple Intelligence on-device model) |

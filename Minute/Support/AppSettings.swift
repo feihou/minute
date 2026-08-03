@@ -10,6 +10,14 @@ enum AppSettings {
     static let summaryTemplateKey = "summary.template"
     static let summaryContextKey = "summary.context"
     static let summaryLanguageKey = "summary.language"
+    static let iCloudBackupKey = "backup.iCloud"
+
+    /// Whether meeting data (audio, transcripts, summaries) is included in the
+    /// iPhone's iCloud/computer device backup. Off by default — private by
+    /// default, and nothing leaves the device unless the user opts in.
+    static var iCloudBackupEnabled: Bool {
+        UserDefaults.standard.bool(forKey: iCloudBackupKey)
+    }
 
     /// Encoder quality applied to new recordings.
     static var audioQuality: AudioQuality {

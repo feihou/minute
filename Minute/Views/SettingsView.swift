@@ -17,6 +17,7 @@ struct SettingsView: View {
     @AppStorage(AppSettings.summaryTemplateKey) private var summaryTemplate = SummaryTemplate.standard.id
     @AppStorage(AppSettings.summaryContextKey) private var summaryContext = ""
     @AppStorage(AppSettings.summaryLanguageKey) private var summaryLanguage = ""
+    @AppStorage(AppSettings.iCloudBackupKey) private var iCloudBackup = false
 
     @State private var transcriptionStatus = "Checking…"
     @State private var usage: (fileCount: Int, totalBytes: Int64) = (0, 0)
@@ -36,6 +37,7 @@ struct SettingsView: View {
                 if !MeetingStore.useEphemeralStorage {
                     storageSection
                 }
+                backupSection
                 privacySection
                 capabilitiesSection
                 aboutSection
@@ -197,9 +199,24 @@ struct SettingsView: View {
         }
     }
 
+    private var backupSection: some View {
+        Section {
+            Toggle(isOn: $iCloudBackup) {
+                settingsLabel("iCloud Backup", systemImage: "icloud", tint: .blue)
+            }
+            .onChange(of: iCloudBackup) {
+                MeetingStore.applyBackupPolicy()
+            }
+        } header: {
+            Text("Backup")
+        } footer: {
+            Text("Off by default. When on, recordings, transcripts, and summaries are included in this iPhone's iCloud (or computer) backup and come back when you restore the iPhone from that backup. Turning it off keeps meeting data out of future backups. Nothing else is uploaded — there is still no account and no server.")
+        }
+    }
+
     private var privacySection: some View {
         Section("Privacy") {
-            settingsLabel("Recordings, transcripts, and summaries stay on this iPhone.",
+            settingsLabel("Recordings, transcripts, and summaries stay on this iPhone unless you turn on iCloud Backup.",
                           systemImage: "iphone", tint: .green)
             settingsLabel("Transcription and summarization run entirely on device.",
                           systemImage: "cpu", tint: .green)

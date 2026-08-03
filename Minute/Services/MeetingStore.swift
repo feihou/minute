@@ -3,7 +3,8 @@ import OSLog
 import SwiftData
 
 /// Creates, locates, and deletes the on-disk artifacts that belong to a meeting.
-/// Everything lives in Application Support — never leaves the device.
+/// Everything lives in Application Support — it stays on the device unless the
+/// user opts into iCloud Backup in Settings.
 enum MeetingStore {
     private static let logger = Logger(subsystem: "com.minuteapp.Minute", category: "MeetingStore")
 
@@ -13,29 +14,39 @@ enum MeetingStore {
     /// Recordings directory. Set once at app startup, before any recording.
     nonisolated(unsafe) static var useEphemeralStorage = false
 
-    /// Marks the app's Application Support tree (recordings + SwiftData
-    /// store) as excluded from iCloud/computer backups. Meeting data must
-    /// never leave the device — including any corrupt store and older
-    /// recordings still sitting there while the in-memory fallback is active,
-    /// so this runs at launch independently of where new audio routes.
-    static func excludeAppSupportFromBackups() {
+    /// Applies the user's backup choice to the app's Application Support tree
+    /// (recordings + SwiftData store). Meeting data is excluded from
+    /// iCloud/computer backups unless the user turned on the iCloud Backup
+    /// toggle in Settings. Covers any corrupt store and older recordings still
+    /// sitting there while the in-memory fallback is active, so this runs at
+    /// launch independently of where new audio routes — and again whenever the
+    /// toggle changes.
+    static func applyBackupPolicy() {
         do {
-            var base = try FileManager.default.url(
+            let base = try FileManager.default.url(
                 for: .applicationSupportDirectory,
                 in: .userDomainMask,
                 appropriateFor: nil,
                 create: true
             )
-            var values = URLResourceValues()
-            values.isExcludedFromBackup = true
-            try base.setResourceValues(values)
+            try setExcludedFromBackup(!AppSettings.iCloudBackupEnabled, at: base)
         } catch {
-            logger.error("Excluding meeting data from backups failed: \(error.localizedDescription)")
+            logger.error("Applying the backup policy failed: \(error.localizedDescription)")
         }
     }
 
+    /// Sets the backup-exclusion flag on one directory. Split out so tests can
+    /// exercise the flip on a scratch directory instead of racing concurrent
+    /// tests over the shared Application Support tree.
+    static func setExcludedFromBackup(_ excluded: Bool, at url: URL) throws {
+        var url = url
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = excluded
+        try url.setResourceValues(values)
+    }
+
     static func recordingsDirectory() throws -> URL {
-        excludeAppSupportFromBackups()
+        applyBackupPolicy()
         if useEphemeralStorage {
             let directory = ephemeralRecordingsDirectory
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
