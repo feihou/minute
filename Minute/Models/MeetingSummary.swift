@@ -14,6 +14,9 @@ struct MeetingSummary: Codable, Hashable, Sendable {
     /// Template-defined sections (e.g. Yesterday/Today/Blockers). Nil for
     /// standard-template summaries, which use the fixed fields above.
     var sections: [SummarySection]? = nil
+    /// How many transcript parts failed and were left out of these notes.
+    /// Nil/zero when the whole meeting was summarized.
+    var skippedParts: Int? = nil
 }
 
 struct SummarySection: Codable, Hashable, Sendable {
@@ -23,11 +26,12 @@ struct SummarySection: Codable, Hashable, Sendable {
 
 extension MeetingSummary {
     /// True when any field the app presents as the meeting's notes contains
-    /// the query — including template sections.
+    /// the query — including template sections. Empty sections are excluded:
+    /// they aren't rendered anywhere, so their titles shouldn't match either.
     func matches(_ query: String) -> Bool {
         var fields = [overview] + keyPoints + decisions + openQuestions
             + actionItems.flatMap { [$0.task, $0.owner, $0.deadline] }
-        for section in sections ?? [] {
+        for section in sections ?? [] where !section.items.isEmpty {
             fields.append(section.title)
             fields.append(contentsOf: section.items)
         }

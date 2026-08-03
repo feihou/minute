@@ -5,6 +5,11 @@ import SwiftData
 final class Meeting {
     var id: UUID
     var title: String
+    /// The exact auto-generated title this meeting was created with, so
+    /// "user never renamed it" can be checked without re-deriving the string
+    /// from locale-dependent date formatting. Nil for meetings created
+    /// before this field existed or titled from another source (imports).
+    var defaultTitle: String?
     var createdAt: Date
     var duration: TimeInterval
     var audioFileName: String?
@@ -14,6 +19,7 @@ final class Meeting {
     init(
         id: UUID = UUID(),
         title: String,
+        defaultTitle: String? = nil,
         createdAt: Date = .now,
         duration: TimeInterval = 0,
         audioFileName: String? = nil,
@@ -22,6 +28,7 @@ final class Meeting {
     ) {
         self.id = id
         self.title = title
+        self.defaultTitle = defaultTitle
         self.createdAt = createdAt
         self.duration = duration
         self.audioFileName = audioFileName

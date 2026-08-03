@@ -116,7 +116,8 @@ struct SummaryEditorView: View {
             suggestedTitle: meeting.summary?.suggestedTitle,
             sections: sectionTitles.isEmpty ? nil : zip(sectionTitles, sectionTexts).map {
                 SummarySection(title: $0, items: Self.parseList($1))
-            }
+            },
+            skippedParts: meeting.summary?.skippedParts
         )
         do {
             try context.save()
