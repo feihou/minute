@@ -26,6 +26,7 @@ struct SettingsView: View {
     @State private var deleteAllFailed = false
     @State private var backupPolicyFailed = false
     @State private var driveUnavailable = false
+    @State private var mirrorTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -230,16 +231,20 @@ struct SettingsView: View {
                 settingsLabel("iCloud Drive Folder", systemImage: "folder.badge.plus", tint: .cyan)
             }
             .onChange(of: iCloudDrive) {
+                // Switching off must stop a mirror already in flight, or it
+                // keeps copying recordings into iCloud that no later sync
+                // will clean up — the opt-out has to mean something.
+                mirrorTask?.cancel()
                 guard iCloudDrive else { return }
                 let items = ICloudDriveBackup.items(for: meetings)
                 let deviceFolder = ICloudDriveBackup.deviceFolderName()
-                Task {
+                mirrorTask = Task {
                     // Toggling on is the one moment to say "this can't work
                     // here" — afterwards the mirror quietly self-heals.
                     let available = await ICloudDriveBackup.syncNow(items: items, deviceFolder: deviceFolder)
                     // Resolving the iCloud container is slow on first use;
                     // never overrule a choice the user made since then.
-                    guard !available, iCloudDrive else { return }
+                    guard !Task.isCancelled, !available, iCloudDrive else { return }
                     iCloudDrive = false
                     driveUnavailable = true
                 }
