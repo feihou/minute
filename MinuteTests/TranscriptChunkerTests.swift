@@ -60,6 +60,22 @@ struct TranscriptChunkerTests {
         #expect(chunks.allSatisfy { $0.count <= 20 })
     }
 
+    @Test func overlapCarriesSuffixOfOversizedTrailingLine() {
+        // One speaker talking for a long stretch: the chunk's trailing line
+        // exceeds the whole overlap budget, but its suffix must still carry
+        // forward instead of dropping the overlap entirely.
+        let longTurn = (1...15).map { "word\($0)" }.joined(separator: " ")
+        let text = "intro line\n" + longTurn + "\nclosing line of the meeting"
+        let chunks = TranscriptChunker.chunks(from: text, maxChars: 120, overlapChars: 30)
+
+        #expect(chunks.count > 1)
+        #expect(chunks.allSatisfy { $0.count <= 120 })
+        // The second chunk starts with a suffix of the long turn, not cold.
+        let secondFirstLine = chunks[1].split(separator: "\n").first.map(String.init) ?? ""
+        #expect(!secondFirstLine.isEmpty)
+        #expect(longTurn.hasSuffix(secondFirstLine))
+    }
+
     @Test func defaultOverlapStaysWithinBudget() {
         let text = (1...400).map { "segment \($0) with some spoken words in it" }.joined(separator: "\n")
         let chunks = TranscriptChunker.chunks(from: text)

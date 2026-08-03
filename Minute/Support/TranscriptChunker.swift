@@ -55,6 +55,20 @@ enum TranscriptChunker {
                     tail.insert(line, at: 0)
                     tailCount += lineAddition
                 }
+                // A single trailing line longer than the whole overlap budget
+                // would otherwise kill the overlap exactly where one speaker
+                // talks for a long stretch — carry its suffix instead,
+                // trimmed to the first word boundary.
+                if tail.isEmpty, overlap > 0, let last = current.last, last.count > overlap {
+                    var suffix = String(last.suffix(overlap))
+                    if let space = suffix.firstIndex(of: " "), suffix.index(after: space) < suffix.endIndex {
+                        suffix = String(suffix[suffix.index(after: space)...])
+                    }
+                    if !suffix.isEmpty {
+                        tail = [suffix]
+                        tailCount = suffix.count
+                    }
+                }
                 current = tail
                 currentCount = tailCount
 

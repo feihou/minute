@@ -153,8 +153,12 @@ final class RecordingSession: Identifiable {
         guard let finishedRecording else { return nil }
 
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The default is stored verbatim so "still has the default title" can
+        // be checked later even if the locale or time zone changes.
+        let generatedDefault = Self.defaultTitle(for: startedAt)
         let meeting = Meeting(
-            title: trimmedTitle.isEmpty ? Self.defaultTitle(for: startedAt) : trimmedTitle,
+            title: trimmedTitle.isEmpty ? generatedDefault : trimmedTitle,
+            defaultTitle: generatedDefault,
             createdAt: startedAt,
             duration: finishedRecording.duration,
             audioFileName: audioFileName,

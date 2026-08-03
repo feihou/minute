@@ -225,6 +225,16 @@ struct MeetingDetailView: View {
             }
         }
         if let summary = meeting.summary {
+            if let skipped = summary.skippedParts, skipped > 0 {
+                Section {
+                    Label(
+                        "\(skipped) part\(skipped == 1 ? "" : "s") of the transcript couldn't be summarized, so these notes may be incomplete. Regenerating may recover them.",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+                }
+            }
             if !summary.overview.isEmpty {
                 Section {
                     Text(summary.overview)
@@ -438,10 +448,14 @@ struct MeetingDetailView: View {
     }
 
     /// Adopts the model's title only while the meeting still carries the
-    /// default "Meeting <date>" name — never over a user-chosen title.
+    /// default "Meeting <date>" name — never over a user-chosen title. The
+    /// stored default is authoritative; re-deriving it is only a fallback for
+    /// meetings saved before the default was persisted, and can miss when the
+    /// locale or time zone changed since then.
     private func applySuggestedTitleIfDefault(_ summary: MeetingSummary) {
-        guard let suggested = summary.suggestedTitle,
-              meeting.title == RecordingSession.defaultTitle(for: meeting.createdAt) else { return }
+        guard let suggested = summary.suggestedTitle else { return }
+        let baseline = meeting.defaultTitle ?? RecordingSession.defaultTitle(for: meeting.createdAt)
+        guard meeting.title == baseline else { return }
         meeting.title = suggested
     }
 
