@@ -28,7 +28,11 @@ final class RecordingSession: Identifiable {
     /// can't half-apply.
     let isTranscriptionEnabled = AppSettings.liveTranscriptionEnabled
 
-    private(set) var phase: Phase = .idle
+    private let liveActivity = RecordingLiveActivityController()
+
+    private(set) var phase: Phase = .idle {
+        didSet { syncLiveActivity(from: oldValue) }
+    }
     /// True once audio capture began — a later failure should offer to keep it.
     private(set) var didStartRecording = false
     /// Transient, user-visible explanation (e.g. why recording auto-paused).
@@ -196,6 +200,28 @@ final class RecordingSession: Identifiable {
         finishedRecording = nil
         didStartRecording = false
         phase = .idle
+    }
+
+    /// Every phase change funnels through here (phase's didSet), so system
+    /// auto-pauses and failures reach the lock screen the same way user taps do.
+    private func syncLiveActivity(from oldPhase: Phase) {
+        guard phase != oldPhase else { return }
+        switch phase {
+        case .recording:
+            if oldPhase == .preparing {
+                liveActivity.start(title: title)
+            } else {
+                liveActivity.update(isPaused: false, elapsed: recorder.elapsed)
+            }
+        case .paused:
+            liveActivity.update(isPaused: true, elapsed: recorder.elapsed)
+        case .idle, .saving, .failed:
+            // The recorder has stopped (or never started) in all three —
+            // ending is a no-op when no activity was requested.
+            liveActivity.end()
+        case .preparing:
+            break
+        }
     }
 
     static func defaultTitle(for date: Date = .now) -> String {
