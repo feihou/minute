@@ -1,0 +1,17 @@
+included:
+  - Minute
+  - MinuteTests
+  - MinuteUITests
+
+disabled_rules:
+  # Long lines are dominated by prompts and user-facing strings that read
+  # better unwrapped.
+  - line_length
+  # SwiftUI view builders routinely exceed the default body-size heuristics.
+  - function_body_length
+  - type_body_length
+  - file_length
+  - cyclomatic_complexity
+  # Short names like `id`, `x`, `to` are idiomatic in this codebase.
+  - identifier_name
+  - todo

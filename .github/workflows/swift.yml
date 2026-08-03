@@ -1,7 +1,9 @@
-# Compile check for the Minute Xcode project (this repo is not a Swift
-# package, so `swift build` cannot work here). Runs the app scheme against
-# the iOS Simulator SDK with signing disabled. Full unit/UI tests currently
-# run locally — see CONTRIBUTING.md; wiring them into CI is on the roadmap.
+# Compile check + unit tests for the Minute Xcode project (this repo is not
+# a Swift package, so `swift build` cannot work here). Signing is disabled.
+# SummarizationIntegrationTests is excluded below: CI simulators REPORT
+# Apple Intelligence as available but ship no model assets, so generation
+# fails with ModelManagerError 1026 — the availability gate can't save us
+# here. Those tests run on developer machines, where the model exists.
 
 name: Swift
 
@@ -30,4 +32,41 @@ jobs:
           -project Minute.xcodeproj \
           -scheme Minute \
           -destination 'generic/platform=iOS Simulator' \
+          CODE_SIGNING_ALLOWED=NO
+
+  test:
+
+    runs-on: macos-26
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Select newest Xcode 26
+      run: |
+        XCODE_APP="$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
+        echo "Using $XCODE_APP"
+        sudo xcode-select -s "$XCODE_APP"
+        xcodebuild -version
+    - name: Run unit tests
+      run: |
+        # The runner image's simulator names change over time; pick the
+        # newest available iPhone at runtime instead of hardcoding one.
+        UDID="$(xcrun simctl list devices available --json | python3 -c '
+        import json, sys
+        data = json.load(sys.stdin)
+        for runtime, devices in sorted(data["devices"].items(), reverse=True):
+            if "iOS" not in runtime:
+                continue
+            for device in devices:
+                if device["isAvailable"] and "iPhone" in device["name"]:
+                    print(device["udid"])
+                    raise SystemExit
+        sys.exit("no available iPhone simulator on this runner")
+        ')"
+        echo "Using simulator $UDID"
+        xcodebuild test \
+          -project Minute.xcodeproj \
+          -scheme Minute \
+          -destination "platform=iOS Simulator,id=$UDID" \
+          -only-testing:MinuteTests \
+          -skip-testing:MinuteTests/SummarizationIntegrationTests \
           CODE_SIGNING_ALLOWED=NO

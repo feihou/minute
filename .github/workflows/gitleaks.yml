@@ -1,0 +1,28 @@
+# Secret scanning over the full git history. The repo is public: anything
+# that ever lands here is exposed immediately, so this gate runs on every
+# push and PR, plus a weekly sweep that picks up newly added detection rules.
+
+name: Secret Scan
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+  schedule:
+    - cron: "37 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history — a secret committed and later "removed" is still
+          # exposed and must still fail the scan.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

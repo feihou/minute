@@ -1,0 +1,9 @@
+# The app itself has no package dependencies (Apple frameworks only), so
+# only the GitHub Actions pins need automated updates.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
