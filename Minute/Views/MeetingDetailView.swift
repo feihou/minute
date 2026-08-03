@@ -28,6 +28,11 @@ struct MeetingDetailView: View {
     @State private var confirmingRetranscribe = false
     @State private var isRetranscribing = false
     @State private var transcriptError: String?
+    @State private var isDiarizing = false
+    @State private var diarizationStatus: String?
+    @State private var diarizationError: String?
+    @State private var renamingSpeaker: Int?
+    @State private var renameText = ""
     @State private var selectedTab: Tab = .summary
     @AppStorage(AppSettings.summaryTemplateKey) private var summaryTemplateID = SummaryTemplate.standard.id
 
@@ -80,7 +85,7 @@ struct MeetingDetailView: View {
                     // Also blocked during re-transcription: summarizing a
                     // transcript that's being replaced would save notes for
                     // text the user never sees again.
-                    .disabled(!meeting.hasTranscript || isGenerating || isRetranscribing)
+                    .disabled(!meeting.hasTranscript || isGenerating || isRetranscribing || isDiarizing)
                     Picker(selection: $summaryTemplateID) {
                         ForEach(SummaryTemplate.all) { template in
                             Text(template.name).tag(template.id)
@@ -94,7 +99,15 @@ struct MeetingDetailView: View {
                     } label: {
                         Label("Re-transcribe Audio", systemImage: "arrow.clockwise")
                     }
-                    .disabled(MeetingStore.audioURL(for: meeting) == nil || isRetranscribing || isGenerating)
+                    .disabled(MeetingStore.audioURL(for: meeting) == nil || isRetranscribing || isGenerating || isDiarizing)
+                    Button {
+                        identifySpeakers()
+                    } label: {
+                        Label(meeting.hasSpeakers ? "Re-identify Speakers" : "Identify Speakers",
+                              systemImage: "person.2.wave.2")
+                    }
+                    .disabled(MeetingStore.audioURL(for: meeting) == nil || !meeting.hasTranscript
+                        || isDiarizing || isRetranscribing || isGenerating)
                     Divider()
                     Button(role: .destructive) {
                         confirmingDelete = true
@@ -133,7 +146,14 @@ struct MeetingDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The current transcript will be replaced using the on-device speech model. The summary stays until you regenerate it.")
+            Text("The current transcript will be replaced using the on-device speech model. Speaker labels are cleared, and the summary stays until you regenerate it.")
+        }
+        .alert("Rename Speaker", isPresented: isRenamingSpeakerPresented, presenting: renamingSpeaker) { index in
+            TextField("Name", text: $renameText)
+            Button("Save") { renameSpeaker(index, to: renameText) }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Used on this speaker's transcript lines and in newly generated summaries.")
         }
         .task {
             guard autoGenerateSummary, meeting.summary == nil, meeting.hasTranscript,
@@ -252,6 +272,28 @@ struct MeetingDetailView: View {
             }
             bulletSection("Key Points", systemImage: "list.bullet", items: summary.keyPoints)
             bulletSection("Decisions", systemImage: "checkmark.seal", items: summary.decisions)
+            if let perspectives = summary.speakerPerspectives, !perspectives.isEmpty {
+                Section {
+                    ForEach(Array(perspectives.enumerated()), id: \.offset) { _, perspective in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(perspective.speaker)
+                                .font(.subheadline.weight(.semibold))
+                            ForEach(Array(perspective.points.enumerated()), id: \.offset) { _, point in
+                                Label {
+                                    Text(point)
+                                } icon: {
+                                    Image(systemName: "circle.fill")
+                                        .font(.system(size: 5))
+                                        .foregroundStyle(Color.accentColor)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                } header: {
+                    Label("Speaker Perspectives", systemImage: "person.2")
+                }
+            }
             if !summary.actionItems.isEmpty {
                 Section {
                     ForEach(Array(summary.actionItems.enumerated()), id: \.offset) { _, item in
@@ -341,7 +383,7 @@ struct MeetingDetailView: View {
     // MARK: - Transcript
 
     @ViewBuilder private var transcriptSection: some View {
-        if isRetranscribing || transcriptError != nil {
+        if isRetranscribing || isDiarizing || transcriptError != nil || diarizationError != nil {
             Section {
                 if isRetranscribing {
                     HStack(spacing: 12) {
@@ -350,8 +392,20 @@ struct MeetingDetailView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                if isDiarizing {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                        Text(diarizationStatus ?? "Identifying speakers on device…")
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 if let transcriptError {
                     Text(transcriptError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+                if let diarizationError {
+                    Text(diarizationError)
                         .font(.footnote)
                         .foregroundStyle(.red)
                 }
@@ -360,11 +414,24 @@ struct MeetingDetailView: View {
         Section {
             if meeting.hasTranscript {
                 ForEach(Array(meeting.segments.enumerated()), id: \.offset) { _, segment in
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        Text(segment.start.clockString)
-                            .font(.caption.monospacedDigit().weight(.medium))
-                            .foregroundStyle(Color.accentColor)
-                        Text(segment.text)
+                    VStack(alignment: .leading, spacing: 3) {
+                        if let speaker = segment.speaker {
+                            Button {
+                                beginRenamingSpeaker(speaker)
+                            } label: {
+                                Text(meeting.speakerName(for: speaker))
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Self.speakerColor(for: speaker))
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Rename \(meeting.speakerName(for: speaker))")
+                        }
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text(segment.start.clockString)
+                                .font(.caption.monospacedDigit().weight(.medium))
+                                .foregroundStyle(Color.accentColor)
+                            Text(segment.text)
+                        }
                     }
                     .contentShape(Rectangle())
                     .onTapGesture {
@@ -379,8 +446,12 @@ struct MeetingDetailView: View {
                     .foregroundStyle(.secondary)
             }
         } footer: {
-            if meeting.hasTranscript, player.isLoaded {
-                Text("Tap a line to jump playback there.")
+            let hints = [
+                meeting.hasTranscript && player.isLoaded ? "Tap a line to jump playback there." : nil,
+                meeting.hasSpeakers ? "Tap a name to rename that speaker." : nil,
+            ].compactMap(\.self)
+            if !hints.isEmpty {
+                Text(hints.joined(separator: " "))
             }
         }
     }
@@ -388,7 +459,7 @@ struct MeetingDetailView: View {
     // MARK: - Actions
 
     private func generateSummary() {
-        guard !isGenerating, !isRetranscribing else { return }
+        guard !isGenerating, !isRetranscribing, !isDiarizing else { return }
         isGenerating = true
         summaryError = nil
         generationStatus = nil
@@ -422,7 +493,7 @@ struct MeetingDetailView: View {
     }
 
     private func retranscribe() {
-        guard !isRetranscribing, !isGenerating, let url = MeetingStore.audioURL(for: meeting) else { return }
+        guard !isRetranscribing, !isGenerating, !isDiarizing, let url = MeetingStore.audioURL(for: meeting) else { return }
         isRetranscribing = true
         transcriptError = nil
         selectedTab = .transcript
@@ -448,6 +519,64 @@ struct MeetingDetailView: View {
             }
             isRetranscribing = false
         }
+    }
+
+    private func identifySpeakers() {
+        guard !isDiarizing, !isRetranscribing, !isGenerating,
+              let url = MeetingStore.audioURL(for: meeting) else { return }
+        isDiarizing = true
+        diarizationError = nil
+        selectedTab = .transcript
+        Task {
+            do {
+                let ranges = try await DiarizationService().diarize(audioAt: url) { status in
+                    diarizationStatus = status
+                }
+                if !meeting.isDeleted {
+                    meeting.segments = SpeakerAssignment.apply(ranges, to: meeting.segments)
+                    saveQuietly()
+                }
+            } catch {
+                if !meeting.isDeleted {
+                    diarizationError = error.localizedDescription
+                }
+            }
+            isDiarizing = false
+            diarizationStatus = nil
+        }
+    }
+
+    private func beginRenamingSpeaker(_ index: Int) {
+        if let names = meeting.speakerNames, names.indices.contains(index) {
+            renameText = names[index]
+        } else {
+            renameText = ""
+        }
+        renamingSpeaker = index
+    }
+
+    private func renameSpeaker(_ index: Int, to name: String) {
+        var names = meeting.speakerNames ?? []
+        while names.count <= index {
+            names.append("")
+        }
+        names[index] = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        meeting.speakerNames = names
+        saveQuietly()
+    }
+
+    private var isRenamingSpeakerPresented: Binding<Bool> {
+        Binding(
+            get: { renamingSpeaker != nil },
+            set: { if !$0 { renamingSpeaker = nil } }
+        )
+    }
+
+    /// Stable per-speaker tint for transcript labels.
+    private static let speakerColors: [Color] = [.blue, .orange, .purple, .green, .pink, .teal]
+
+    static func speakerColor(for index: Int) -> Color {
+        speakerColors[index % speakerColors.count]
     }
 
     /// Adopts the model's title only while the meeting still carries the

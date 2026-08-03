@@ -17,6 +17,15 @@ struct MeetingSummary: Codable, Hashable, Sendable {
     /// How many transcript parts failed and were left out of these notes.
     /// Nil/zero when the whole meeting was summarized.
     var skippedParts: Int? = nil
+    /// Each speaker's own ideas and positions; present only when the
+    /// transcript carried speaker labels. Optional so older stored
+    /// summaries keep decoding.
+    var speakerPerspectives: [SpeakerPerspective]? = nil
+}
+
+struct SpeakerPerspective: Codable, Hashable, Sendable {
+    var speaker: String
+    var points: [String]
 }
 
 struct SummarySection: Codable, Hashable, Sendable {
@@ -34,6 +43,10 @@ extension MeetingSummary {
         for section in sections ?? [] where !section.items.isEmpty {
             fields.append(section.title)
             fields.append(contentsOf: section.items)
+        }
+        for perspective in speakerPerspectives ?? [] where !perspective.points.isEmpty {
+            fields.append(perspective.speaker)
+            fields.append(contentsOf: perspective.points)
         }
         return fields.contains { $0.localizedCaseInsensitiveContains(query) }
     }

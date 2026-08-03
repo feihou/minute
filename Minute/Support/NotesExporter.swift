@@ -19,6 +19,14 @@ enum NotesExporter {
             }
             appendSection(title: "Key Points", items: summary.keyPoints, to: &lines)
             appendSection(title: "Decisions", items: summary.decisions, to: &lines)
+            if let perspectives = summary.speakerPerspectives, !perspectives.isEmpty {
+                lines.append("")
+                lines.append("## Speaker Perspectives")
+                for perspective in perspectives {
+                    lines.append("### \(perspective.speaker)")
+                    lines.append(contentsOf: perspective.points.map { "- \($0)" })
+                }
+            }
             if !summary.actionItems.isEmpty {
                 lines.append("")
                 lines.append("## Action Items")
@@ -33,7 +41,8 @@ enum NotesExporter {
             lines.append("")
             lines.append("## Transcript")
             for segment in meeting.segments {
-                lines.append("[\(segment.start.clockString)] \(segment.text)")
+                let name = segment.speaker.map { "\(meeting.speakerName(for: $0)): " } ?? ""
+                lines.append("[\(segment.start.clockString)] \(name)\(segment.text)")
             }
         }
 
