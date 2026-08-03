@@ -1,0 +1,21 @@
+# Style gate. Runs in the official SwiftLint container on Linux — far
+# faster and cheaper than a macOS runner. Rules live in /.swiftlint.yml.
+
+name: SwiftLint
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  swiftlint:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/realm/swiftlint:latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: swiftlint --reporter github-actions-logging
