@@ -735,6 +735,84 @@ struct ICloudDriveBackupTests {
         #expect(try visibleNames(in: documents) == [alpha, beta])
     }
 
+    /// A folder parked for a swap is hidden until it is placed. If the run
+    /// stops in between, it must come back into view — with the setting off
+    /// no later sync would rescue it.
+    @Test func mirrorRestoresParkedFoldersWhenTheRunStopsMidway() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+
+        let alpha = "2026-08-03 09.30 Alpha"
+        let beta = "2026-08-03 09.30 Beta"
+        let first = UUID().uuidString
+        let second = UUID().uuidString
+        try ICloudDriveBackup.mirror(
+            [item(id: first, folderName: alpha), item(id: second, folderName: beta)],
+            into: documents
+        )
+
+        // Swapped titles need parking; the toggle goes off after the first
+        // folder has already been moved out of the way.
+        let gate = Gate(allowing: 2)
+        try ICloudDriveBackup.mirror(
+            [item(id: first, folderName: beta), item(id: second, folderName: alpha)],
+            into: documents,
+            shouldContinue: { gate.check() }
+        )
+
+        let all = try FileManager.default.contentsOfDirectory(atPath: documents.path)
+        #expect(!all.contains { $0.hasPrefix(".minute-staging-") })
+        #expect(try visibleNames(in: documents) == [alpha, beta])
+    }
+
+    /// A duplicate may hold the only copy of a recording the kept folder is
+    /// missing; sweeping it then destroys the last one.
+    @Test func mirrorKeepsADuplicateUntilTheKeptFolderHoldsTheRecording() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let source = try recording(in: documents, bytes: "the only copy")
+
+        let id = UUID().uuidString
+        let name = "2026-08-03 09.30 Standup"
+        try ICloudDriveBackup.mirror([item(id: id, folderName: name, audio: source)], into: documents)
+
+        let folder = documents.appendingPathComponent(name, isDirectory: true)
+        let duplicate = documents.appendingPathComponent("\(name) copy", isDirectory: true)
+        try FileManager.default.copyItem(at: folder, to: duplicate)
+        // The kept folder loses its recording and the local file cannot be
+        // read this round, so the duplicate is the last copy.
+        try FileManager.default.removeItem(at: folder.appendingPathComponent(source.lastPathComponent))
+
+        try ICloudDriveBackup.mirror(
+            [item(id: id, folderName: name, audio: nil, audioFileName: source.lastPathComponent)],
+            into: documents
+        )
+
+        let survivor = duplicate.appendingPathComponent(source.lastPathComponent)
+        #expect(try Data(contentsOf: survivor) == Data("the only copy".utf8))
+    }
+
+    /// If an artifact cannot be removed, the marker has to stay: without it
+    /// no later sync can find the folder, and the leftover recording would
+    /// be orphaned in iCloud for good.
+    @Test func sweepKeepsTheMarkerWhenAnArtifactCannotBeRemoved() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let source = try recording(in: documents)
+
+        let name = "2026-08-03 09.30 Standup"
+        try ICloudDriveBackup.mirror([item(folderName: name, audio: source)], into: documents)
+
+        let folder = documents.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: folder.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path) }
+
+        try ICloudDriveBackup.mirror([], into: documents)
+
+        #expect(ICloudDriveBackup.meetingID(inFolder: folder) != nil)
+        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent(source.lastPathComponent).path))
+    }
+
     /// On a case-insensitive volume the new path resolves to the existing
     /// directory, so a plain move is a no-op and Files would keep showing
     /// the old spelling forever.

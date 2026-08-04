@@ -368,7 +368,12 @@ enum ICloudDriveBackup {
                 !Task.isCancelled && AppSettings.iCloudDriveBackupEnabled
             }
         } catch {
+            // Per-meeting problems are handled and logged inside the
+            // mirror; anything reaching here means the folder itself could
+            // not be prepared, so nothing was mirrored at all. Report it,
+            // or the toggle claims a backup that does not exist.
             logger.error("iCloud Drive mirror failed: \(error.localizedDescription)")
+            return false
         }
         return true
     }
@@ -418,12 +423,24 @@ enum ICloudDriveBackup {
         // or a folder duplicated in Files. Keep one and let the rest be
         // swept, or they stay invisible to every later sync and outlive the
         // meeting they hold.
-        var live: [String: URL] = [:]
+        var chosen: [String: URL] = [:]
         for item in items {
             guard let candidates = owned[item.meetingID], !candidates.isEmpty else { continue }
-            live[item.meetingID] = candidates.first { $0.lastPathComponent == item.folderName } ?? candidates[0]
+            chosen[item.meetingID] = candidates.first { $0.lastPathComponent == item.folderName } ?? candidates[0]
         }
-        let removable = owned.flatMap { id, urls in urls.filter { $0 != live[id] } }
+        var live = chosen
+
+        // Parking hides a folder until it is placed, so nothing may leave
+        // this function with one still parked: the setting may be off by
+        // then, and no later sync would bring it back into view.
+        var parked: [String: URL] = [:]
+        defer {
+            for (id, original) in parked {
+                guard let current = live[id], current.lastPathComponent.hasPrefix(stagingPrefix) else { continue }
+                let destination = (try? freeName(startingAt: original.lastPathComponent, in: documents)) ?? original
+                try? fileManager.moveItem(at: current, to: destination)
+            }
+        }
 
         // Park only a folder whose target another mirror folder is sitting
         // on — two meetings that swap titles each hold the other's name, and
@@ -449,6 +466,7 @@ enum ICloudDriveBackup {
             do {
                 try fileManager.moveItem(at: current, to: staging)
                 live[item.meetingID] = staging
+                parked[item.meetingID] = current
             } catch {
                 logger.error("Parking \(current.lastPathComponent) failed: \(error.localizedDescription)")
             }
@@ -466,9 +484,35 @@ enum ICloudDriveBackup {
         }
 
         guard shouldContinue() else { return }
-        for url in removable {
-            removeMirror(at: url)
+
+        // A meeting that is gone takes everything it left behind.
+        for (id, urls) in owned where chosen[id] == nil {
+            for url in urls {
+                removeMirror(at: url)
+            }
         }
+        // A duplicate goes only once the folder that was kept actually
+        // holds the recording. If the local file could not be read this
+        // round, the duplicate may be the only copy of it left.
+        for item in items {
+            guard let original = chosen[item.meetingID], let keep = live[item.meetingID] else { continue }
+            guard holdsRecording(keep, named: item.audioFileName) else {
+                logger.info("Kept duplicates of \(item.folderName): its recording is not in place yet")
+                continue
+            }
+            for url in owned[item.meetingID] ?? [] where url != original {
+                removeMirror(at: url)
+            }
+        }
+    }
+
+    /// Whether a folder holds the meeting's recording — either the file or
+    /// the placeholder iCloud leaves when it evicts one.
+    private nonisolated static func holdsRecording(_ folder: URL, named name: String?) -> Bool {
+        guard let name else { return true }
+        let fileManager = FileManager.default
+        return fileManager.fileExists(atPath: folder.appendingPathComponent(name).path)
+            || fileManager.fileExists(atPath: folder.appendingPathComponent(".\(name)\(placeholderSuffix)").path)
     }
 
     /// Removes the artifacts the mirror wrote, and the folder itself only
@@ -478,11 +522,34 @@ enum ICloudDriveBackup {
     private nonisolated static func removeMirror(at folder: URL) {
         let fileManager = FileManager.default
         let names = (try? fileManager.contentsOfDirectory(atPath: folder.path)) ?? []
-        for name in names where isAppArtifact(name) {
+        var markers: [String] = []
+        var incomplete = false
+        for name in names {
+            // The marker is what makes this folder findable at all; drop it
+            // last, and only if everything else went, or a recording left
+            // behind by a failed removal would be orphaned for good.
+            if meetingID(fromMarkerName: name) != nil {
+                markers.append(name)
+                continue
+            }
+            guard isAppArtifact(name) else { continue }
             do {
                 try fileManager.removeItem(at: folder.appendingPathComponent(name))
             } catch {
+                incomplete = true
                 logger.error("Removing \(name) failed: \(error.localizedDescription)")
+            }
+        }
+        guard !incomplete else {
+            logger.info("Kept the marker on \(folder.lastPathComponent) so a later sync finishes the job")
+            return
+        }
+        for marker in markers {
+            do {
+                try fileManager.removeItem(at: folder.appendingPathComponent(marker))
+            } catch {
+                logger.error("Removing the marker failed: \(error.localizedDescription)")
+                return
             }
         }
         let remaining = (try? fileManager.contentsOfDirectory(atPath: folder.path)) ?? []
