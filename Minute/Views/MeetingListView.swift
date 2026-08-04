@@ -447,4 +447,5 @@ struct NewMeetingSheet: View {
 #Preview {
     MeetingListView()
         .modelContainer(MeetingStore.previewContainer())
+        .environment(SummaryGeneration())
 }

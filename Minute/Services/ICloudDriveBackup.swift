@@ -763,10 +763,11 @@ enum ICloudDriveBackup {
     }
 }
 
-/// Keeps the app awake long enough to finish a background mirror. iOS
-/// suspends a backgrounded app within seconds otherwise.
+/// Keeps the app awake long enough to finish background work (mirroring,
+/// summary generation). iOS suspends a backgrounded app within seconds
+/// otherwise.
 @MainActor
-private final class BackgroundTaskToken {
+final class BackgroundTaskToken {
     private var identifier = UIBackgroundTaskIdentifier.invalid
 
     init(name: String) {
