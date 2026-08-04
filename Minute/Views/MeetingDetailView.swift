@@ -1,4 +1,3 @@
-import AVFoundation
 import SwiftData
 import SwiftUI
 import UIKit
@@ -18,27 +17,34 @@ struct MeetingDetailView: View {
         case transcript
     }
 
-    /// App-level owner of running generations — summarization survives
-    /// navigating away from this screen and re-attaches on return.
-    @Environment(SummaryGeneration.self) private var summaryGeneration
+    /// App-level owner of running work — summarization, re-transcription, and
+    /// speaker identification all survive navigating away from this screen and
+    /// re-attach on return. Deliberately not view `@State`: that is destroyed
+    /// when the screen is popped, which would reset the guards below while the
+    /// job kept running.
+    @Environment(MeetingJobs.self) private var jobs
 
     @State private var player = AudioPlayerController()
     @State private var showingEditor = false
     @State private var confirmingDelete = false
     @State private var confirmingRetranscribe = false
-    @State private var isRetranscribing = false
-    @State private var transcriptError: String?
-    @State private var isDiarizing = false
-    @State private var diarizationStatus: String?
-    @State private var diarizationError: String?
+    @State private var deleteFailed = false
     @State private var renamingSpeaker: Int?
     @State private var renameText = ""
     @State private var selectedTab: Tab = .summary
     @AppStorage(AppSettings.summaryTemplateKey) private var summaryTemplateID = SummaryTemplate.standard.id
 
-    private var isGenerating: Bool { summaryGeneration.isGenerating(meeting) }
-    private var generationStatus: String? { summaryGeneration.status(for: meeting) }
-    private var summaryError: String? { summaryGeneration.error(for: meeting) }
+    /// True while any job holds this meeting; every menu item that rewrites the
+    /// meeting is gated on it.
+    private var isBusy: Bool { jobs.isBusy(meeting) }
+    private var isGenerating: Bool { jobs.isRunning(.summary, for: meeting) }
+    private var isRetranscribing: Bool { jobs.isRunning(.transcription, for: meeting) }
+    private var isDiarizing: Bool { jobs.isRunning(.diarization, for: meeting) }
+    /// Progress text for whichever job is running; only one ever is.
+    private var jobStatus: String? { jobs.status(for: meeting) }
+    private var summaryError: String? { jobs.error(.summary, for: meeting) }
+    private var transcriptError: String? { jobs.error(.transcription, for: meeting) }
+    private var diarizationError: String? { jobs.error(.diarization, for: meeting) }
 
     var body: some View {
         List {
@@ -79,7 +85,10 @@ struct MeetingDetailView: View {
                     } label: {
                         Label("Edit Summary", systemImage: "pencil")
                     }
-                    .disabled(meeting.summary == nil)
+                    // Blocked while other work is running: the editor snapshots
+                    // the current summary, and a generation landing while it is
+                    // open would swap the notes out from under the user's edits.
+                    .disabled(meeting.summary == nil || isBusy)
                     Button {
                         generateSummary()
                     } label: {
@@ -89,7 +98,7 @@ struct MeetingDetailView: View {
                     // Also blocked during re-transcription: summarizing a
                     // transcript that's being replaced would save notes for
                     // text the user never sees again.
-                    .disabled(!meeting.hasTranscript || isGenerating || isRetranscribing || isDiarizing)
+                    .disabled(!meeting.hasTranscript || isBusy)
                     Picker(selection: $summaryTemplateID) {
                         ForEach(SummaryTemplate.all) { template in
                             Text(template.name).tag(template.id)
@@ -97,21 +106,20 @@ struct MeetingDetailView: View {
                     } label: {
                         Label("Summary Template", systemImage: "square.grid.2x2")
                     }
-                    .disabled(isGenerating)
+                    .disabled(isBusy)
                     Button {
                         confirmingRetranscribe = true
                     } label: {
                         Label("Re-transcribe Audio", systemImage: "arrow.clockwise")
                     }
-                    .disabled(MeetingStore.audioURL(for: meeting) == nil || isRetranscribing || isGenerating || isDiarizing)
+                    .disabled(MeetingStore.audioURL(for: meeting) == nil || isBusy)
                     Button {
                         identifySpeakers()
                     } label: {
                         Label(meeting.hasSpeakers ? "Re-identify Speakers" : "Identify Speakers",
                               systemImage: "person.2.wave.2")
                     }
-                    .disabled(MeetingStore.audioURL(for: meeting) == nil || !meeting.hasTranscript
-                        || isDiarizing || isRetranscribing || isGenerating)
+                    .disabled(MeetingStore.audioURL(for: meeting) == nil || !meeting.hasTranscript || isBusy)
                     Divider()
                     Button(role: .destructive) {
                         confirmingDelete = true
@@ -133,12 +141,23 @@ struct MeetingDetailView: View {
         ) {
             Button("Delete Meeting", role: .destructive) {
                 player.stop()
-                MeetingStore.delete(meeting, context: context)
-                dismiss()
+                // Only leave once the delete is actually committed — dismissing
+                // on a failed delete tells the user their meeting is gone while
+                // it is still in the library.
+                if MeetingStore.delete(meeting, context: context) {
+                    dismiss()
+                } else {
+                    deleteFailed = true
+                }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("The recording, transcript, and summary will be permanently deleted from this iPhone.")
+        }
+        .alert("This meeting couldn't be deleted", isPresented: $deleteFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Storage may be full or unavailable. Free up space and try again.")
         }
         .confirmationDialog(
             "Re-transcribe this meeting?",
@@ -234,11 +253,11 @@ struct MeetingDetailView: View {
                 if isGenerating {
                     HStack(spacing: 12) {
                         ProgressView()
-                        Text(generationStatus ?? "Summarizing on device…")
+                        Text(jobStatus ?? "Summarizing on device…")
                             .foregroundStyle(.secondary)
                         Spacer()
                         Button("Stop") {
-                            summaryGeneration.cancel(meeting)
+                            jobs.cancel(meeting)
                         }
                         .buttonStyle(.borderless)
                         .font(.subheadline.weight(.medium))
@@ -398,7 +417,7 @@ struct MeetingDetailView: View {
                 if isDiarizing {
                     HStack(spacing: 12) {
                         ProgressView()
-                        Text(diarizationStatus ?? "Identifying speakers on device…")
+                        Text(jobStatus ?? "Identifying speakers on device…")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -461,9 +480,11 @@ struct MeetingDetailView: View {
 
     // MARK: - Actions
 
+    // Each of these is a no-op while the meeting is busy — MeetingJobs enforces
+    // that itself, so re-entering this screen mid-job can't start a second one.
+
     private func generateSummary() {
-        guard !isGenerating, !isRetranscribing, !isDiarizing else { return }
-        summaryGeneration.generate(
+        jobs.summarize(
             meeting,
             template: SummaryTemplate.template(for: summaryTemplateID),
             context: AppSettings.summaryContext,
@@ -472,57 +493,15 @@ struct MeetingDetailView: View {
     }
 
     private func retranscribe() {
-        guard !isRetranscribing, !isGenerating, !isDiarizing, let url = MeetingStore.audioURL(for: meeting) else { return }
-        isRetranscribing = true
-        transcriptError = nil
+        guard let url = MeetingStore.audioURL(for: meeting) else { return }
         selectedTab = .transcript
-        Task {
-            let transcription = TranscriptionService()
-            await transcription.prepare()
-            if case .unavailable(let message) = transcription.availability {
-                transcriptError = message
-                isRetranscribing = false
-                return
-            }
-            do {
-                let file = try AVAudioFile(forReading: url)
-                let segments = try await transcription.transcribe(file: file)
-                if !meeting.isDeleted {
-                    meeting.segments = segments
-                    saveQuietly()
-                }
-            } catch {
-                if !meeting.isDeleted {
-                    transcriptError = "Re-transcription failed: \(error.localizedDescription)"
-                }
-            }
-            isRetranscribing = false
-        }
+        jobs.retranscribe(meeting, audioAt: url)
     }
 
     private func identifySpeakers() {
-        guard !isDiarizing, !isRetranscribing, !isGenerating,
-              let url = MeetingStore.audioURL(for: meeting) else { return }
-        isDiarizing = true
-        diarizationError = nil
+        guard let url = MeetingStore.audioURL(for: meeting) else { return }
         selectedTab = .transcript
-        Task {
-            do {
-                let ranges = try await DiarizationService().diarize(audioAt: url) { status in
-                    diarizationStatus = status
-                }
-                if !meeting.isDeleted {
-                    meeting.segments = SpeakerAssignment.apply(ranges, to: meeting.segments)
-                    saveQuietly()
-                }
-            } catch {
-                if !meeting.isDeleted {
-                    diarizationError = error.localizedDescription
-                }
-            }
-            isDiarizing = false
-            diarizationStatus = nil
-        }
+        jobs.identifySpeakers(meeting, audioAt: url)
     }
 
     private func beginRenamingSpeaker(_ index: Int) {

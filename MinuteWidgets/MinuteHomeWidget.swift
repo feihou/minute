@@ -40,8 +40,6 @@ struct MinuteHomeWidget: Widget {
     }
 }
 
-private let widgetAccent = Color(red: 0x4A / 255, green: 0x5C / 255, blue: 0xEC / 255)
-
 private struct MinuteHomeWidgetView: View {
     let entry: MinuteWidgetEntry
     @Environment(\.widgetFamily) private var family
@@ -65,11 +63,7 @@ private struct WidgetIconTile: View {
             .foregroundStyle(.white)
             .frame(width: size, height: size)
             .background(
-                LinearGradient(
-                    colors: [widgetAccent, widgetAccent.mix(with: .black, by: 0.18)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                ),
+                LinearGradient.brand,
                 in: RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
             )
             .widgetAccentable()
@@ -90,7 +84,7 @@ private struct SmallMinuteWidgetView: View {
             Spacer(minLength: 4)
             Label("New Meeting", systemImage: "mic.fill")
                 .font(.headline)
-                .foregroundStyle(widgetAccent)
+                .foregroundStyle(Color.accentColor)
                 .widgetAccentable()
             Text("Open Minute to record")
                 .font(.caption2)
@@ -137,7 +131,7 @@ private struct MediumMinuteWidgetView: View {
                     Spacer(minLength: 0)
                     Label("New Meeting", systemImage: "mic.fill")
                         .font(.headline)
-                        .foregroundStyle(widgetAccent)
+                        .foregroundStyle(Color.accentColor)
                         .widgetAccentable()
                     Text("Open Minute to record")
                         .font(.caption2)

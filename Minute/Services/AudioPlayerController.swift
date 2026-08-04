@@ -21,6 +21,47 @@ final class AudioPlayerController: NSObject, AVAudioPlayerDelegate {
 
     var isLoaded: Bool { player != nil }
 
+    @ObservationIgnored nonisolated(unsafe) private var observerToken: (any NSObjectProtocol)?
+
+    override init() {
+        super.init()
+        // A phone call stops playback down in the audio layer without telling
+        // this controller, so `isPlaying` stayed true and the button kept
+        // reading "Pause" over silence — and tapping it then "paused" an
+        // already-stopped player, taking two taps to get sound back.
+        observerToken = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] notification in
+            let info = notification.userInfo
+            let rawType = info?[AVAudioSessionInterruptionTypeKey] as? UInt
+            switch rawType.flatMap(AVAudioSession.InterruptionType.init(rawValue:)) {
+            case .began:
+                Task { @MainActor [weak self] in
+                    guard let self, self.isPlaying else { return }
+                    self.pause()
+                }
+            case .ended:
+                let options = (info?[AVAudioSessionInterruptionOptionKey] as? UInt)
+                    .map(AVAudioSession.InterruptionOptions.init(rawValue:)) ?? []
+                guard options.contains(.shouldResume) else { return }
+                Task { @MainActor [weak self] in
+                    guard let self, self.isLoaded, !self.isPlaying else { return }
+                    self.play()
+                }
+            default:
+                break
+            }
+        }
+    }
+
+    deinit {
+        if let observerToken {
+            NotificationCenter.default.removeObserver(observerToken)
+        }
+    }
+
     func load(url: URL) throws {
         stop()
         let player = try AVAudioPlayer(contentsOf: url)

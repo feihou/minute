@@ -394,7 +394,16 @@ enum ICloudDriveBackup {
         // backgrounded app; without this the copy is cut mid-file every
         // time and never finishes.
         return BackgroundMirrorTask(name: "iCloud Drive mirror") { shouldContinue in
-            _ = await syncNow(snapshot, shouldContinue: shouldContinue)
+            let succeeded = await syncNow(snapshot, shouldContinue: shouldContinue)
+            // Remember the outcome. The mirror repairs itself on the next run,
+            // but a permanently broken one — signed out of iCloud, or iCloud
+            // Drive switched off in iOS Settings — would otherwise look exactly
+            // like a working one while Settings kept promising a browsable
+            // copy. Only record a verdict while the user still wants the
+            // mirror: a run cut short by the toggle going off isn't a failure.
+            if AppSettings.iCloudDriveBackupEnabled {
+                await MainActor.run { AppSettings.iCloudDriveLastSyncFailed = !succeeded }
+            }
         }
     }
 
@@ -671,7 +680,15 @@ enum ICloudDriveBackup {
 
         let notesURL = folder.appendingPathComponent(notesFileName)
         let notes = Data(item.notes.utf8)
-        let previousNotes = try? Data(contentsOf: notesURL)
+        // An evicted notes.md reads as nil, which would look like "not written
+        // yet" and rewrite — then re-upload — every mirrored meeting's notes on
+        // every single sync, forever. The bytes are still in iCloud Drive, so
+        // treat the placeholder as present and unchanged, exactly as isCurrent
+        // does for audio.
+        let notesEvicted = fileManager.fileExists(
+            atPath: folder.appendingPathComponent(".\(notesFileName)\(placeholderSuffix)").path
+        )
+        let previousNotes = notesEvicted ? notes : (try? Data(contentsOf: notesURL))
         if previousNotes != notes {
             try notes.write(to: notesURL, options: .atomic)
             // notes.md carries the whole transcript and lands in one

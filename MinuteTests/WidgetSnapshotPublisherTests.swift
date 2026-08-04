@@ -5,7 +5,7 @@ import Testing
 @MainActor
 struct WidgetSnapshotPublisherTests {
     // Catches projecting unsorted, unbounded, or transcript-bearing app models into the widget DTO.
-    @Test func snapshotIsNewestFirstLimitedAndMetadataOnly() {
+    @Test func snapshotIsNewestFirstLimitedAndMetadataOnly() throws {
         let old = Meeting(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
             title: "Old",
@@ -21,7 +21,14 @@ struct WidgetSnapshotPublisherTests {
 
         #expect(snapshot.meetings.map(\.title) == ["Newest", "Middle"])
         #expect(snapshot.meetings.map(\.duration) == [30, 20])
-        #expect(snapshot.meetings.allSatisfy { !$0.title.contains("Private transcript") })
+        // Assert on the bytes that actually reach the shared App Group
+        // container, not on the title field. Checking that a *title* doesn't
+        // contain transcript text can never fail — it would still pass if a
+        // future change added a transcript excerpt to the DTO, which is the
+        // leak this test exists to catch.
+        let encoded = try #require(String(bytes: JSONEncoder().encode(snapshot), encoding: .utf8))
+        #expect(!encoded.contains("Private transcript"))
+        #expect(!encoded.contains("private.m4a"))
     }
 
     // Catches requesting WidgetKit refreshes when the stored shared snapshot is unchanged.

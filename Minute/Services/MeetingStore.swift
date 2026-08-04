@@ -26,6 +26,8 @@ enum MeetingStore {
     /// so a transient failure heals itself.
     @discardableResult
     static func applyBackupPolicy() -> Bool {
+        let excluded = !AppSettings.iCloudBackupEnabled
+        var applied = true
         do {
             let base = try FileManager.default.url(
                 for: .applicationSupportDirectory,
@@ -33,22 +35,51 @@ enum MeetingStore {
                 appropriateFor: nil,
                 create: true
             )
-            try setExcludedFromBackup(!AppSettings.iCloudBackupEnabled, at: base)
-            return true
+            try setExcludedFromBackup(excluded, at: base)
         } catch {
             logger.error("Applying the backup policy failed: \(error.localizedDescription)")
-            return false
+            applied = false
         }
+        // The widget snapshot lives outside the app container and carries
+        // meeting titles and times. Application Support alone would leave those
+        // in the device backup while the toggle promised nothing left the
+        // phone. It is a derived cache the app republishes at every launch, so
+        // excluding it costs the user nothing on restore.
+        if let group = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: WidgetConstants.appGroupIdentifier
+        ) {
+            do {
+                try setExcludedFromBackup(excluded, at: group)
+            } catch {
+                logger.error("Applying the backup policy to the App Group failed: \(error.localizedDescription)")
+                applied = false
+            }
+        }
+        return applied
     }
 
-    /// Sets the backup-exclusion flag on one directory. Split out so tests can
-    /// exercise the flip on a scratch directory instead of racing concurrent
-    /// tests over the shared Application Support tree.
+    /// Sets the backup-exclusion flag on one directory, and pins the data
+    /// protection class while we are here. Split out so tests can exercise the
+    /// flip on a scratch directory instead of racing concurrent tests over the
+    /// shared Application Support tree.
     static func setExcludedFromBackup(_ excluded: Bool, at url: URL) throws {
         var url = url
         var values = URLResourceValues()
         values.isExcludedFromBackup = excluded
         try url.setResourceValues(values)
+        // Meeting audio and transcripts are about as sensitive as this app's
+        // data gets. The default class keeps them readable once the phone has
+        // been unlocked a single time since boot — i.e. essentially always,
+        // which is exactly the state a stolen phone is in. `completeUnlessOpen`
+        // keeps an in-progress recording writable across a lock while leaving
+        // everything at rest unreadable until the next unlock.
+        //
+        // Set on the directory, which is what new files inherit; recordings
+        // made before this shipped keep the class they were created with.
+        try FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUnlessOpen],
+            ofItemAtPath: url.path
+        )
     }
 
     /// A local-only SwiftData configuration. The iCloud Documents
@@ -74,7 +105,11 @@ enum MeetingStore {
     #endif
 
     static func recordingsDirectory() throws -> URL {
-        applyBackupPolicy()
+        // The policy is applied at launch and again whenever the Settings
+        // toggle flips, which is every moment it can actually change. Re-applying
+        // it here cost three syscalls on the main thread per call — and this is
+        // called from view bodies (audioURL(for:)), so it ran on every redraw
+        // of a summarizing meeting.
         if useEphemeralStorage {
             let directory = ephemeralRecordingsDirectory
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -165,12 +200,20 @@ enum MeetingStore {
 
     /// Removes audio files that no meeting references (e.g. left behind by a
     /// crash mid-recording), so no recording lingers on disk invisibly.
-    static func removeOrphanedAudio(referencedFileNames: Set<String>) {
-        guard let directory = try? recordingsDirectory(),
+    /// `directory` defaults to the live recordings directory; tests pass a
+    /// scratch one so they aren't sweeping a directory other tests are writing
+    /// fixtures into at the same time.
+    static func removeOrphanedAudio(referencedFileNames: Set<String>, in directory: URL? = nil) {
+        guard let directory = directory ?? (try? recordingsDirectory()),
               let files = try? FileManager.default.contentsOfDirectory(atPath: directory.path)
         else { return }
         for name in files where isAudioFile(name) && !referencedFileNames.contains(name) {
-            deleteAudioFile(named: name)
+            let url = directory.appendingPathComponent(name)
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                logger.error("Failed to delete audio file \(name): \(error.localizedDescription)")
+            }
         }
     }
 

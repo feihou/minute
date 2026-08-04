@@ -45,11 +45,20 @@ final class BufferHandlerBox: Sendable {
             return entry?.value
         }
         set {
-            var replacement = newValue.map(HandlerEntry.init)
-            // Release the old handler after unlocking. Besides shortening the
-            // critical section, this avoids running arbitrary capture cleanup
-            // while the non-recursive lock is held.
-            storage.withLock { swap(&$0, &replacement) }
+            let replacement = newValue.map(HandlerEntry.init)
+            // Hand the old handler back out and let it die at the end of this
+            // scope, i.e. after unlocking. Besides shortening the critical
+            // section, this avoids running arbitrary capture cleanup while the
+            // non-recursive lock is held. Returning it (rather than swapping
+            // with a captured var) also keeps this legal under Swift 6, which
+            // rejects mutating a captured var from a concurrently-executing
+            // closure.
+            let previous = storage.withLock { state -> HandlerEntry? in
+                let old = state
+                state = replacement
+                return old
+            }
+            _ = previous
         }
     }
 }
@@ -74,6 +83,15 @@ final class AudioRecorder {
     /// Called after the system auto-pauses recording (phone call, Siri, or an
     /// audio route/configuration change), so the owner can reflect it in UI.
     var onAutoPause: (() -> Void)?
+
+    /// Called when the recorder resumed itself after the system said the
+    /// interruption is over, so the owner can clear the "paused" notice.
+    var onAutoResume: (() -> Void)?
+
+    /// Called when capture died in a way that cannot be resumed in place
+    /// (media services reset). Everything recorded so far is still on disk and
+    /// saveable; nothing more will be captured.
+    var onCaptureLost: ((String) -> Void)?
 
     /// Called once per recording when writing audio to disk starts failing
     /// (e.g. storage full). The recorder auto-pauses first, so everything
@@ -112,10 +130,26 @@ final class AudioRecorder {
             forName: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance(),
             queue: .main
-        ) { notification in
-            let began = (notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt)
-                == AVAudioSession.InterruptionType.began.rawValue
-            if began { pauseOnNotification(notification) }
+        ) { [weak self] notification in
+            let info = notification.userInfo
+            let rawType = info?[AVAudioSessionInterruptionTypeKey] as? UInt
+            switch rawType.flatMap(AVAudioSession.InterruptionType.init(rawValue:)) {
+            case .began:
+                pauseOnNotification(notification)
+            case .ended:
+                // The system tells us when it is safe to pick the microphone
+                // back up. Without this a call or a Siri invocation ends the
+                // meeting's capture for good — the user puts the phone down
+                // believing it is still recording.
+                let options = (info?[AVAudioSessionInterruptionOptionKey] as? UInt)
+                    .map(AVAudioSession.InterruptionOptions.init(rawValue:)) ?? []
+                guard options.contains(.shouldResume) else { return }
+                Task { @MainActor [weak self] in
+                    self?.resumeAfterInterruption()
+                }
+            default:
+                break
+            }
         })
         // Route/config change (e.g. AirPods connect): the engine stops itself
         // and the tap's format may no longer match the hardware.
@@ -125,6 +159,48 @@ final class AudioRecorder {
             queue: .main,
             using: pauseOnNotification
         ))
+        // The audio daemon crashed and took the engine, the file's encoder,
+        // and the session with it. Nothing can be resumed in place; say so
+        // instead of counting up over silence.
+        observerTokens.append(NotificationCenter.default.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleMediaServicesReset()
+            }
+        })
+    }
+
+    /// Picks capture back up after the system signalled the interruption is
+    /// over. A failure here is not fatal: everything recorded so far stays on
+    /// disk and the user can resume by hand from the paused state.
+    private func resumeAfterInterruption() {
+        guard state == .paused else { return }
+        do {
+            try resume()
+            onAutoResume?()
+        } catch {
+            Self.logger.error("Auto-resume after interruption failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Media services reset: stop pretending to record. The elapsed time is
+    /// banked and the file is closed so what was captured stays playable.
+    private func handleMediaServicesReset() {
+        guard state != .idle else { return }
+        if let startedAt = segmentStartedAt {
+            accumulatedTime += Date().timeIntervalSince(startedAt)
+        }
+        segmentStartedAt = nil
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        tapHandler.handler = nil
+        file = nil // Closes and flushes what was captured.
+        level = 0
+        state = .paused
+        onCaptureLost?("Recording stopped — the system's audio service restarted. Everything captured up to this point can still be saved.")
     }
 
     deinit {
@@ -135,10 +211,6 @@ final class AudioRecorder {
 
     static func requestPermission() async -> Bool {
         await AVAudioApplication.requestRecordPermission()
-    }
-
-    static var permissionGranted: Bool {
-        AVAudioApplication.shared.recordPermission == .granted
     }
 
     /// Activates the audio session so the input node reports the real hardware

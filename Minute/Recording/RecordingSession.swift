@@ -72,6 +72,18 @@ final class RecordingSession: Identifiable {
             self.notice = "Recording was paused by the system (a call or audio change). Tap resume to continue."
         }
 
+        recorder.onAutoResume = { [weak self] in
+            guard let self, self.phase == .paused else { return }
+            self.notice = nil
+            self.phase = .recording
+        }
+
+        recorder.onCaptureLost = { [weak self] message in
+            guard let self, self.phase == .recording || self.phase == .paused else { return }
+            self.phase = .paused
+            self.notice = message
+        }
+
         recorder.onWriteError = { [weak self] _ in
             guard let self, self.phase == .recording else { return }
             // The recorder already paused itself; keep the UI in sync and
@@ -144,6 +156,12 @@ final class RecordingSession: Identifiable {
         // second meeting sharing the same audio file.
         guard phase != .saving, !didDiscard, !didSave else { return nil }
         phase = .saving
+        // recorder.stop() below deactivates the audio session, which is the
+        // only thing keeping a backgrounded app alive. Swiping Home while the
+        // transcript finalizes would otherwise let iOS suspend us mid-save and
+        // cost the user the whole meeting.
+        let token = BackgroundTaskToken(name: "Save recording")
+        defer { token.end() }
 
         if finishedRecording == nil {
             transcriptionTask?.cancel()

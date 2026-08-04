@@ -95,38 +95,55 @@ struct MeetingStoreTests {
         #expect(MeetingStore.importedAudioFileName(originalExtension: "").hasSuffix(".m4a"))
     }
 
+    /// A directory only this test writes into. The sweep used to run against
+    /// the live Recordings directory and "protect" concurrent tests' fixtures
+    /// by listing the directory first — which still lost anything that landed
+    /// between the listing and the sweep.
+    private func makeScratchDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("orphan-sweep-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
     @Test func removeOrphanedAudioSweepsImportedFormats() throws {
+        let directory = try makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
         let orphanName = MeetingStore.importedAudioFileName(originalExtension: "mp3")
-        let orphanURL = try MeetingStore.audioURL(fileName: orphanName)
+        let orphanURL = directory.appendingPathComponent(orphanName)
         try Data("orphan mp3".utf8).write(to: orphanURL)
 
-        // Reference every other file on disk so concurrently running tests
-        // keep their fixtures; only our orphan is sweepable.
-        let directory = try MeetingStore.recordingsDirectory()
-        let existing = Set((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? [])
-        MeetingStore.removeOrphanedAudio(referencedFileNames: existing.subtracting([orphanName]))
+        MeetingStore.removeOrphanedAudio(referencedFileNames: [], in: directory)
 
         #expect(!FileManager.default.fileExists(atPath: orphanURL.path))
     }
 
     @Test func removeOrphanedAudioDeletesOnlyUnreferencedFiles() throws {
+        let directory = try makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
         let keptName = MeetingStore.newAudioFileName()
         let orphanName = MeetingStore.newAudioFileName()
-        let keptURL = try MeetingStore.audioURL(fileName: keptName)
-        let orphanURL = try MeetingStore.audioURL(fileName: orphanName)
+        let keptURL = directory.appendingPathComponent(keptName)
+        let orphanURL = directory.appendingPathComponent(orphanName)
         try Data("kept".utf8).write(to: keptURL)
         try Data("orphan".utf8).write(to: orphanURL)
 
-        // Reference every other file on disk so concurrently running tests
-        // (e.g. AudioImporterTests mid-import) keep their fixtures; only our
-        // orphan is sweepable.
-        let directory = try MeetingStore.recordingsDirectory()
-        let existing = Set((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? [])
-        MeetingStore.removeOrphanedAudio(referencedFileNames: existing.subtracting([orphanName]))
+        MeetingStore.removeOrphanedAudio(referencedFileNames: [keptName], in: directory)
 
         #expect(FileManager.default.fileExists(atPath: keptURL.path))
         #expect(!FileManager.default.fileExists(atPath: orphanURL.path))
+    }
 
-        MeetingStore.deleteAudioFile(named: keptName)
+    @Test func removeOrphanedAudioLeavesNonAudioFilesAlone() throws {
+        let directory = try makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let notes = directory.appendingPathComponent("notes.txt")
+        try Data("not audio".utf8).write(to: notes)
+
+        MeetingStore.removeOrphanedAudio(referencedFileNames: [], in: directory)
+
+        // The sweep is keyed on audio extensions; anything else in the
+        // directory belongs to someone else and must survive.
+        #expect(FileManager.default.fileExists(atPath: notes.path))
     }
 }
