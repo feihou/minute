@@ -23,6 +23,11 @@ final class AudioPlayerController: NSObject, AVAudioPlayerDelegate {
 
     @ObservationIgnored nonisolated(unsafe) private var observerToken: (any NSObjectProtocol)?
 
+    /// True only while playback was paused *by* an audio-session interruption,
+    /// so the matching "interruption ended" resumes what it interrupted and
+    /// nothing else. Cleared by every other route into or out of playback.
+    private var pausedByInterruption = false
+
     override init() {
         super.init()
         // A phone call stops playback down in the audio layer without telling
@@ -41,13 +46,19 @@ final class AudioPlayerController: NSObject, AVAudioPlayerDelegate {
                 Task { @MainActor [weak self] in
                     guard let self, self.isPlaying else { return }
                     self.pause()
+                    self.pausedByInterruption = true
                 }
             case .ended:
                 let options = (info?[AVAudioSessionInterruptionOptionKey] as? UInt)
                     .map(AVAudioSession.InterruptionOptions.init(rawValue:)) ?? []
                 guard options.contains(.shouldResume) else { return }
                 Task { @MainActor [weak self] in
-                    guard let self, self.isLoaded, !self.isPlaying else { return }
+                    // Resume only what the interruption itself stopped. The
+                    // detail view loads the player as soon as a meeting is
+                    // opened, so `isLoaded` is true for a recording the user
+                    // never started — and resuming that would play private
+                    // meeting audio out loud with nobody having asked.
+                    guard let self, self.pausedByInterruption else { return }
                     self.play()
                 }
             default:
@@ -83,6 +94,7 @@ final class AudioPlayerController: NSObject, AVAudioPlayerDelegate {
 
     func play() {
         guard let player else { return }
+        pausedByInterruption = false
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .spokenAudio)
@@ -97,6 +109,9 @@ final class AudioPlayerController: NSObject, AVAudioPlayerDelegate {
     }
 
     func pause() {
+        // A deliberate pause is not an interruption. The `.began` handler
+        // re-arms this immediately afterwards for the one case that is.
+        pausedByInterruption = false
         player?.pause()
         isPlaying = false
         stopTicker()
@@ -112,6 +127,7 @@ final class AudioPlayerController: NSObject, AVAudioPlayerDelegate {
     }
 
     func stop() {
+        pausedByInterruption = false
         player?.stop()
         player = nil
         isPlaying = false
@@ -155,6 +171,8 @@ final class AudioPlayerController: NSObject, AVAudioPlayerDelegate {
             // between the delegate firing and this task running — don't tear
             // down the session the new playback just activated.
             guard self.player === player, !player.isPlaying else { return }
+            // Reaching the end is not an interruption to come back from.
+            self.pausedByInterruption = false
             self.isPlaying = false
             self.currentTime = 0
             self.stopTicker()
