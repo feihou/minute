@@ -9,6 +9,14 @@ enum NotesExporter {
             + (meeting.duration > 0 ? " · \(meeting.duration.clockString)" : ""))
 
         if let summary = meeting.summary {
+            // The app shows this caveat above the notes on screen. Copying or
+            // sharing them without it hands someone a summary that silently
+            // omits part of the meeting — and the iCloud Drive notes.md is the
+            // copy most likely to be read months later, out of context.
+            if let skipped = summary.skippedParts, skipped > 0 {
+                lines.append("")
+                lines.append("> Note: \(skipped) part\(skipped == 1 ? "" : "s") of the transcript couldn't be summarized, so these notes may be incomplete.")
+            }
             if !summary.overview.isEmpty {
                 lines.append("")
                 lines.append("## Overview")

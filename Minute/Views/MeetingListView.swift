@@ -14,11 +14,18 @@ struct MeetingListView: View {
     @State private var showingSettings = false
     @State private var activeSession: RecordingSession?
     @State private var meetingDestination: Meeting?
+    /// Whether the meeting being opened should start summarizing on sight.
+    /// Only a just-finished recording does — opening an old meeting from the
+    /// Home Screen widget must never kick off work the user didn't ask for.
+    @State private var destinationAutoSummarizes = false
+    @State private var deleteFailed = false
     @State private var didSweepOrphans = false
     @State private var showingImporter = false
     @State private var importingFileName: String?
     @State private var importTask: Task<Void, Never>?
     @State private var importError: String?
+    /// Why an otherwise-successful import came back without a transcript.
+    @State private var transcriptionNote: String?
     @State private var deepLinkState = MeetingDeepLinkState()
 
     var body: some View {
@@ -72,6 +79,14 @@ struct MeetingListView: View {
             } message: {
                 Text(importError ?? "")
             }
+            .alert("Imported Without a Transcript", isPresented: Binding(
+                get: { transcriptionNote != nil },
+                set: { if !$0 { transcriptionNote = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(transcriptionNote ?? "")
+            }
             .safeAreaInset(edge: .top) {
                 if let importingFileName {
                     HStack(spacing: 10) {
@@ -92,7 +107,7 @@ struct MeetingListView: View {
                 }
             }
             .navigationDestination(item: $meetingDestination) { meeting in
-                MeetingDetailView(meeting: meeting, autoGenerateSummary: AppSettings.autoSummarizeEnabled)
+                MeetingDetailView(meeting: meeting, autoGenerateSummary: destinationAutoSummarizes)
             }
             .safeAreaInset(edge: .bottom) {
                 if !meetings.isEmpty {
@@ -139,6 +154,7 @@ struct MeetingListView: View {
             RecordingView(session: session) { finished in
                 activeSession = nil
                 if let finished {
+                    destinationAutoSummarizes = AppSettings.autoSummarizeEnabled
                     meetingDestination = finished
                 }
             }
@@ -159,7 +175,7 @@ struct MeetingListView: View {
                         }
                         .swipeActions(edge: .trailing) {
                             Button(role: .destructive) {
-                                MeetingStore.delete(meeting, context: context)
+                                deleteFailed = !MeetingStore.delete(meeting, context: context)
                             } label: {
                                 Label("Delete", systemImage: "trash")
                             }
@@ -175,7 +191,7 @@ struct MeetingListView: View {
                             }
                             Divider()
                             Button(role: .destructive) {
-                                MeetingStore.delete(meeting, context: context)
+                                deleteFailed = !MeetingStore.delete(meeting, context: context)
                             } label: {
                                 Label("Delete Meeting", systemImage: "trash")
                             }
@@ -190,6 +206,11 @@ struct MeetingListView: View {
                 ContentUnavailableView.search(text: searchText)
             }
         }
+        .alert("This meeting couldn't be deleted", isPresented: $deleteFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Storage may be full or unavailable. Free up space and try again.")
+        }
     }
 
     private var filteredMeetings: [Meeting] {
@@ -201,6 +222,10 @@ struct MeetingListView: View {
             meeting.title.localizedCaseInsensitiveContains(query)
                 || meeting.transcriptText.localizedCaseInsensitiveContains(query)
                 || meeting.summary?.matches(query) == true
+                // Speaker names are shown on every transcript line and in
+                // exports, so searching for one should find the meeting even
+                // when the name appears nowhere in the transcript text itself.
+                || meeting.speakerNames?.contains { $0.localizedCaseInsensitiveContains(query) } == true
         }
     }
 
@@ -326,6 +351,10 @@ struct MeetingListView: View {
     private func resolvePendingMeetingDeepLink() {
         guard let id = deepLinkState.resolve(availableMeetingIDs: meetings.map(\.id)),
               let meeting = meetings.first(where: { $0.id == id }) else { return }
+        // Opening an existing meeting from the widget is a request to read it,
+        // not to summarize it — a deliberately un-summarized recording must
+        // stay that way.
+        destinationAutoSummarizes = false
         meetingDestination = meeting
     }
 
@@ -333,10 +362,12 @@ struct MeetingListView: View {
         importingFileName = url.lastPathComponent
         importTask = Task {
             do {
-                let meeting = try await AudioImporter.importAudio(from: url, context: context)
+                let result = try await AudioImporter.importAudio(from: url, context: context)
+                transcriptionNote = result.transcriptionNote
                 // Reuses the post-recording destination, so Auto-Summarize
                 // kicks in for imports too.
-                meetingDestination = meeting
+                destinationAutoSummarizes = AppSettings.autoSummarizeEnabled
+                meetingDestination = result.meeting
             } catch is CancellationError {
                 // User cancelled — nothing to report.
             } catch {
@@ -478,5 +509,5 @@ struct NewMeetingSheet: View {
 #Preview {
     MeetingListView()
         .modelContainer(MeetingStore.previewContainer())
-        .environment(SummaryGeneration())
+        .environment(MeetingJobs())
 }

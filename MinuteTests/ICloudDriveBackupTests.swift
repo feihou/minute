@@ -485,6 +485,72 @@ struct ICloudDriveBackupTests {
     /// iCloud evicts local copies under storage pressure, leaving a
     /// ".name.icloud" placeholder — the audio is still in iCloud Drive, so
     /// re-copying it is pure churn.
+    /// Recordings are written once, so "evicted means current" is sound for
+    /// audio. Notes are not: the user can rename a meeting or edit its summary
+    /// at any time. Deciding from the evicted placeholder alone would strand
+    /// every later edit, so the fingerprint lives in a marker's NAME, which
+    /// eviction cannot take away.
+    @Test func mirrorRewritesEditedNotesEvenWhenTheMirroredCopyIsEvicted() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let id = UUID().uuidString
+        let name = "2026-08-03 09.30 Standup"
+        try ICloudDriveBackup.mirror([item(id: id, folderName: name, notes: "v1")], into: documents)
+
+        // iCloud reclaims the space: notes.md becomes a placeholder.
+        let folder = documents.appendingPathComponent(name, isDirectory: true)
+        let notesURL = folder.appendingPathComponent("notes.md")
+        try FileManager.default.removeItem(at: notesURL)
+        try Data().write(to: folder.appendingPathComponent(".notes.md.icloud"))
+
+        try ICloudDriveBackup.mirror([item(id: id, folderName: name, notes: "v2")], into: documents)
+
+        #expect(try String(contentsOf: notesURL, encoding: .utf8) == "v2")
+    }
+
+    /// The other half of the same contract: an evicted but *unchanged*
+    /// notes.md must not be rewritten, or every mirrored meeting re-uploads
+    /// its whole transcript on every sync, forever.
+    @Test func mirrorLeavesEvictedUnchangedNotesAlone() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let id = UUID().uuidString
+        let name = "2026-08-03 09.30 Standup"
+        try ICloudDriveBackup.mirror([item(id: id, folderName: name, notes: "v1")], into: documents)
+
+        let folder = documents.appendingPathComponent(name, isDirectory: true)
+        let notesURL = folder.appendingPathComponent("notes.md")
+        try FileManager.default.removeItem(at: notesURL)
+        let placeholder = folder.appendingPathComponent(".notes.md.icloud")
+        try Data().write(to: placeholder)
+
+        try ICloudDriveBackup.mirror([item(id: id, folderName: name, notes: "v1")], into: documents)
+
+        #expect(!FileManager.default.fileExists(atPath: notesURL.path))
+        #expect(FileManager.default.fileExists(atPath: placeholder.path))
+    }
+
+    /// The fingerprint marker says "these notes are already mirrored", but it
+    /// is only trustworthy while the notes it describes are actually there.
+    /// Deleted in Files or lost to an iCloud conflict, the folder would
+    /// otherwise keep its marker and never get its transcript back.
+    @Test func mirrorRestoresNotesDeletedOutFromUnderTheirMarker() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let id = UUID().uuidString
+        let name = "2026-08-03 09.30 Standup"
+        try ICloudDriveBackup.mirror([item(id: id, folderName: name, notes: "v1")], into: documents)
+
+        // Gone entirely — no file, no eviction placeholder, marker intact.
+        let folder = documents.appendingPathComponent(name, isDirectory: true)
+        let notesURL = folder.appendingPathComponent("notes.md")
+        try FileManager.default.removeItem(at: notesURL)
+
+        try ICloudDriveBackup.mirror([item(id: id, folderName: name, notes: "v1")], into: documents)
+
+        #expect(try String(contentsOf: notesURL, encoding: .utf8) == "v1")
+    }
+
     @Test func mirrorLeavesEvictedAudioAlone() throws {
         let documents = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: documents) }
@@ -551,6 +617,29 @@ struct ICloudDriveBackupTests {
 
     /// Deleting a meeting removes what the mirror wrote, but a file the
     /// user added to the folder is not the meeting.
+    /// The notes fingerprint marker is recognised by name, so the suffix has to
+    /// be validated the way a meeting id is validated as a UUID. Otherwise a
+    /// hidden file the user happens to name `.minute-notes-agenda` looks
+    /// app-owned and gets swept along with the meeting.
+    @Test func mirrorKeepsHiddenUserFilesThatOnlyLookLikeNotesMarkers() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let name = "2026-08-03 09.30 Standup"
+        try ICloudDriveBackup.mirror([item(folderName: name, notes: "v1")], into: documents)
+
+        let folder = documents.appendingPathComponent(name, isDirectory: true)
+        // Not a fingerprint: not 16 lowercase hex characters.
+        let decoy = folder.appendingPathComponent(".minute-notes-agenda")
+        try Data("mine".utf8).write(to: decoy)
+
+        try ICloudDriveBackup.mirror([], into: documents)
+
+        #expect(try Data(contentsOf: decoy) == Data("mine".utf8))
+        // The app's own notes and marker still go.
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("notes.md").path))
+        #expect(ICloudDriveBackup.meetingID(inFolder: folder) == nil)
+    }
+
     @Test func mirrorKeepsUserFilesWhenTheMeetingIsDeleted() throws {
         let documents = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: documents) }

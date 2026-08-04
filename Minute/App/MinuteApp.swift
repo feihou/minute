@@ -4,9 +4,10 @@ import SwiftUI
 @main
 struct MinuteApp: App {
     @Environment(\.scenePhase) private var scenePhase
-    /// Lives at app level so summaries keep generating while the user
-    /// navigates anywhere else in the app.
-    @State private var summaryGeneration = SummaryGeneration()
+    /// Lives at app level so summaries, re-transcriptions, and speaker
+    /// identification keep running while the user navigates anywhere else in
+    /// the app — and so their mutual-exclusion guard survives navigation.
+    @State private var meetingJobs = MeetingJobs()
     @State private var backgroundMirror: BackgroundMirrorTask?
     private let container: ModelContainer
     private let storeIsEphemeral: Bool
@@ -46,7 +47,7 @@ struct MinuteApp: App {
     var body: some Scene {
         WindowGroup {
             MeetingListView(storeIsEphemeral: storeIsEphemeral)
-                .environment(summaryGeneration)
+                .environment(meetingJobs)
         }
         .modelContainer(container)
         // Leaving the app is the one moment meeting data is settled and

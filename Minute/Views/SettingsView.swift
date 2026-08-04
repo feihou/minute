@@ -19,13 +19,17 @@ struct SettingsView: View {
     @AppStorage(AppSettings.summaryLanguageKey) private var summaryLanguage = ""
     @AppStorage(AppSettings.iCloudBackupKey) private var iCloudBackup = false
     @AppStorage(AppSettings.iCloudDriveKey) private var iCloudDrive = false
+    // Persisted, not @State: resolving the iCloud container on first use is
+    // slow, and dismissing Settings before it returns would otherwise discard
+    // the explanation and leave the toggle mysteriously back off.
+    @AppStorage(AppSettings.iCloudDriveUnavailableKey) private var driveUnavailable = false
+    @AppStorage(AppSettings.iCloudDriveLastSyncFailedKey) private var driveLastSyncFailed = false
 
     @State private var transcriptionStatus = "Checking…"
     @State private var usage: (fileCount: Int, totalBytes: Int64) = (0, 0)
     @State private var confirmingDeleteAll = false
     @State private var deleteAllFailed = false
     @State private var backupPolicyFailed = false
-    @State private var driveUnavailable = false
     @State private var mirrorTask: Task<Void, Never>?
 
     var body: some View {
@@ -194,10 +198,16 @@ struct SettingsView: View {
             } label: {
                 settingsLabel("Summary Model", systemImage: "brain", tint: .purple)
             }
+            LabeledContent {
+                Text("FluidAudio")
+                    .foregroundStyle(.secondary)
+            } label: {
+                settingsLabel("Speaker Model", systemImage: "person.2.wave.2", tint: .teal)
+            }
         } header: {
             Text("Models")
         } footer: {
-            Text("Both are Apple models that run entirely on this iPhone. The transcription model may need a one-time download before first use. Support for custom models may come in a future update.")
+            Text("Transcription and summaries use Apple models that run entirely on this iPhone; the transcription model may need a one-time download before first use. Identifying speakers uses a third-party model (FluidAudio) downloaded once from Hugging Face and then cached — that download is the only network request Minute makes, and your recordings are never part of it. Support for custom models may come in a future update.")
         }
     }
 
@@ -242,18 +252,43 @@ struct SettingsView: View {
                 // keeps copying recordings into iCloud that no later sync
                 // will clean up — the opt-out has to mean something.
                 mirrorTask?.cancel()
+                // A stale verdict from a previous state helps nobody: turning
+                // the mirror off retires it, turning it on re-tests it.
+                driveLastSyncFailed = false
                 guard iCloudDrive else { return }
                 let request = ICloudDriveBackup.request(for: meetings)
                 mirrorTask = Task {
                     // Toggling on is the one moment to say "this can't work
                     // here" — afterwards the mirror quietly self-heals.
-                    let available = await ICloudDriveBackup.syncNow(request)
+                    let outcome = await ICloudDriveBackup.syncNow(request)
                     // Resolving the iCloud container is slow on first use;
                     // never overrule a choice the user made since then.
-                    guard !Task.isCancelled, !available, iCloudDrive else { return }
-                    iCloudDrive = false
-                    driveUnavailable = true
+                    guard !Task.isCancelled, iCloudDrive else { return }
+                    switch outcome {
+                    case .unavailable:
+                        // The feature genuinely cannot work here, so retiring
+                        // the toggle is the honest outcome.
+                        iCloudDrive = false
+                        driveUnavailable = true
+                    case .incomplete:
+                        // One meeting that wouldn't copy is no reason to switch
+                        // the whole backup off — that would also deny it the
+                        // background retry that heals exactly this. Leave it on
+                        // and report the incompleteness instead.
+                        driveLastSyncFailed = true
+                    case .complete, .interrupted:
+                        break
+                    }
                 }
+            }
+
+            if iCloudDrive, driveLastSyncFailed {
+                Label(
+                    "The last backup to iCloud Drive didn't finish. Check that you're signed in to iCloud with iCloud Drive on — Minute will try again next time you leave the app.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.footnote)
+                .foregroundStyle(.orange)
             }
         } header: {
             Text("Backup")

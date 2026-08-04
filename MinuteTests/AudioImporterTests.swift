@@ -33,7 +33,7 @@ struct AudioImporterTests {
         let source = try makeWavFixture()
         defer { try? FileManager.default.removeItem(at: source) }
 
-        let meeting = try await AudioImporter.importAudio(from: source, context: context)
+        let meeting = try await AudioImporter.importAudio(from: source, context: context).meeting
 
         #expect(meeting.title == source.deletingPathExtension().lastPathComponent)
         #expect(meeting.duration > 0.4 && meeting.duration < 0.6)

@@ -45,11 +45,20 @@ final class BufferHandlerBox: Sendable {
             return entry?.value
         }
         set {
-            var replacement = newValue.map(HandlerEntry.init)
-            // Release the old handler after unlocking. Besides shortening the
-            // critical section, this avoids running arbitrary capture cleanup
-            // while the non-recursive lock is held.
-            storage.withLock { swap(&$0, &replacement) }
+            let replacement = newValue.map(HandlerEntry.init)
+            // Hand the old handler back out and let it die at the end of this
+            // scope, i.e. after unlocking. Besides shortening the critical
+            // section, this avoids running arbitrary capture cleanup while the
+            // non-recursive lock is held. Returning it (rather than swapping
+            // with a captured var) also keeps this legal under Swift 6, which
+            // rejects mutating a captured var from a concurrently-executing
+            // closure.
+            let previous = storage.withLock { state -> HandlerEntry? in
+                let old = state
+                state = replacement
+                return old
+            }
+            _ = previous
         }
     }
 }
@@ -63,6 +72,12 @@ final class AudioRecorder {
         case idle
         case recording
         case paused
+        /// Capture ended in a way that cannot be resumed in place: a media
+        /// services reset took the engine, the session, and the file's encoder
+        /// with it. Distinct from `.paused` because everything captured so far
+        /// is still saveable, but resuming can never succeed — the file has
+        /// been closed and `installTap()` would have nothing to write to.
+        case captureLost
     }
 
     private static let logger = Logger(subsystem: "com.minuteapp.Minute", category: "AudioRecorder")
@@ -75,6 +90,15 @@ final class AudioRecorder {
     /// audio route/configuration change), so the owner can reflect it in UI.
     var onAutoPause: (() -> Void)?
 
+    /// Called when the recorder resumed itself after the system said the
+    /// interruption is over, so the owner can clear the "paused" notice.
+    var onAutoResume: (() -> Void)?
+
+    /// Called when capture died in a way that cannot be resumed in place
+    /// (media services reset). Everything recorded so far is still on disk and
+    /// saveable; nothing more will be captured.
+    var onCaptureLost: ((String) -> Void)?
+
     /// Called once per recording when writing audio to disk starts failing
     /// (e.g. storage full). The recorder auto-pauses first, so everything
     /// captured so far stays saveable.
@@ -86,6 +110,10 @@ final class AudioRecorder {
     private var file: AVAudioFile?
     private var accumulatedTime: TimeInterval = 0
     private var segmentStartedAt: Date?
+    /// True only while paused *by* an audio-session interruption, so the
+    /// matching "interruption ended" can resume what it interrupted and
+    /// nothing else. Cleared by every other route out of `.recording`.
+    private var pausedByInterruption = false
     @ObservationIgnored nonisolated(unsafe) private var observerTokens: [any NSObjectProtocol] = []
 
     /// Total recorded time, excluding paused stretches.
@@ -102,9 +130,7 @@ final class AudioRecorder {
     init() {
         let pauseOnNotification: @Sendable (Notification) -> Void = { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.state == .recording else { return }
-                self.pause()
-                self.onAutoPause?()
+                self?.systemPause(causedByInterruption: false)
             }
         }
         // Phone call / Siri interruption: iOS suspends our audio session.
@@ -112,10 +138,30 @@ final class AudioRecorder {
             forName: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance(),
             queue: .main
-        ) { notification in
-            let began = (notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt)
-                == AVAudioSession.InterruptionType.began.rawValue
-            if began { pauseOnNotification(notification) }
+        ) { [weak self] notification in
+            let info = notification.userInfo
+            let rawType = info?[AVAudioSessionInterruptionTypeKey] as? UInt
+            switch rawType.flatMap(AVAudioSession.InterruptionType.init(rawValue:)) {
+            case .began:
+                Task { @MainActor [weak self] in
+                    self?.systemPause(causedByInterruption: true)
+                }
+            case .ended:
+                // The system tells us when it is safe to pick the microphone
+                // back up. Without this a call or a Siri invocation ends the
+                // meeting's capture for good — the user puts the phone down
+                // believing it is still recording.
+                let options = (info?[AVAudioSessionInterruptionOptionKey] as? UInt)
+                    .map(AVAudioSession.InterruptionOptions.init(rawValue:)) ?? []
+                let allowsResume = options.contains(.shouldResume)
+                // Always delivered, resume or not: ownership has to be retired
+                // even when the system refuses the resume.
+                Task { @MainActor [weak self] in
+                    self?.endInterruption(resuming: allowsResume)
+                }
+            default:
+                break
+            }
         })
         // Route/config change (e.g. AirPods connect): the engine stops itself
         // and the tap's format may no longer match the hardware.
@@ -125,6 +171,77 @@ final class AudioRecorder {
             queue: .main,
             using: pauseOnNotification
         ))
+        // The audio daemon crashed and took the engine, the file's encoder,
+        // and the session with it. Nothing can be resumed in place; say so
+        // instead of counting up over silence.
+        observerTokens.append(NotificationCenter.default.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleMediaServicesReset()
+            }
+        })
+    }
+
+    /// Pauses because the system took the microphone away, not because the
+    /// user asked. Only an interruption arms the auto-resume: a route change
+    /// gets no matching "ended" callback, so treating it as resumable would
+    /// let an unrelated later interruption restart a recording nobody asked to
+    /// restart.
+    private func systemPause(causedByInterruption: Bool) {
+        guard state == .recording else { return }
+        pause()
+        pausedByInterruption = causedByInterruption
+        onAutoPause?()
+    }
+
+    /// The interruption that paused us is over. Picks capture back up, but
+    /// only when that interruption is what stopped us — resuming a recording
+    /// the *user* paused would turn a phone call or a Siri question into a
+    /// microphone they never switched back on.
+    ///
+    /// Ownership retires here whether or not the system permits the resume.
+    /// Leaving it armed through a `.ended` that denied the resume would hand
+    /// it to the *next* interruption: `systemPause` only arms while
+    /// `.recording`, so nothing would reset it while we sat paused, and an
+    /// unrelated later interruption ending with `.shouldResume` would restart
+    /// the microphone on the strength of a claim that expired long ago.
+    ///
+    /// A resume failure is not fatal: everything recorded so far stays on disk
+    /// and the user can resume by hand from the paused state.
+    private func endInterruption(resuming: Bool) {
+        let wasOurs = pausedByInterruption
+        pausedByInterruption = false
+        guard resuming, wasOurs, state == .paused else { return }
+        do {
+            try resume()
+            onAutoResume?()
+        } catch {
+            Self.logger.error("Auto-resume after interruption failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Media services reset: stop pretending to record. The elapsed time is
+    /// banked and the file is closed so what was captured stays playable, and
+    /// the state goes to `.captureLost` rather than `.paused` — there is
+    /// nothing left to resume into, so offering Resume would only ever produce
+    /// an error in place of the explanation the user needs.
+    private func handleMediaServicesReset() {
+        guard state == .recording || state == .paused else { return }
+        if let startedAt = segmentStartedAt {
+            accumulatedTime += Date().timeIntervalSince(startedAt)
+        }
+        segmentStartedAt = nil
+        pausedByInterruption = false
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        tapHandler.handler = nil
+        file = nil // Closes and flushes what was captured.
+        level = 0
+        state = .captureLost
+        onCaptureLost?("Recording stopped — the system's audio service restarted. Everything captured up to this point can still be saved.")
     }
 
     deinit {
@@ -135,10 +252,6 @@ final class AudioRecorder {
 
     static func requestPermission() async -> Bool {
         await AVAudioApplication.requestRecordPermission()
-    }
-
-    static var permissionGranted: Bool {
-        AVAudioApplication.shared.recordPermission == .granted
     }
 
     /// Activates the audio session so the input node reports the real hardware
@@ -247,6 +360,9 @@ final class AudioRecorder {
 
     func pause() {
         guard state == .recording else { return }
+        // A deliberate pause is not an interruption. `systemPause` re-arms this
+        // immediately afterwards for the one case that is.
+        pausedByInterruption = false
         engine.pause()
         if let startedAt = segmentStartedAt {
             accumulatedTime += Date().timeIntervalSince(startedAt)
@@ -268,6 +384,7 @@ final class AudioRecorder {
 
     func resume() throws {
         guard state == .paused else { return }
+        pausedByInterruption = false
         // An interruption deactivates the session; reactivate before
         // restarting the engine or start() throws.
         try AVAudioSession.sharedInstance().setActive(true)
@@ -302,6 +419,7 @@ final class AudioRecorder {
             accumulatedTime += Date().timeIntervalSince(startedAt)
         }
         segmentStartedAt = nil
+        pausedByInterruption = false
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         tapHandler.handler = nil

@@ -12,6 +12,15 @@ enum AppSettings {
     static let summaryLanguageKey = "summary.language"
     static let iCloudBackupKey = "backup.iCloud"
     static let iCloudDriveKey = "backup.iCloudDrive"
+    /// Set when turning the iCloud Drive toggle on couldn't reach the
+    /// container. Persisted rather than held in view state so dismissing
+    /// Settings before the (slow) first container lookup returns doesn't throw
+    /// the explanation away and leave the toggle silently back off.
+    static let iCloudDriveUnavailableKey = "backup.iCloudDriveUnavailable"
+    /// Set when a background mirror failed and cleared when one succeeds. The
+    /// mirror self-heals, but without this a permanently broken backup (signed
+    /// out of iCloud, say) looks identical to a working one.
+    static let iCloudDriveLastSyncFailedKey = "backup.iCloudDriveLastSyncFailed"
 
     /// Whether meeting data (audio, transcripts, summaries) is included in the
     /// iPhone's iCloud/computer device backup. Off by default — private by
@@ -24,6 +33,13 @@ enum AppSettings {
     /// iCloud Drive (one folder per meeting: notes + audio). Off by default.
     static var iCloudDriveBackupEnabled: Bool {
         UserDefaults.standard.bool(forKey: iCloudDriveKey)
+    }
+
+    /// Whether the most recent background mirror failed. Written by the
+    /// mirror, read by Settings.
+    static var iCloudDriveLastSyncFailed: Bool {
+        get { UserDefaults.standard.bool(forKey: iCloudDriveLastSyncFailedKey) }
+        set { UserDefaults.standard.set(newValue, forKey: iCloudDriveLastSyncFailedKey) }
     }
 
     /// Encoder quality applied to new recordings.

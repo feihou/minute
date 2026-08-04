@@ -70,3 +70,13 @@ jobs:
           -only-testing:MinuteTests \
           -skip-testing:MinuteTests/SummarizationIntegrationTests \
           CODE_SIGNING_ALLOWED=NO
+        # The UI tests are the only end-to-end cover for record → stop → save.
+        # Run them as a separate invocation so a UI failure is distinguishable
+        # from a unit failure in the log.
+        echo "Running UI tests"
+        xcodebuild test \
+          -project Minute.xcodeproj \
+          -scheme Minute \
+          -destination "platform=iOS Simulator,id=$UDID" \
+          -only-testing:MinuteUITests \
+          CODE_SIGNING_ALLOWED=NO

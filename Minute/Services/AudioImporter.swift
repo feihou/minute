@@ -24,14 +24,22 @@ enum AudioImporter {
         }
     }
 
+    /// A finished import. The note explains why the meeting arrived without a
+    /// transcript, so a silently text-less import can say what went wrong
+    /// instead of looking like the recording simply had no speech.
+    struct Result {
+        let meeting: Meeting
+        let transcriptionNote: String?
+    }
+
     /// Copies, transcribes (best effort — an import still succeeds without a
     /// transcript, matching how recording behaves when live transcription
-    /// can't run), and saves. Returns the new meeting.
+    /// can't run), and saves.
     static func importAudio(
         from sourceURL: URL,
         context: ModelContext,
         transcription: TranscriptionService? = nil
-    ) async throws -> Meeting {
+    ) async throws -> Result {
         // Built here rather than as a default argument — the class is
         // MainActor-isolated, and default arguments evaluate nonisolated.
         let transcription = transcription ?? TranscriptionService()
@@ -72,9 +80,31 @@ enum AudioImporter {
         let duration = sampleRate > 0 ? Double(audioFile.length) / sampleRate : 0
 
         var segments: [TranscriptSegment] = []
+        var transcriptionNote: String?
         await transcription.prepare()
-        if case .available = transcription.availability {
-            segments = (try? await transcription.transcribe(file: audioFile)) ?? []
+        switch transcription.availability {
+        case .available:
+            do {
+                segments = try await transcription.transcribe(file: audioFile)
+            } catch is CancellationError {
+                // Cancelling leaves the already-copied recording in the
+                // Recordings directory with no Meeting referencing it. Every
+                // other cancellation path here cleans up before rethrowing;
+                // this one has to as well, or the user's audio sits on disk
+                // invisibly until some later launch happens to sweep orphans.
+                MeetingStore.deleteAudioFile(named: fileName)
+                throw CancellationError()
+            } catch {
+                // The import still succeeds — the audio is worth keeping — but
+                // swallowing this left the user staring at a transcript-less
+                // meeting with no idea whether the file was silent or the
+                // model had failed.
+                transcriptionNote = "The audio was imported, but transcribing it failed: \(error.localizedDescription)"
+            }
+        case .unavailable(let message):
+            transcriptionNote = "The audio was imported without a transcript. \(message)"
+        case .unknown, .downloadingModel:
+            transcriptionNote = "The audio was imported without a transcript because the speech model wasn't ready."
         }
 
         // The user may have cancelled while the model worked; don't keep a
@@ -95,13 +125,30 @@ enum AudioImporter {
             MeetingStore.deleteAudioFile(named: fileName)
             throw ImportError.saveFailed
         }
-        return meeting
+        return Result(meeting: meeting, transcriptionNote: transcriptionNote)
     }
 
     /// Runs off the main actor (nonisolated async), keeping the UI live
     /// while large files copy.
+    ///
+    /// Coordinated, because the common source is iCloud Drive: a file that has
+    /// been offloaded is only a placeholder on disk, and a bare `copyItem`
+    /// fails instantly with "no such file" — which the caller then reports as
+    /// "storage may be full", sending the user off to delete photos for a
+    /// problem that was never about space. The coordinator materializes the
+    /// file first and hands back a readable URL.
     private nonisolated static func copyFile(from source: URL, to destination: URL) async throws {
-        try FileManager.default.copyItem(at: source, to: destination)
+        var coordinationError: NSError?
+        var copyError: Error?
+        NSFileCoordinator().coordinate(readingItemAt: source, options: [], error: &coordinationError) { readable in
+            do {
+                try FileManager.default.copyItem(at: readable, to: destination)
+            } catch {
+                copyError = error
+            }
+        }
+        if let coordinationError { throw coordinationError }
+        if let copyError { throw copyError }
     }
 
     /// Rethrows cancellation after removing the partially imported audio,

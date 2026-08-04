@@ -321,7 +321,7 @@ struct SummarizationService {
                 if group.count == 1 {
                     reduced.append(group[0])
                 } else {
-                    reduced.append(try await condense(group))
+                    reduced.append(try await condense(group, contextBlock: contextBlock))
                 }
             }
             current = reduced
@@ -360,13 +360,18 @@ struct SummarizationService {
         return normalized(try await session.respond(to: prompt, generating: TemplatedDraft.self, options: options).content, template: template)
     }
 
-    private func condense(_ notes: [ChunkNotes]) async throws -> ChunkNotes {
+    private func condense(_ notes: [ChunkNotes], contextBlock: String?) async throws -> ChunkNotes {
         let session = LanguageModelSession(instructions: instructions)
+        // Every other pass gets the user's background context; this one used to
+        // be the exception, so the longest meetings — the only ones that reach
+        // the condense loop at all — were the ones that lost the correct
+        // spelling of names and terms on the way to the final merge.
+        let context = contextBlock.map { "\n\($0)\n" } ?? ""
         let prompt = """
             These are notes from consecutive, overlapping parts of one meeting. \
             Merge them into one set of notes: combine duplicates keeping the most specific wording, \
             drop open questions that another part answered, and do not add anything new.
-
+            \(context)
             Notes:
             \(rendered(notes))
             """

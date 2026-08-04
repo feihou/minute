@@ -2,6 +2,10 @@ included:
   - Minute
   - MinuteTests
   - MinuteUITests
+  # Shipped source too: both are compiled into the app or the widget, and
+  # leaving them out meant the lint gate silently ignored them.
+  - MinuteWidgets
+  - Shared
 
 disabled_rules:
   # Long lines are dominated by prompts and user-facing strings that read

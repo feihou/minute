@@ -9,41 +9,62 @@ struct SummaryEditorView: View {
 
     let meeting: Meeting
 
-    @State private var overview: String
-    @State private var keyPoints: String
-    @State private var decisions: String
-    @State private var actionItems: String
-    @State private var openQuestions: String
-    /// Template-defined sections (titles fixed, items editable); empty for
-    /// standard-template summaries.
-    private let sectionTitles: [String]
-    @State private var sectionTexts: [String]
+    /// Everything the editor edits, snapshotted when the sheet opens.
+    private struct Draft: Equatable {
+        var overview: String
+        var keyPoints: String
+        var decisions: String
+        var actionItems: String
+        var openQuestions: String
+        /// Items for each template-defined section, positionally matching
+        /// `sectionTitles`.
+        var sectionTexts: [String]
+    }
+
+    @State private var draft: Draft
+    /// The snapshot the sheet opened with, so Cancel can tell an untouched
+    /// editor from one holding unsaved work.
+    @State private var original: Draft
+    /// Template-defined section names (titles fixed, items editable); empty
+    /// for standard-template summaries. @State, not a plain `let`: a
+    /// regeneration landing while the sheet is open rebuilds this view with a
+    /// new summary, and a stored property would take the new titles while
+    /// `draft.sectionTexts` kept the old count — `ForEach` over the titles
+    /// would then subscript past the end of the texts.
+    @State private var sectionTitles: [String]
+    @State private var confirmingDiscard = false
 
     init(meeting: Meeting) {
         self.meeting = meeting
         let summary = meeting.summary
-        _overview = State(initialValue: summary?.overview ?? "")
-        _keyPoints = State(initialValue: (summary?.keyPoints ?? []).joined(separator: "\n"))
-        _decisions = State(initialValue: (summary?.decisions ?? []).joined(separator: "\n"))
-        _actionItems = State(initialValue: (summary?.actionItems ?? [])
-            .map { "\($0.task) | \($0.owner) | \($0.deadline)" }
-            .joined(separator: "\n"))
-        _openQuestions = State(initialValue: (summary?.openQuestions ?? []).joined(separator: "\n"))
         let sections = summary?.sections ?? []
-        sectionTitles = sections.map(\.title)
-        _sectionTexts = State(initialValue: sections.map { $0.items.joined(separator: "\n") })
+        let draft = Draft(
+            overview: summary?.overview ?? "",
+            keyPoints: (summary?.keyPoints ?? []).joined(separator: "\n"),
+            decisions: (summary?.decisions ?? []).joined(separator: "\n"),
+            actionItems: (summary?.actionItems ?? [])
+                .map { "\($0.task) | \($0.owner) | \($0.deadline)" }
+                .joined(separator: "\n"),
+            openQuestions: (summary?.openQuestions ?? []).joined(separator: "\n"),
+            sectionTexts: sections.map { $0.items.joined(separator: "\n") }
+        )
+        _draft = State(initialValue: draft)
+        _original = State(initialValue: draft)
+        _sectionTitles = State(initialValue: sections.map(\.title))
     }
+
+    private var hasChanges: Bool { draft != original }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Overview") {
-                    TextEditor(text: $overview)
+                    TextEditor(text: $draft.overview)
                         .frame(minHeight: 80)
                 }
                 if sectionTitles.isEmpty {
                     Section {
-                        TextEditor(text: $keyPoints)
+                        TextEditor(text: $draft.keyPoints)
                             .frame(minHeight: 80)
                     } header: {
                         Text("Key Points")
@@ -51,7 +72,7 @@ struct SummaryEditorView: View {
                         Text("One item per line.")
                     }
                     Section {
-                        TextEditor(text: $decisions)
+                        TextEditor(text: $draft.decisions)
                             .frame(minHeight: 60)
                     } header: {
                         Text("Decisions")
@@ -59,9 +80,11 @@ struct SummaryEditorView: View {
                         Text("One item per line.")
                     }
                 } else {
-                    ForEach(sectionTitles.indices, id: \.self) { index in
+                    // Bounded by the texts as well as the titles so the two can
+                    // never disagree, however this view is rebuilt.
+                    ForEach(0..<min(sectionTitles.count, draft.sectionTexts.count), id: \.self) { index in
                         Section {
-                            TextEditor(text: $sectionTexts[index])
+                            TextEditor(text: $draft.sectionTexts[index])
                                 .frame(minHeight: 60)
                         } header: {
                             Text(sectionTitles[index])
@@ -71,7 +94,7 @@ struct SummaryEditorView: View {
                     }
                 }
                 Section {
-                    TextEditor(text: $actionItems)
+                    TextEditor(text: $draft.actionItems)
                         .frame(minHeight: 80)
                 } header: {
                     Text("Action Items")
@@ -80,7 +103,7 @@ struct SummaryEditorView: View {
                 }
                 if sectionTitles.isEmpty {
                     Section {
-                        TextEditor(text: $openQuestions)
+                        TextEditor(text: $draft.openQuestions)
                             .frame(minHeight: 60)
                     } header: {
                         Text("Open Questions")
@@ -93,7 +116,13 @@ struct SummaryEditorView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") {
+                        if hasChanges {
+                            confirmingDiscard = true
+                        } else {
+                            dismiss()
+                        }
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
@@ -102,21 +131,38 @@ struct SummaryEditorView: View {
                     }
                 }
             }
+            .confirmationDialog(
+                "Discard your changes?",
+                isPresented: $confirmingDiscard,
+                titleVisibility: .visible
+            ) {
+                Button("Discard Changes", role: .destructive) { dismiss() }
+                Button("Keep Editing", role: .cancel) {}
+            }
         }
+        // A swipe-down is easy to trigger while scrolling a Form; without this
+        // it throws away everything typed with no way back.
+        .interactiveDismissDisabled(hasChanges)
     }
 
     private func save() {
         meeting.summary = MeetingSummary(
-            overview: overview.trimmingCharacters(in: .whitespacesAndNewlines),
-            keyPoints: Self.parseList(keyPoints),
-            decisions: Self.parseList(decisions),
-            actionItems: Self.parseActionItems(actionItems),
-            openQuestions: Self.parseList(openQuestions),
+            overview: draft.overview.trimmingCharacters(in: .whitespacesAndNewlines),
+            keyPoints: Self.parseList(draft.keyPoints),
+            decisions: Self.parseList(draft.decisions),
+            actionItems: Self.parseActionItems(draft.actionItems),
+            openQuestions: Self.parseList(draft.openQuestions),
             generatedAt: meeting.summary?.generatedAt ?? .now,
             suggestedTitle: meeting.summary?.suggestedTitle,
-            sections: sectionTitles.isEmpty ? nil : zip(sectionTitles, sectionTexts).map {
+            sections: sectionTitles.isEmpty ? nil : zip(sectionTitles, draft.sectionTexts).map {
                 SummarySection(title: $0, items: Self.parseList($1))
             },
+            // Deliberately preserved. Saving the editor — even after rewriting
+            // a section — does not restore the transcript parts the model
+            // failed on, and merely opening the editor and tapping Save would
+            // otherwise clear the warning without changing anything. Making
+            // demonstrably incomplete notes look complete is worse than a
+            // banner that only regenerating can retire.
             skippedParts: meeting.summary?.skippedParts,
             // Not editable here yet; keep whatever the model produced.
             speakerPerspectives: meeting.summary?.speakerPerspectives
