@@ -5,6 +5,28 @@ import Testing
 
 @MainActor
 struct MeetingStoreTests {
+    /// The failure path of `delete` restores the meeting by re-inserting it,
+    /// which only works because SwiftData treats an insert of a pending-deleted
+    /// object as an undo. If that ever stops holding, a failed delete would
+    /// silently commit on the next unrelated save.
+    @Test func reinsertingUndoesAnUncommittedDelete() throws {
+        let container = try ModelContainer(
+            for: Meeting.self,
+            configurations: MeetingStore.modelConfiguration(inMemory: true)
+        )
+        let context = container.mainContext
+        let meeting = Meeting(title: "Survivor")
+        context.insert(meeting)
+        try context.save()
+
+        context.delete(meeting)
+        context.insert(meeting)
+        try context.save()
+
+        #expect(!meeting.isDeleted)
+        #expect(try context.fetch(FetchDescriptor<Meeting>()).count == 1)
+    }
+
     @Test func deleteRemovesMeetingAndAudioFile() throws {
         let container = try ModelContainer(
             for: Meeting.self,

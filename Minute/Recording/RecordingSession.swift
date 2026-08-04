@@ -80,8 +80,13 @@ final class RecordingSession: Identifiable {
 
         recorder.onCaptureLost = { [weak self] message in
             guard let self, self.phase == .recording || self.phase == .paused else { return }
-            self.phase = .paused
-            self.notice = message
+            // `.failed`, not `.paused`: capture cannot be restarted in place,
+            // and `.paused` is what puts a Resume button on screen. The audio
+            // file is closed and intact and `didStartRecording` is already
+            // set, so the failed state offers Save Recording / Discard — which
+            // is exactly the choice the user has left.
+            self.notice = nil
+            self.phase = .failed(message)
         }
 
         recorder.onWriteError = { [weak self] _ in

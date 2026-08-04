@@ -14,16 +14,24 @@ enum MeetingStore {
     /// Recordings directory. Set once at app startup, before any recording.
     nonisolated(unsafe) static var useEphemeralStorage = false
 
+    /// Whether the last attempt stuck. A transient failure (storage briefly
+    /// unavailable at launch) would otherwise leave new recordings under the
+    /// wrong backup policy for the rest of the process, so
+    /// `recordingsDirectory()` retries while this is false — once it sticks,
+    /// not on every call.
+    private nonisolated(unsafe) static var backupPolicyApplied = false
+
     /// Applies the user's backup choice to the app's Application Support tree
-    /// (recordings + SwiftData store). Meeting data is excluded from
-    /// iCloud/computer backups unless the user turned on the iCloud Backup
-    /// toggle in Settings. Covers any corrupt store and older recordings still
-    /// sitting there while the in-memory fallback is active, so this runs at
-    /// launch independently of where new audio routes — and again whenever the
-    /// toggle changes. Returns false when the flag couldn't be applied so the
-    /// Settings toggle can tell the user instead of failing silently; the
-    /// policy is re-applied at every launch and recordings-directory access,
-    /// so a transient failure heals itself.
+    /// (recordings + SwiftData store) and to the App Group container (the
+    /// widget snapshot, which carries meeting titles). Meeting data is
+    /// excluded from iCloud/computer backups unless the user turned on the
+    /// iCloud Backup toggle in Settings. Covers any corrupt store and older
+    /// recordings still sitting there while the in-memory fallback is active,
+    /// so this runs at launch independently of where new audio routes — and
+    /// again whenever the toggle changes. Returns false when the policy
+    /// couldn't be applied so the Settings toggle can tell the user instead of
+    /// failing silently; a failed attempt is retried on the next
+    /// recordings-directory access, so a transient failure heals itself.
     @discardableResult
     static func applyBackupPolicy() -> Bool {
         let excluded = !AppSettings.iCloudBackupEnabled
@@ -55,6 +63,7 @@ enum MeetingStore {
                 applied = false
             }
         }
+        backupPolicyApplied = applied
         return applied
     }
 
@@ -105,11 +114,16 @@ enum MeetingStore {
     #endif
 
     static func recordingsDirectory() throws -> URL {
-        // The policy is applied at launch and again whenever the Settings
-        // toggle flips, which is every moment it can actually change. Re-applying
-        // it here cost three syscalls on the main thread per call — and this is
-        // called from view bodies (audioURL(for:)), so it ran on every redraw
-        // of a summarizing meeting.
+        // The policy is applied at launch and whenever the Settings toggle
+        // flips, which covers every moment it can actually change — so this
+        // used to re-apply it unconditionally and cost three syscalls on the
+        // main thread per call, on a path reached from view bodies
+        // (audioURL(for:)) and therefore from every redraw of a summarizing
+        // meeting. Retry only while it has not yet stuck, which keeps the
+        // documented self-healing for a transient failure at no steady cost.
+        if !backupPolicyApplied {
+            applyBackupPolicy()
+        }
         if useEphemeralStorage {
             let directory = ephemeralRecordingsDirectory
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -187,9 +201,14 @@ enum MeetingStore {
             try context.save()
         } catch {
             logger.error("Failed to save after deleting meeting: \(error.localizedDescription)")
-            // The delete stays pending in the context; if a later save
-            // commits it, the audio becomes an orphan and the launch sweep
-            // removes it. Never delete audio for an uncommitted row-delete.
+            // Undo just this deletion. Left pending, it would be committed by
+            // the next save from anywhere — the detail view's onDisappear, a
+            // summary finishing — silently deleting a meeting we had just told
+            // the user we could not delete, and orphaning its audio on the way
+            // out. Re-inserting restores this one object without a
+            // context-wide rollback(), which would also discard unrelated
+            // unsaved edits in the shared main context.
+            context.insert(meeting)
             return false
         }
         if let audioFileName {

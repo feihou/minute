@@ -485,6 +485,51 @@ struct ICloudDriveBackupTests {
     /// iCloud evicts local copies under storage pressure, leaving a
     /// ".name.icloud" placeholder — the audio is still in iCloud Drive, so
     /// re-copying it is pure churn.
+    /// Recordings are written once, so "evicted means current" is sound for
+    /// audio. Notes are not: the user can rename a meeting or edit its summary
+    /// at any time. Deciding from the evicted placeholder alone would strand
+    /// every later edit, so the fingerprint lives in a marker's NAME, which
+    /// eviction cannot take away.
+    @Test func mirrorRewritesEditedNotesEvenWhenTheMirroredCopyIsEvicted() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let id = UUID().uuidString
+        let name = "2026-08-03 09.30 Standup"
+        try ICloudDriveBackup.mirror([item(id: id, folderName: name, notes: "v1")], into: documents)
+
+        // iCloud reclaims the space: notes.md becomes a placeholder.
+        let folder = documents.appendingPathComponent(name, isDirectory: true)
+        let notesURL = folder.appendingPathComponent("notes.md")
+        try FileManager.default.removeItem(at: notesURL)
+        try Data().write(to: folder.appendingPathComponent(".notes.md.icloud"))
+
+        try ICloudDriveBackup.mirror([item(id: id, folderName: name, notes: "v2")], into: documents)
+
+        #expect(try String(contentsOf: notesURL, encoding: .utf8) == "v2")
+    }
+
+    /// The other half of the same contract: an evicted but *unchanged*
+    /// notes.md must not be rewritten, or every mirrored meeting re-uploads
+    /// its whole transcript on every sync, forever.
+    @Test func mirrorLeavesEvictedUnchangedNotesAlone() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let id = UUID().uuidString
+        let name = "2026-08-03 09.30 Standup"
+        try ICloudDriveBackup.mirror([item(id: id, folderName: name, notes: "v1")], into: documents)
+
+        let folder = documents.appendingPathComponent(name, isDirectory: true)
+        let notesURL = folder.appendingPathComponent("notes.md")
+        try FileManager.default.removeItem(at: notesURL)
+        let placeholder = folder.appendingPathComponent(".notes.md.icloud")
+        try Data().write(to: placeholder)
+
+        try ICloudDriveBackup.mirror([item(id: id, folderName: name, notes: "v1")], into: documents)
+
+        #expect(!FileManager.default.fileExists(atPath: notesURL.path))
+        #expect(FileManager.default.fileExists(atPath: placeholder.path))
+    }
+
     @Test func mirrorLeavesEvictedAudioAlone() throws {
         let documents = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: documents) }

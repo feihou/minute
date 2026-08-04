@@ -72,6 +72,12 @@ final class AudioRecorder {
         case idle
         case recording
         case paused
+        /// Capture ended in a way that cannot be resumed in place: a media
+        /// services reset took the engine, the session, and the file's encoder
+        /// with it. Distinct from `.paused` because everything captured so far
+        /// is still saveable, but resuming can never succeed — the file has
+        /// been closed and `installTap()` would have nothing to write to.
+        case captureLost
     }
 
     private static let logger = Logger(subsystem: "com.minuteapp.Minute", category: "AudioRecorder")
@@ -104,6 +110,10 @@ final class AudioRecorder {
     private var file: AVAudioFile?
     private var accumulatedTime: TimeInterval = 0
     private var segmentStartedAt: Date?
+    /// True only while paused *by* an audio-session interruption, so the
+    /// matching "interruption ended" can resume what it interrupted and
+    /// nothing else. Cleared by every other route out of `.recording`.
+    private var pausedByInterruption = false
     @ObservationIgnored nonisolated(unsafe) private var observerTokens: [any NSObjectProtocol] = []
 
     /// Total recorded time, excluding paused stretches.
@@ -120,9 +130,7 @@ final class AudioRecorder {
     init() {
         let pauseOnNotification: @Sendable (Notification) -> Void = { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.state == .recording else { return }
-                self.pause()
-                self.onAutoPause?()
+                self?.systemPause(causedByInterruption: false)
             }
         }
         // Phone call / Siri interruption: iOS suspends our audio session.
@@ -135,7 +143,9 @@ final class AudioRecorder {
             let rawType = info?[AVAudioSessionInterruptionTypeKey] as? UInt
             switch rawType.flatMap(AVAudioSession.InterruptionType.init(rawValue:)) {
             case .began:
-                pauseOnNotification(notification)
+                Task { @MainActor [weak self] in
+                    self?.systemPause(causedByInterruption: true)
+                }
             case .ended:
                 // The system tells us when it is safe to pick the microphone
                 // back up. Without this a call or a Siri invocation ends the
@@ -173,11 +183,27 @@ final class AudioRecorder {
         })
     }
 
+    /// Pauses because the system took the microphone away, not because the
+    /// user asked. Only an interruption arms the auto-resume: a route change
+    /// gets no matching "ended" callback, so treating it as resumable would
+    /// let an unrelated later interruption restart a recording nobody asked to
+    /// restart.
+    private func systemPause(causedByInterruption: Bool) {
+        guard state == .recording else { return }
+        pause()
+        pausedByInterruption = causedByInterruption
+        onAutoPause?()
+    }
+
     /// Picks capture back up after the system signalled the interruption is
-    /// over. A failure here is not fatal: everything recorded so far stays on
-    /// disk and the user can resume by hand from the paused state.
+    /// over — but only when that interruption is what stopped us. Resuming a
+    /// recording the *user* paused would turn a phone call or a Siri question
+    /// into a microphone they never switched back on.
+    ///
+    /// A failure here is not fatal: everything recorded so far stays on disk
+    /// and the user can resume by hand from the paused state.
     private func resumeAfterInterruption() {
-        guard state == .paused else { return }
+        guard state == .paused, pausedByInterruption else { return }
         do {
             try resume()
             onAutoResume?()
@@ -187,19 +213,23 @@ final class AudioRecorder {
     }
 
     /// Media services reset: stop pretending to record. The elapsed time is
-    /// banked and the file is closed so what was captured stays playable.
+    /// banked and the file is closed so what was captured stays playable, and
+    /// the state goes to `.captureLost` rather than `.paused` — there is
+    /// nothing left to resume into, so offering Resume would only ever produce
+    /// an error in place of the explanation the user needs.
     private func handleMediaServicesReset() {
-        guard state != .idle else { return }
+        guard state == .recording || state == .paused else { return }
         if let startedAt = segmentStartedAt {
             accumulatedTime += Date().timeIntervalSince(startedAt)
         }
         segmentStartedAt = nil
+        pausedByInterruption = false
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         tapHandler.handler = nil
         file = nil // Closes and flushes what was captured.
         level = 0
-        state = .paused
+        state = .captureLost
         onCaptureLost?("Recording stopped — the system's audio service restarted. Everything captured up to this point can still be saved.")
     }
 
@@ -319,6 +349,9 @@ final class AudioRecorder {
 
     func pause() {
         guard state == .recording else { return }
+        // A deliberate pause is not an interruption. `systemPause` re-arms this
+        // immediately afterwards for the one case that is.
+        pausedByInterruption = false
         engine.pause()
         if let startedAt = segmentStartedAt {
             accumulatedTime += Date().timeIntervalSince(startedAt)
@@ -340,6 +373,7 @@ final class AudioRecorder {
 
     func resume() throws {
         guard state == .paused else { return }
+        pausedByInterruption = false
         // An interruption deactivates the session; reactivate before
         // restarting the engine or start() throws.
         try AVAudioSession.sharedInstance().setActive(true)
@@ -374,6 +408,7 @@ final class AudioRecorder {
             accumulatedTime += Date().timeIntervalSince(startedAt)
         }
         segmentStartedAt = nil
+        pausedByInterruption = false
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         tapHandler.handler = nil

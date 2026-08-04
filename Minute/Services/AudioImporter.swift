@@ -87,6 +87,12 @@ enum AudioImporter {
             do {
                 segments = try await transcription.transcribe(file: audioFile)
             } catch is CancellationError {
+                // Cancelling leaves the already-copied recording in the
+                // Recordings directory with no Meeting referencing it. Every
+                // other cancellation path here cleans up before rethrowing;
+                // this one has to as well, or the user's audio sits on disk
+                // invisibly until some later launch happens to sweep orphans.
+                MeetingStore.deleteAudioFile(named: fileName)
                 throw CancellationError()
             } catch {
                 // The import still succeeds — the audio is worth keeping — but
