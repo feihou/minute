@@ -35,16 +35,14 @@ struct SettingsView: View {
                 recordingSection
                 summaryContextSection
                 modelsSection
-                // In ephemeral-fallback mode the real recordings directory
-                // isn't in use, so the usage figure and the "delete all"
-                // promise would both be wrong — hide the section entirely.
-                // In ephemeral-fallback mode new recordings live in the
-                // temporary directory and the store is in-memory — neither is
-                // ever backed up, so the backup promise would be false too.
+                // In fallback mode the usage figure and local deletion promise
+                // would be wrong. Backup controls stay visible because the
+                // device-backup choice still governs old persistent data, and
+                // the user must be able to turn either privacy setting off.
                 if !MeetingStore.useEphemeralStorage {
                     storageSection
-                    backupSection
                 }
+                backupSection
                 privacySection
                 capabilitiesSection
                 aboutSection
@@ -75,10 +73,19 @@ struct SettingsView: View {
             } message: {
                 Text("Storage may be unavailable. Your choice is saved and will be applied automatically the next time the app launches.")
             }
-            .alert("iCloud Drive isn't available", isPresented: $driveUnavailable) {
+            .alert(
+                MeetingStore.useEphemeralStorage
+                    ? "Storage is temporarily unavailable"
+                    : "iCloud Drive isn't available",
+                isPresented: $driveUnavailable
+            ) {
                 Button("OK", role: .cancel) {}
             } message: {
-                Text("Sign in to iCloud and turn on iCloud Drive in iOS Settings, then try again. A build signed without iCloud entitlements can't use this.")
+                if MeetingStore.useEphemeralStorage {
+                    Text("Minute is using temporary in-memory storage. Try again after the persistent meeting store recovers.")
+                } else {
+                    Text("Sign in to iCloud and turn on iCloud Drive in iOS Settings, then try again. A build signed without iCloud entitlements can't use this.")
+                }
             }
             .alert("Some meetings couldn't be deleted", isPresented: $deleteAllFailed) {
                 Button("OK", role: .cancel) {}
@@ -105,7 +112,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Minute")
                         .font(.headline)
-                    Text("Meetings recorded, transcribed, and summarized — entirely on this iPhone.")
+                    Text("Meetings are processed entirely on this iPhone; cloud backups are optional.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -251,7 +258,11 @@ struct SettingsView: View {
         } header: {
             Text("Backup")
         } footer: {
-            Text("Both are off by default. iCloud Backup includes meeting data in this iPhone's device backup — it comes back only by restoring the iPhone from that backup. iCloud Drive Folder keeps a browsable copy in Files → iCloud Drive → Minute → this iPhone's folder (one folder per meeting with its notes and audio), updated when you leave the app. Turning either off stops future copies; files already in iCloud Drive stay until you delete them in Files. Nothing else is uploaded — there is still no account and no server.")
+            if MeetingStore.useEphemeralStorage {
+                Text("The persistent meeting store is temporarily unavailable. iCloud Backup still controls whether existing on-device data is included in future device backups, and either backup option can still be turned off. iCloud Drive Folder can't start a new mirror until storage recovers.")
+            } else {
+                Text("Both are off by default. iCloud Backup includes meeting data in this iPhone's device backup — it comes back only by restoring the iPhone from that backup. iCloud Drive Folder keeps a browsable copy in Files → iCloud Drive → Minute → this iPhone's folder (one folder per meeting with its notes and audio), updated when you leave the app. Turning either off stops future copies; files already in iCloud Drive stay until you delete them in Files. Nothing else is uploaded — there is still no account and no server.")
+            }
         }
     }
 

@@ -7,6 +7,7 @@ struct MinuteApp: App {
     /// Lives at app level so summaries keep generating while the user
     /// navigates anywhere else in the app.
     @State private var summaryGeneration = SummaryGeneration()
+    @State private var backgroundMirror: BackgroundMirrorTask?
     private let container: ModelContainer
     private let storeIsEphemeral: Bool
 
@@ -51,8 +52,10 @@ struct MinuteApp: App {
         // Leaving the app is the one moment meeting data is settled and
         // there is still time to copy it — mirror to iCloud Drive then.
         .onChange(of: scenePhase) {
+            backgroundMirror?.cancel()
+            backgroundMirror = nil
             if scenePhase == .background {
-                ICloudDriveBackup.syncIfEnabled(context: container.mainContext)
+                backgroundMirror = ICloudDriveBackup.syncIfEnabled(context: container.mainContext)
             }
         }
     }

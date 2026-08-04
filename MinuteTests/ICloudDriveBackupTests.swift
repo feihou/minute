@@ -20,6 +20,13 @@ private final class Gate: @unchecked Sendable {
     }
 }
 
+private actor CancellationProbe {
+    private var stopped = false
+
+    func markStopped() { stopped = true }
+    func didStop() -> Bool { stopped }
+}
+
 @MainActor
 struct ICloudDriveBackupTests {
     private func scratchDirectory() throws -> URL {
@@ -792,6 +799,85 @@ struct ICloudDriveBackupTests {
         #expect(try Data(contentsOf: survivor) == Data("the only copy".utf8))
     }
 
+    /// A same-named file is not proof that the kept duplicate is healthy.
+    /// When the local source is unreadable, another folder may hold the last
+    /// complete copy and must survive until a later sync can verify it.
+    @Test func mirrorKeepsAHealthyDuplicateWhenTheKeptRecordingCannotBeVerified() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let source = try recording(in: documents, bytes: "healthy audio")
+
+        let id = UUID().uuidString
+        let name = "2026-08-03 09.30 Standup"
+        try ICloudDriveBackup.mirror([item(id: id, folderName: name, audio: source)], into: documents)
+
+        let kept = documents.appendingPathComponent(name, isDirectory: true)
+        let duplicate = documents.appendingPathComponent("\(name) copy", isDirectory: true)
+        try FileManager.default.copyItem(at: kept, to: duplicate)
+        try Data("bad".utf8).write(to: kept.appendingPathComponent(source.lastPathComponent))
+
+        try ICloudDriveBackup.mirror(
+            [item(id: id, folderName: name, audio: nil, audioFileName: source.lastPathComponent)],
+            into: documents
+        )
+
+        let survivor = duplicate.appendingPathComponent(source.lastPathComponent)
+        let survivorExists = FileManager.default.fileExists(atPath: survivor.path)
+        #expect(survivorExists)
+        if survivorExists {
+            #expect(try Data(contentsOf: survivor) == Data("healthy audio".utf8))
+        }
+    }
+
+    /// Before pruning a duplicate, equal byte counts are not enough: repair
+    /// a same-sized corrupt kept copy from the readable source, then remove
+    /// the now-redundant healthy duplicate.
+    @Test func mirrorRepairsSameSizeCorruptionBeforePruningDuplicate() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let source = try recording(in: documents, bytes: "healthy audio")
+
+        let id = UUID().uuidString
+        let name = "2026-08-03 09.30 Standup"
+        let entry = item(id: id, folderName: name, audio: source)
+        try ICloudDriveBackup.mirror([entry], into: documents)
+
+        let kept = documents.appendingPathComponent(name, isDirectory: true)
+        let duplicate = documents.appendingPathComponent("\(name) copy", isDirectory: true)
+        try FileManager.default.copyItem(at: kept, to: duplicate)
+        let destination = kept.appendingPathComponent(source.lastPathComponent)
+        try Data("corrupt audio".utf8).write(to: destination)
+
+        try ICloudDriveBackup.mirror([entry], into: documents)
+
+        #expect(try Data(contentsOf: destination) == Data("healthy audio".utf8))
+        #expect(!FileManager.default.fileExists(atPath: duplicate.path))
+    }
+
+    /// An evicted placeholder proves a cloud object exists, not that its
+    /// bytes match the readable local recording. Keep a healthy duplicate
+    /// until the chosen copy can be verified locally.
+    @Test func mirrorKeepsAHealthyDuplicateWhenTheKeptRecordingIsEvicted() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let source = try recording(in: documents, bytes: "healthy audio")
+
+        let id = UUID().uuidString
+        let name = "2026-08-03 09.30 Standup"
+        try ICloudDriveBackup.mirror([item(id: id, folderName: name, audio: source)], into: documents)
+
+        let kept = documents.appendingPathComponent(name, isDirectory: true)
+        let duplicate = documents.appendingPathComponent("\(name) copy", isDirectory: true)
+        try FileManager.default.copyItem(at: kept, to: duplicate)
+        try FileManager.default.removeItem(at: kept.appendingPathComponent(source.lastPathComponent))
+        try Data().write(to: kept.appendingPathComponent(".\(source.lastPathComponent).icloud"))
+
+        try ICloudDriveBackup.mirror([item(id: id, folderName: name, audio: source)], into: documents)
+
+        let survivor = duplicate.appendingPathComponent(source.lastPathComponent)
+        #expect(FileManager.default.fileExists(atPath: survivor.path))
+    }
+
     /// If an artifact cannot be removed, the marker has to stay: without it
     /// no later sync can find the folder, and the leftover recording would
     /// be orphaned in iCloud for good.
@@ -852,5 +938,21 @@ struct ICloudDriveBackupTests {
 
         let root = try deviceFolder(phone, in: documents)
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(entry.folderName).path))
+    }
+
+    /// Foregrounding the app or exhausting background time must stop the
+    /// lifecycle-owned mirror instead of letting its stale snapshot continue.
+    @Test func backgroundMirrorCancellationStopsTheOperation() async {
+        let probe = CancellationProbe()
+        let operation = BackgroundMirrorTask(name: "test mirror") { shouldContinue in
+            while shouldContinue() { await Task.yield() }
+            await probe.markStopped()
+        }
+
+        let task = operation.cancel()
+        await task?.value
+
+        let stopped = await probe.didStop()
+        #expect(stopped)
     }
 }
