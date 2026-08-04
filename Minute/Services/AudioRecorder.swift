@@ -23,11 +23,34 @@ enum RecorderError: LocalizedError {
 /// A lock guards the closure: the main actor writes it while the realtime tap
 /// thread reads it, and an unsynchronized ARC handoff would be a data race.
 final class BufferHandlerBox: Sendable {
-    private let storage = OSAllocatedUnfairLock<(@Sendable (AVAudioPCMBuffer) -> Void)?>(initialState: nil)
+    typealias Handler = @Sendable (AVAudioPCMBuffer) -> Void
 
-    var handler: (@Sendable (AVAudioPCMBuffer) -> Void)? {
-        get { storage.withLock { $0 } }
-        set { storage.withLock { $0 = newValue } }
+    /// Keep the closure behind a stable reference. Returning a closure stored
+    /// directly as `OSAllocatedUnfairLock` state adds a reabstraction wrapper
+    /// on every read; a long recording then overflows the stack when stop()
+    /// clears and recursively releases that wrapper chain.
+    private final class HandlerEntry: Sendable {
+        let value: Handler
+
+        init(_ value: @escaping Handler) {
+            self.value = value
+        }
+    }
+
+    private let storage = OSAllocatedUnfairLock<HandlerEntry?>(initialState: nil)
+
+    var handler: Handler? {
+        get {
+            let entry = storage.withLock { $0 }
+            return entry?.value
+        }
+        set {
+            var replacement = newValue.map(HandlerEntry.init)
+            // Release the old handler after unlocking. Besides shortening the
+            // critical section, this avoids running arbitrary capture cleanup
+            // while the non-recursive lock is held.
+            storage.withLock { swap(&$0, &replacement) }
+        }
     }
 }
 
