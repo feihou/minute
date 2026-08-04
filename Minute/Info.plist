@@ -4,6 +4,19 @@
 <dict>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.minuteapp.Minute</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>minute</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Minute uses the microphone to record meetings you start. Audio stays on this iPhone unless you turn on an iCloud backup option in Settings.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
