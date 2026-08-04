@@ -32,6 +32,11 @@ enum ICloudDriveBackup {
     private static let deviceMarkerPrefix = "minute-device-"
     /// Prefix of the marker naming the fingerprint of the last notes written.
     private static let notesMarkerPrefix = "minute-notes-"
+    /// Bytes of SHA256 kept in that marker's name, rendered as lowercase hex.
+    /// Long enough that two different notes colliding is not a practical
+    /// concern, short enough to keep the file name unobtrusive.
+    private static let fingerprintBytes = 8
+    private static let hexDigits = Set("0123456789abcdef")
     /// Hidden name a folder is parked under while names are being swapped.
     private static let stagingPrefix = ".minute-staging-"
     private static let placeholderSuffix = ".icloud"
@@ -287,12 +292,24 @@ enum ICloudDriveBackup {
     /// current" would strand every later edit — the mirror would never write
     /// the user's changed transcript, summary or title again.
     private nonisolated static func notesFingerprint(_ notes: Data) -> String {
-        SHA256.hash(data: notes).prefix(8).map { String(format: "%02x", $0) }.joined()
+        SHA256.hash(data: notes).prefix(fingerprintBytes).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The fingerprint carried in a notes marker's name, or nil for anything
+    /// else. Validated for exactly the reason the meeting id is checked as a
+    /// UUID: a hidden file the user happens to name `.minute-notes-agenda`
+    /// must not make itself app-owned and get swept with the meeting.
+    private nonisolated static func notesFingerprint(fromMarkerName name: String) -> String? {
+        guard let candidate = rawIdentity(fromMarkerName: name, prefix: notesMarkerPrefix),
+              candidate.count == fingerprintBytes * 2,
+              candidate.allSatisfy(hexDigits.contains)
+        else { return nil }
+        return candidate
     }
 
     private nonisolated static func holdsNotesMarker(_ folder: URL, fingerprint: String) -> Bool {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
-        return names.contains { rawIdentity(fromMarkerName: $0, prefix: notesMarkerPrefix) == fingerprint }
+        return names.contains { notesFingerprint(fromMarkerName: $0) == fingerprint }
     }
 
     /// Points the folder's notes marker at `fingerprint`, dropping any older
@@ -300,7 +317,7 @@ enum ICloudDriveBackup {
     private nonisolated static func setNotesMarker(in folder: URL, fingerprint: String) {
         let fileManager = FileManager.default
         let names = (try? fileManager.contentsOfDirectory(atPath: folder.path)) ?? []
-        for name in names where rawIdentity(fromMarkerName: name, prefix: notesMarkerPrefix) != nil {
+        for name in names where notesFingerprint(fromMarkerName: name) != nil {
             try? fileManager.removeItem(at: folder.appendingPathComponent(name))
         }
         do {
@@ -417,9 +434,14 @@ enum ICloudDriveBackup {
             shouldContinue: @Sendable () -> Bool
         ) throws -> SyncOutcome {
             // A newer snapshot already ran. Applying this one would undo it
-            // — recreating the folder of a meeting it just deleted. Not a
-            // failure: the newer snapshot is the one that matters.
-            guard request.sequence > applied else { return .complete }
+            // — recreating the folder of a meeting it just deleted.
+            //
+            // Reported as `.interrupted`, never `.complete`: this run produced
+            // no verdict of its own, and a background → foreground → background
+            // cycle can land the older request here *after* the newer one
+            // finished. Calling that success would clear a failure the newer
+            // run had just recorded.
+            guard request.sequence > applied else { return .interrupted }
             applied = request.sequence
             var outcome = SyncOutcome.complete
             for folder in try ICloudDriveBackup.deviceFolderURLs(for: request.device, in: documents) {
@@ -717,7 +739,7 @@ enum ICloudDriveBackup {
         if meetingID(fromMarkerName: name) != nil { return true }
         // The notes fingerprint marker is ours too — deleting a meeting has to
         // take it, or an emptied folder keeps a hidden file and never goes.
-        if rawIdentity(fromMarkerName: name, prefix: notesMarkerPrefix) != nil { return true }
+        if notesFingerprint(fromMarkerName: name) != nil { return true }
         var trimmed = localName(of: name)
         if trimmed.hasSuffix(partialSuffix) {
             trimmed.removeLast(partialSuffix.count)

@@ -617,6 +617,29 @@ struct ICloudDriveBackupTests {
 
     /// Deleting a meeting removes what the mirror wrote, but a file the
     /// user added to the folder is not the meeting.
+    /// The notes fingerprint marker is recognised by name, so the suffix has to
+    /// be validated the way a meeting id is validated as a UUID. Otherwise a
+    /// hidden file the user happens to name `.minute-notes-agenda` looks
+    /// app-owned and gets swept along with the meeting.
+    @Test func mirrorKeepsHiddenUserFilesThatOnlyLookLikeNotesMarkers() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let name = "2026-08-03 09.30 Standup"
+        try ICloudDriveBackup.mirror([item(folderName: name, notes: "v1")], into: documents)
+
+        let folder = documents.appendingPathComponent(name, isDirectory: true)
+        // Not a fingerprint: not 16 lowercase hex characters.
+        let decoy = folder.appendingPathComponent(".minute-notes-agenda")
+        try Data("mine".utf8).write(to: decoy)
+
+        try ICloudDriveBackup.mirror([], into: documents)
+
+        #expect(try Data(contentsOf: decoy) == Data("mine".utf8))
+        // The app's own notes and marker still go.
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("notes.md").path))
+        #expect(ICloudDriveBackup.meetingID(inFolder: folder) == nil)
+    }
+
     @Test func mirrorKeepsUserFilesWhenTheMeetingIsDeleted() throws {
         let documents = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: documents) }
