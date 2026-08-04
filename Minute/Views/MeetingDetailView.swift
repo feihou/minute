@@ -140,11 +140,15 @@ struct MeetingDetailView: View {
             titleVisibility: .visible
         ) {
             Button("Delete Meeting", role: .destructive) {
-                player.stop()
                 // Only leave once the delete is actually committed — dismissing
                 // on a failed delete tells the user their meeting is gone while
-                // it is still in the library.
+                // it is still in the library. Playback is torn down only on
+                // that same success: stopping first would leave the retained
+                // screen showing controls wired to an unloaded player, because
+                // PlaybackBarView's .task(id: url) has already run and the URL
+                // has not changed.
                 if MeetingStore.delete(meeting, context: context) {
+                    player.stop()
                     dismiss()
                 } else {
                     deleteFailed = true
@@ -446,6 +450,10 @@ struct MeetingDetailView: View {
                                     .foregroundStyle(Self.speakerColor(for: speaker))
                             }
                             .buttonStyle(.borderless)
+                            // Re-transcribing and re-identifying both discard
+                            // the speaker numbering, so a name typed while one
+                            // is running would be wiped the moment it finished.
+                            .disabled(isBusy)
                             .accessibilityLabel("Rename \(meeting.speakerName(for: speaker))")
                         }
                         HStack(alignment: .firstTextBaseline, spacing: 10) {

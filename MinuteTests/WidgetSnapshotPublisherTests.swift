@@ -10,12 +10,19 @@ struct WidgetSnapshotPublisherTests {
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
             title: "Old",
             createdAt: Date(timeIntervalSince1970: 100),
-            duration: 10,
+            duration: 10
+        )
+        let middle = Meeting(title: "Middle", createdAt: Date(timeIntervalSince1970: 200), duration: 20)
+        // The sensitive fixture rides on a meeting the limit KEEPS. Sitting on
+        // the dropped one, it never reached the encoder, so the privacy
+        // assertions below could not have failed however much the DTO grew.
+        let newest = Meeting(
+            title: "Newest",
+            createdAt: Date(timeIntervalSince1970: 300),
+            duration: 30,
             audioFileName: "private.m4a",
             segments: [TranscriptSegment(text: "Private transcript", start: 0, end: 1)]
         )
-        let middle = Meeting(title: "Middle", createdAt: Date(timeIntervalSince1970: 200), duration: 20)
-        let newest = Meeting(title: "Newest", createdAt: Date(timeIntervalSince1970: 300), duration: 30)
 
         let snapshot = WidgetSnapshotPublisher.snapshot(from: [middle, old, newest], limit: 2)
 

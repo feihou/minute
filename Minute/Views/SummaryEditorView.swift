@@ -157,11 +157,13 @@ struct SummaryEditorView: View {
             sections: sectionTitles.isEmpty ? nil : zip(sectionTitles, draft.sectionTexts).map {
                 SummarySection(title: $0, items: Self.parseList($1))
             },
-            // The "some parts couldn't be summarized" banner describes what the
-            // model produced. Once the user has rewritten these notes by hand
-            // it is no longer true of what they are reading, and the banner has
-            // no other way to go away.
-            skippedParts: nil,
+            // Deliberately preserved. Saving the editor — even after rewriting
+            // a section — does not restore the transcript parts the model
+            // failed on, and merely opening the editor and tapping Save would
+            // otherwise clear the warning without changing anything. Making
+            // demonstrably incomplete notes look complete is worse than a
+            // banner that only regenerating can retire.
+            skippedParts: meeting.summary?.skippedParts,
             // Not editable here yet; keep whatever the model produced.
             speakerPerspectives: meeting.summary?.speakerPerspectives
         )

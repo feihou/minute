@@ -70,6 +70,40 @@ enum ICloudDriveBackup {
         let identity: String
     }
 
+    /// What one mirror run actually achieved. A Bool cannot carry the
+    /// difference between "nothing could run", "ran but some meetings failed"
+    /// and "was told to stop", and the callers treat all three differently:
+    /// only `unavailable` means the feature can't work here, and only
+    /// `interrupted` leaves the previous verdict standing because this run
+    /// never reached a verdict of its own.
+    enum SyncOutcome: Sendable {
+        /// Every meeting mirrored and every stale folder swept.
+        case complete
+        /// Ran, but at least one meeting could not be written or removed.
+        case incomplete
+        /// Stopped early — the user opted out, the app was foregrounded, or
+        /// the background assertion expired. Nothing is known to have failed.
+        case interrupted
+        /// Could not run at all: no iCloud container, or the device folder
+        /// could not be prepared.
+        case unavailable
+    }
+
+    /// Ordering used to fold many outcomes into one: the most alarming wins,
+    /// so a run that both failed an item and stopped early reports the failure.
+    private static func rank(_ outcome: SyncOutcome) -> Int {
+        switch outcome {
+        case .complete: 0
+        case .interrupted: 1
+        case .incomplete: 2
+        case .unavailable: 3
+        }
+    }
+
+    private static func worse(_ lhs: SyncOutcome, _ rhs: SyncOutcome) -> SyncOutcome {
+        rank(lhs) >= rank(rhs) ? lhs : rhs
+    }
+
     /// One snapshot of the library, numbered so a slow sync can never apply
     /// an older view after a newer one already ran — which would resurrect
     /// the folder of a meeting the newer sync had just deleted.
@@ -381,22 +415,22 @@ enum ICloudDriveBackup {
             _ request: Request,
             documents: URL,
             shouldContinue: @Sendable () -> Bool
-        ) throws -> Bool {
+        ) throws -> SyncOutcome {
             // A newer snapshot already ran. Applying this one would undo it
             // — recreating the folder of a meeting it just deleted. Not a
             // failure: the newer snapshot is the one that matters.
-            guard request.sequence > applied else { return true }
+            guard request.sequence > applied else { return .complete }
             applied = request.sequence
-            var complete = true
+            var outcome = SyncOutcome.complete
             for folder in try ICloudDriveBackup.deviceFolderURLs(for: request.device, in: documents) {
                 let mirrored = try ICloudDriveBackup.mirror(
                     request.items,
                     into: folder,
                     shouldContinue: shouldContinue
                 )
-                complete = complete && mirrored
+                outcome = ICloudDriveBackup.worse(outcome, mirrored)
             }
-            return complete
+            return outcome
         }
     }
 
@@ -409,13 +443,15 @@ enum ICloudDriveBackup {
     nonisolated static func syncNow(
         _ request: Request,
         shouldContinue: @escaping @Sendable () -> Bool = { true }
-    ) async -> Bool {
+    ) async -> SyncOutcome {
         // Defense in depth: with the fallback store active the snapshot
         // holds only this session's meetings, so mirroring it would delete
         // every previously backed-up meeting from iCloud Drive.
-        guard shouldContinue(), !MeetingStore.useEphemeralStorage else { return false }
+        guard !MeetingStore.useEphemeralStorage else { return .unavailable }
+        guard shouldContinue() else { return .interrupted }
         let resolved = Task.detached(priority: .utility) { documentsURL() }
-        guard let documents = await resolved.value, shouldContinue() else { return false }
+        guard let documents = await resolved.value else { return .unavailable }
+        guard shouldContinue() else { return .interrupted }
         do {
             // The preference is re-read as the mirror runs, so switching the
             // toggle off stops a sync this task doesn't own either — the
@@ -429,7 +465,7 @@ enum ICloudDriveBackup {
             // not be prepared, so nothing was mirrored at all. Report it,
             // or the toggle claims a backup that does not exist.
             logger.error("iCloud Drive mirror failed: \(error.localizedDescription)")
-            return false
+            return .unavailable
         }
     }
 
@@ -446,15 +482,25 @@ enum ICloudDriveBackup {
         // backgrounded app; without this the copy is cut mid-file every
         // time and never finishes.
         return BackgroundMirrorTask(name: "iCloud Drive mirror") { shouldContinue in
-            let succeeded = await syncNow(snapshot, shouldContinue: shouldContinue)
+            let outcome = await syncNow(snapshot, shouldContinue: shouldContinue)
             // Remember the outcome. The mirror repairs itself on the next run,
             // but a permanently broken one — signed out of iCloud, or iCloud
             // Drive switched off in iOS Settings — would otherwise look exactly
             // like a working one while Settings kept promising a browsable
             // copy. Only record a verdict while the user still wants the
             // mirror: a run cut short by the toggle going off isn't a failure.
-            if AppSettings.iCloudDriveBackupEnabled {
-                await MainActor.run { AppSettings.iCloudDriveLastSyncFailed = !succeeded }
+            guard AppSettings.iCloudDriveBackupEnabled else { return }
+            switch outcome {
+            case .complete:
+                await MainActor.run { AppSettings.iCloudDriveLastSyncFailed = false }
+            case .incomplete, .unavailable:
+                await MainActor.run { AppSettings.iCloudDriveLastSyncFailed = true }
+            case .interrupted:
+                // Foregrounding the app or running out of background time says
+                // nothing about whether the backup works. Claiming success
+                // would clear a real warning; claiming failure would cry wolf
+                // every time the user came back. Leave the last real verdict.
+                break
             }
         }
     }
@@ -471,18 +517,20 @@ enum ICloudDriveBackup {
     /// meetings, and after each copy, so turning the setting off stops the
     /// mirror mid-run and discards a recording that finished landing after
     /// the user said stop.
-    /// Returns false when at least one meeting could not be mirrored, so the
-    /// caller can tell the user the backup is incomplete. Stopping early
-    /// because the user switched the setting off is not a failure.
+    /// Reports whether every meeting made it, so the caller can tell the user
+    /// the backup is incomplete rather than clearing a warning over a
+    /// half-written mirror. Stopping early is reported separately from
+    /// failing: it leaves the previous verdict standing instead of claiming
+    /// success for work that never ran.
     @discardableResult
     nonisolated static func mirror(
         _ items: [Item],
         into documents: URL,
         shouldContinue: @Sendable () -> Bool = { true }
-    ) throws -> Bool {
+    ) throws -> SyncOutcome {
         let fileManager = FileManager.default
-        var complete = true
-        guard shouldContinue() else { return complete }
+        var outcome = SyncOutcome.complete
+        guard shouldContinue() else { return .interrupted }
         try fileManager.createDirectory(at: documents, withIntermediateDirectories: true)
 
         let owned = ownedFolders(in: documents)
@@ -522,7 +570,7 @@ enum ICloudDriveBackup {
         for item in items {
             // Parking hides a folder until it is placed; never start that
             // when the run is already stopping.
-            guard shouldContinue() else { return complete }
+            guard shouldContinue() else { return worse(outcome, .interrupted) }
             guard let current = live[item.meetingID],
                   current.lastPathComponent != item.folderName,
                   let holder = holders[item.folderName.lowercased()],
@@ -540,7 +588,7 @@ enum ICloudDriveBackup {
         }
 
         for item in items {
-            guard shouldContinue() else { return complete }
+            guard shouldContinue() else { return worse(outcome, .interrupted) }
             do {
                 let placed = try place(item, existing: live[item.meetingID], in: documents)
                 live[item.meetingID] = placed.url
@@ -555,17 +603,20 @@ enum ICloudDriveBackup {
                 // One unmirrorable meeting still must not block the rest — but
                 // the run is no longer a complete backup, and the caller has to
                 // know that before it tells the user everything is safe.
-                complete = false
+                outcome = .incomplete
                 logger.error("Mirroring \(item.folderName) failed: \(error.localizedDescription)")
             }
         }
 
-        guard shouldContinue() else { return complete }
+        guard shouldContinue() else { return worse(outcome, .interrupted) }
 
-        // A meeting that is gone takes everything it left behind.
+        // A meeting that is gone takes everything it left behind. A removal
+        // that fails leaves a deleted meeting's notes and recording sitting in
+        // iCloud Drive, which is exactly the kind of incompleteness the user
+        // needs told about — silence here would clear the warning.
         for (id, urls) in owned where chosen[id] == nil {
-            for url in urls {
-                removeMirror(at: url)
+            for url in urls where !removeMirror(at: url) {
+                outcome = .incomplete
             }
         }
         // A duplicate goes only once the folder that was kept actually
@@ -582,11 +633,14 @@ enum ICloudDriveBackup {
                 logger.info("Kept duplicates of \(item.folderName): its recording is not in place yet")
                 continue
             }
+            // A duplicate left behind holds a copy of a meeting that still
+            // exists, so it is clutter the next sync retries rather than a
+            // hole in the backup — deliberately not counted against the run.
             for url in candidates where url != original {
                 removeMirror(at: url)
             }
         }
-        return complete
+        return outcome
     }
 
     /// Whether the kept folder is safe enough for duplicate copies to go.
@@ -603,7 +657,11 @@ enum ICloudDriveBackup {
     /// when nothing else is left in it. Deleting a meeting must leave zero
     /// bytes of it behind, but a file the user put in the folder is not the
     /// meeting — a recursive delete would take their work with it.
-    private nonisolated static func removeMirror(at folder: URL) {
+    /// Returns whether everything this app wrote is now gone. False means a
+    /// deleted meeting's bytes are still sitting in iCloud Drive, which the
+    /// caller reports rather than swallowing.
+    @discardableResult
+    private nonisolated static func removeMirror(at folder: URL) -> Bool {
         let fileManager = FileManager.default
         let names = (try? fileManager.contentsOfDirectory(atPath: folder.path)) ?? []
         var markers: [String] = []
@@ -626,25 +684,29 @@ enum ICloudDriveBackup {
         }
         guard !incomplete else {
             logger.info("Kept the marker on \(folder.lastPathComponent) so a later sync finishes the job")
-            return
+            return false
         }
         for marker in markers {
             do {
                 try fileManager.removeItem(at: folder.appendingPathComponent(marker))
             } catch {
                 logger.error("Removing the marker failed: \(error.localizedDescription)")
-                return
+                return false
             }
         }
         let remaining = (try? fileManager.contentsOfDirectory(atPath: folder.path)) ?? []
         guard remaining.isEmpty else {
+            // Everything this app wrote is gone; what is left is the user's
+            // own. That is a finished job, not a failed one.
             logger.info("Kept \(folder.lastPathComponent): it holds files this app did not write")
-            return
+            return true
         }
         do {
             try fileManager.removeItem(at: folder)
+            return true
         } catch {
             logger.error("Removing stale mirror failed: \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -751,8 +813,17 @@ enum ICloudDriveBackup {
         // like "never written"), while treating an evicted file as current
         // would strand every later edit. The name survives eviction, so it can
         // answer "did these notes change?" either way.
+        // The marker alone is not enough: notes.md can be deleted out from
+        // under it in Files or lost to an iCloud conflict, leaving neither the
+        // file nor an eviction placeholder. Skipping then would strand the
+        // folder without its transcript forever while every sync reported
+        // success, so require the marker AND some form of the file.
         let fingerprint = notesFingerprint(notes)
-        if !holdsNotesMarker(folder, fingerprint: fingerprint) {
+        let notesPresent = fileManager.fileExists(atPath: notesURL.path)
+            || fileManager.fileExists(
+                atPath: folder.appendingPathComponent(".\(notesFileName)\(placeholderSuffix)").path
+            )
+        if !(notesPresent && holdsNotesMarker(folder, fingerprint: fingerprint)) {
             let previousNotes = try? Data(contentsOf: notesURL)
             try notes.write(to: notesURL, options: .atomic)
             // notes.md carries the whole transcript and lands in one

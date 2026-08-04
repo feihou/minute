@@ -260,12 +260,25 @@ struct SettingsView: View {
                 mirrorTask = Task {
                     // Toggling on is the one moment to say "this can't work
                     // here" — afterwards the mirror quietly self-heals.
-                    let available = await ICloudDriveBackup.syncNow(request)
+                    let outcome = await ICloudDriveBackup.syncNow(request)
                     // Resolving the iCloud container is slow on first use;
                     // never overrule a choice the user made since then.
-                    guard !Task.isCancelled, !available, iCloudDrive else { return }
-                    iCloudDrive = false
-                    driveUnavailable = true
+                    guard !Task.isCancelled, iCloudDrive else { return }
+                    switch outcome {
+                    case .unavailable:
+                        // The feature genuinely cannot work here, so retiring
+                        // the toggle is the honest outcome.
+                        iCloudDrive = false
+                        driveUnavailable = true
+                    case .incomplete:
+                        // One meeting that wouldn't copy is no reason to switch
+                        // the whole backup off — that would also deny it the
+                        // background retry that heals exactly this. Leave it on
+                        // and report the incompleteness instead.
+                        driveLastSyncFailed = true
+                    case .complete, .interrupted:
+                        break
+                    }
                 }
             }
 

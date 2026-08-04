@@ -530,6 +530,27 @@ struct ICloudDriveBackupTests {
         #expect(FileManager.default.fileExists(atPath: placeholder.path))
     }
 
+    /// The fingerprint marker says "these notes are already mirrored", but it
+    /// is only trustworthy while the notes it describes are actually there.
+    /// Deleted in Files or lost to an iCloud conflict, the folder would
+    /// otherwise keep its marker and never get its transcript back.
+    @Test func mirrorRestoresNotesDeletedOutFromUnderTheirMarker() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let id = UUID().uuidString
+        let name = "2026-08-03 09.30 Standup"
+        try ICloudDriveBackup.mirror([item(id: id, folderName: name, notes: "v1")], into: documents)
+
+        // Gone entirely — no file, no eviction placeholder, marker intact.
+        let folder = documents.appendingPathComponent(name, isDirectory: true)
+        let notesURL = folder.appendingPathComponent("notes.md")
+        try FileManager.default.removeItem(at: notesURL)
+
+        try ICloudDriveBackup.mirror([item(id: id, folderName: name, notes: "v1")], into: documents)
+
+        #expect(try String(contentsOf: notesURL, encoding: .utf8) == "v1")
+    }
+
     @Test func mirrorLeavesEvictedAudioAlone() throws {
         let documents = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: documents) }
