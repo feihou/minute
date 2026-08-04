@@ -19,6 +19,7 @@ struct MeetingListView: View {
     @State private var importingFileName: String?
     @State private var importTask: Task<Void, Never>?
     @State private var importError: String?
+    @State private var deepLinkState = MeetingDeepLinkState()
 
     var body: some View {
         NavigationStack {
@@ -121,6 +122,9 @@ struct MeetingListView: View {
         }
         .onChange(of: widgetSnapshot, initial: true) { _, snapshot in
             WidgetSnapshotPublisher.publish(snapshot)
+        }
+        .onChange(of: meetings.map(\.id), initial: true) {
+            resolvePendingMeetingDeepLink()
         }
         .onOpenURL(perform: handleDeepLink)
         .sheet(isPresented: $showingNewMeeting) {
@@ -310,15 +314,19 @@ struct MeetingListView: View {
         guard let deepLink = MinuteDeepLink(url: url) else { return }
         switch deepLink {
         case .newMeeting:
+            deepLinkState.receive(deepLink)
             guard activeSession == nil else { return }
             beginNewMeeting()
-        case .meeting(let id):
-            if let meeting = meetings.first(where: { $0.id == id }) {
-                meetingDestination = meeting
-            } else {
-                WidgetSnapshotPublisher.publish(widgetSnapshot)
-            }
+        case .meeting:
+            deepLinkState.receive(deepLink)
+            resolvePendingMeetingDeepLink()
         }
+    }
+
+    private func resolvePendingMeetingDeepLink() {
+        guard let id = deepLinkState.resolve(availableMeetingIDs: meetings.map(\.id)),
+              let meeting = meetings.first(where: { $0.id == id }) else { return }
+        meetingDestination = meeting
     }
 
     private func startImport(_ url: URL) {
