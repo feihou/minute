@@ -66,6 +66,17 @@ struct ICloudDriveBackupTests {
         .init(displayName: name, identity: identity)
     }
 
+    /// The root this device mirrors into; duplicates follow it in the list.
+    private func deviceFolder(_ device: ICloudDriveBackup.Device, in documents: URL) throws -> URL {
+        try ICloudDriveBackup.deviceFolderURLs(for: device, in: documents)[0]
+    }
+
+    private func visibleNames(in directory: URL) throws -> [String] {
+        try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            .filter { !$0.hasPrefix(".") }
+            .sorted()
+    }
+
     // MARK: - Names
 
     @Test func folderNameIsDatePrefixedAndSanitized() {
@@ -528,11 +539,11 @@ struct ICloudDriveBackupTests {
 
         let identity = UUID().uuidString
         let before = device(named: "iPhone", identity: identity)
-        let folder = try ICloudDriveBackup.deviceFolderURL(for: before, in: documents)
+        let folder = try deviceFolder(before, in: documents)
         try ICloudDriveBackup.mirror([item(folderName: "2026-08-03 09.30 Standup")], into: folder)
 
         let after = device(named: "Work iPhone", identity: identity)
-        let moved = try ICloudDriveBackup.deviceFolderURL(for: after, in: documents)
+        let moved = try deviceFolder(after, in: documents)
 
         #expect(moved.lastPathComponent == "Work iPhone")
         #expect(!FileManager.default.fileExists(atPath: folder.path))
@@ -549,7 +560,7 @@ struct ICloudDriveBackupTests {
         try FileManager.default.createDirectory(at: userFolder, withIntermediateDirectories: true)
         try Data("mine".utf8).write(to: userFolder.appendingPathComponent("keep.txt"))
 
-        let resolved = try ICloudDriveBackup.deviceFolderURL(for: device(named: "iPhone"), in: documents)
+        let resolved = try deviceFolder(device(named: "iPhone"), in: documents)
 
         #expect(resolved.lastPathComponent == "iPhone 2")
         #expect(FileManager.default.fileExists(atPath: userFolder.appendingPathComponent("keep.txt").path))
@@ -561,8 +572,8 @@ struct ICloudDriveBackupTests {
         let documents = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: documents) }
 
-        let first = try ICloudDriveBackup.deviceFolderURL(for: device(named: "iPhone"), in: documents)
-        let second = try ICloudDriveBackup.deviceFolderURL(for: device(named: "iPhone"), in: documents)
+        let first = try deviceFolder(device(named: "iPhone"), in: documents)
+        let second = try deviceFolder(device(named: "iPhone"), in: documents)
 
         #expect(first != second)
     }
@@ -573,9 +584,147 @@ struct ICloudDriveBackupTests {
         defer { try? FileManager.default.removeItem(at: documents) }
 
         let phone = device(named: "iPhone")
-        let first = try ICloudDriveBackup.deviceFolderURL(for: phone, in: documents)
-        let second = try ICloudDriveBackup.deviceFolderURL(for: phone, in: documents)
+        let first = try deviceFolder(phone, in: documents)
+        let second = try deviceFolder(phone, in: documents)
 
         #expect(first == second)
+    }
+
+    /// A device name is user-typed: a slash would make the marker land a
+    /// level below where every later scan looks, so each sync would create
+    /// another folder and deletions would only ever reach the newest.
+    @Test func deviceDisplayNameCannotIntroduceANestedPath() {
+        let identity = UUID().uuidString
+        let tail = String(identity.prefix(4))
+
+        let slashed = ICloudDriveBackup.displayName(forDeviceNamed: "Fei/Work iPhone", identity: identity)
+        #expect(!slashed.contains("/"))
+        #expect(slashed == "Fei Work iPhone \(tail)")
+
+        let long = ICloudDriveBackup.displayName(
+            forDeviceNamed: String(repeating: "名", count: 200),
+            identity: identity
+        )
+        #expect(long.utf8.count <= 255)
+
+        #expect(ICloudDriveBackup.displayName(forDeviceNamed: "///", identity: identity) == "iPhone \(tail)")
+    }
+
+    /// An iCloud conflict can leave a second root with the same device
+    /// marker. Mirroring only one would strand its meetings there forever.
+    @Test func everyRootCarryingTheDeviceIdentityIsMirrored() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+
+        let phone = device(named: "iPhone")
+        let root = try deviceFolder(phone, in: documents)
+        let entry = item(folderName: "2026-08-03 09.30 Standup")
+        try ICloudDriveBackup.mirror([entry], into: root)
+
+        let duplicate = documents.appendingPathComponent("iPhone (conflict)", isDirectory: true)
+        try FileManager.default.copyItem(at: root, to: duplicate)
+
+        // The meeting is deleted in the app: every root must lose it.
+        let roots = try ICloudDriveBackup.deviceFolderURLs(for: phone, in: documents)
+        #expect(roots.count == 2)
+        for folder in roots {
+            try ICloudDriveBackup.mirror([], into: folder)
+        }
+
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(entry.folderName).path))
+        #expect(!FileManager.default.fileExists(atPath: duplicate.appendingPathComponent(entry.folderName).path))
+    }
+
+    // MARK: - Failure and cancellation
+
+    /// The replacement has to land before the recording it replaces is
+    /// pruned, or a failed copy leaves the meeting with no audio at all.
+    @Test func mirrorKeepsThePreviousRecordingWhenTheReplacementCannotBeCopied() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let old = try recording(in: documents, bytes: "old-audio")
+        let new = try recording(in: documents, bytes: "new-audio-of-another-size")
+
+        let id = UUID().uuidString
+        let name = "2026-08-03 09.30 Standup"
+        try ICloudDriveBackup.mirror([item(id: id, folderName: name, audio: old)], into: documents)
+
+        // Nothing new may be created in the folder, so the copy must fail.
+        let folder = documents.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: folder.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path) }
+
+        try ICloudDriveBackup.mirror([item(id: id, folderName: name, audio: new)], into: documents)
+
+        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent(old.lastPathComponent).path))
+    }
+
+    /// Parking hides a folder until it is placed. A sync that starts after
+    /// the toggle went off must not hide anything and then stop.
+    @Test func mirrorParksNothingWhenAlreadyStopped() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+
+        let alpha = "2026-08-03 09.30 Alpha"
+        let beta = "2026-08-03 09.30 Beta"
+        let first = UUID().uuidString
+        let second = UUID().uuidString
+        try ICloudDriveBackup.mirror(
+            [item(id: first, folderName: alpha), item(id: second, folderName: beta)],
+            into: documents
+        )
+
+        // The titles were swapped, which needs parking — but the user has
+        // already opted out.
+        try ICloudDriveBackup.mirror(
+            [item(id: first, folderName: beta), item(id: second, folderName: alpha)],
+            into: documents,
+            shouldContinue: { false }
+        )
+
+        let all = try FileManager.default.contentsOfDirectory(atPath: documents.path)
+        #expect(!all.contains { $0.hasPrefix(".minute-staging-") })
+        #expect(try visibleNames(in: documents) == [alpha, beta])
+    }
+
+    /// On a case-insensitive volume the new path resolves to the existing
+    /// directory, so a plain move is a no-op and Files would keep showing
+    /// the old spelling forever.
+    @Test func mirrorAppliesACaseOnlyTitleChange() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+
+        let id = UUID().uuidString
+        try ICloudDriveBackup.mirror([item(id: id, folderName: "2026-08-03 09.30 Standup")], into: documents)
+        try ICloudDriveBackup.mirror([item(id: id, folderName: "2026-08-03 09.30 STANDUP")], into: documents)
+
+        #expect(try visibleNames(in: documents) == ["2026-08-03 09.30 STANDUP"])
+    }
+
+    /// Two overlapping syncs: the older snapshot must not resurrect what
+    /// the newer one deleted.
+    @Test func mirrorerDropsASnapshotANewerOneSuperseded() async throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+
+        let phone = device(named: "iPhone")
+        let mirrorer = ICloudDriveBackup.Mirrorer()
+        let entry = item(folderName: "2026-08-03 09.30 Standup")
+
+        // The newer snapshot records the meeting as deleted.
+        try await mirrorer.run(
+            .init(items: [], device: phone, sequence: 2),
+            documents: documents,
+            shouldContinue: { true }
+        )
+        // The older one, arriving late, must be dropped.
+        try await mirrorer.run(
+            .init(items: [entry], device: phone, sequence: 1),
+            documents: documents,
+            shouldContinue: { true }
+        )
+
+        let root = try deviceFolder(phone, in: documents)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(entry.folderName).path))
     }
 }

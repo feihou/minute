@@ -32,6 +32,9 @@ enum ICloudDriveBackup {
     /// Hidden name a folder is parked under while names are being swapped.
     private static let stagingPrefix = ".minute-staging-"
     private static let placeholderSuffix = ".icloud"
+    /// Hidden name a recording is copied under before it replaces the last
+    /// one, so a failed copy never leaves the meeting with no audio.
+    private static let partialSuffix = ".partial"
 
     /// APFS caps a single path component at 255 UTF-8 bytes, and a folder
     /// name that exceeds it fails to create on every sync, forever.
@@ -64,29 +67,25 @@ enum ICloudDriveBackup {
         let identity: String
     }
 
+    /// One snapshot of the library, numbered so a slow sync can never apply
+    /// an older view after a newer one already ran — which would resurrect
+    /// the folder of a meeting the newer sync had just deleted.
+    struct Request: Sendable {
+        let items: [Item]
+        let device: Device
+        let sequence: Int
+    }
+
     // MARK: - Names
 
-    /// "2026-08-03 09.30 Standup" — date-prefixed so folders sort by meeting
-    /// time. Characters that break file systems or the Files app are
-    /// replaced, and the title is trimmed to keep the whole name inside the
-    /// file system's byte limit (a CJK or emoji title reaches it in far
-    /// fewer characters than an English one). Local time, matching what the
-    /// app shows; when the offset shifts the folder is renamed, not rebuilt.
-    static func folderName(title: String, createdAt: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd HH.mm"
-        let prefix = formatter.string(from: createdAt) + " "
-        let cleaned = title
+    /// Strips what a path component cannot hold and squeezes the rest, so a
+    /// title (or a device name) can never introduce a nested path.
+    private static func sanitized(_ text: String) -> String {
+        text
             .components(separatedBy: CharacterSet(charactersIn: "/\\:?%*|\"<>").union(.controlCharacters))
             .joined(separator: " ")
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
-        let body = truncated(
-            cleaned.isEmpty ? "Meeting" : cleaned,
-            toUTF8Bytes: maxNameBytes - prefix.utf8.count - suffixReserveBytes
-        )
-        return prefix + body
     }
 
     /// Cuts on a character boundary so a multi-byte character is never
@@ -101,7 +100,25 @@ enum ICloudDriveBackup {
             result.append(character)
             used += size
         }
-        return result.isEmpty ? "Meeting" : result
+        return result
+    }
+
+    /// "2026-08-03 09.30 Standup" — date-prefixed so folders sort by meeting
+    /// time. Characters that break file systems or the Files app are
+    /// replaced, and the title is trimmed to keep the whole name inside the
+    /// file system's byte limit (a CJK or emoji title reaches it in far
+    /// fewer characters than an English one). Local time, matching what the
+    /// app shows; when the offset shifts the folder is renamed, not rebuilt.
+    static func folderName(title: String, createdAt: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH.mm"
+        let prefix = formatter.string(from: createdAt) + " "
+        let body = truncated(
+            sanitized(title),
+            toUTF8Bytes: maxNameBytes - prefix.utf8.count - suffixReserveBytes
+        )
+        return prefix + (body.isEmpty ? "Meeting" : body)
     }
 
     /// Snapshots meetings for mirroring in a stable order, giving meetings
@@ -137,9 +154,22 @@ enum ICloudDriveBackup {
 
     // MARK: - Device identity
 
+    /// The folder name shown in Files. A device name is user-typed and can
+    /// hold a slash, which `appendingPathComponent` would read as a nested
+    /// path — the marker would then land one level below where every later
+    /// scan looks, and each sync would create another folder.
+    static func displayName(forDeviceNamed name: String, identity: String) -> String {
+        let tail = String(identity.prefix(4))
+        let base = truncated(
+            sanitized(name),
+            toUTF8Bytes: maxNameBytes - suffixReserveBytes - tail.utf8.count - 1
+        )
+        return "\(base.isEmpty ? "iPhone" : base) \(tail)"
+    }
+
     /// This device's folder identity. The name is for humans — only the
     /// UUID decides which folder belongs to this iPhone, so two devices can
-    /// share a name (or a display suffix) without ever sharing a folder.
+    /// share a name (or a display tail) without ever sharing a folder.
     @MainActor
     static func currentDevice() -> Device {
         let defaults = UserDefaults.standard
@@ -153,10 +183,8 @@ enum ICloudDriveBackup {
             defaults.set(generated, forKey: deviceIdentityKey)
             return generated
         }()
-        // A short tail keeps two same-named iPhones apart in Files; it is
-        // decoration, never identity.
         return Device(
-            displayName: "\(UIDevice.current.name) \(identity.prefix(4))",
+            displayName: displayName(forDeviceNamed: UIDevice.current.name, identity: identity),
             identity: identity
         )
     }
@@ -169,6 +197,17 @@ enum ICloudDriveBackup {
     static func deviceIdentityChanged(stored: String?, current: String?) -> Bool {
         guard let current else { return false }
         return stored != current
+    }
+
+    /// The next snapshot to mirror. Taking the number here, on the main
+    /// actor, is what lets the mirror drop a snapshot that a newer one has
+    /// already superseded.
+    @MainActor private static var lastSequence = 0
+
+    @MainActor
+    static func request(for meetings: [Meeting]) -> Request {
+        lastSequence += 1
+        return Request(items: items(for: meetings), device: currentDevice(), sequence: lastSequence)
     }
 
     // MARK: - Markers
@@ -225,42 +264,55 @@ enum ICloudDriveBackup {
             .appendingPathComponent("Documents", isDirectory: true)
     }
 
-    /// This device's folder, found by its marker rather than its name, so a
+    /// Every root carrying this device's marker, the first one renamed to
+    /// the current display name. Identity is the marker, not the name, so a
     /// renamed iPhone keeps the folder it already filled instead of
     /// abandoning it — an abandoned folder would keep deleted meetings'
-    /// recordings in iCloud with nothing left to sweep them.
+    /// recordings with nothing left to sweep them.
+    ///
+    /// An iCloud conflict or a copy made in Files can leave a second root
+    /// with the same marker. Every one of them is mirrored, so a meeting
+    /// deleted in the app disappears from all of them; picking one and
+    /// ignoring the rest would strand recordings there forever.
     ///
     /// Only ever called from `Mirrorer`, so two overlapping syncs can't both
     /// try to migrate the same folder.
-    nonisolated static func deviceFolderURL(for device: Device, in documents: URL) throws -> URL {
+    nonisolated static func deviceFolderURLs(for device: Device, in documents: URL) throws -> [URL] {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: documents, withIntermediateDirectories: true)
 
-        let children = (try? fileManager.contentsOfDirectory(
+        let marked = ((try? fileManager.contentsOfDirectory(
             at: documents,
             includingPropertiesForKeys: [.isDirectoryKey]
-        )) ?? []
-        let target = documents.appendingPathComponent(device.displayName, isDirectory: true)
+        )) ?? [])
+            .filter { isDirectory($0) && holdsDeviceMarker($0, identity: device.identity) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
 
-        if let existing = children.first(where: { isDirectory($0) && holdsDeviceMarker($0, identity: device.identity) }) {
-            guard existing.lastPathComponent != device.displayName else { return existing }
-            guard !fileManager.fileExists(atPath: target.path) else { return existing }
-            do {
-                try fileManager.moveItem(at: existing, to: target)
-                return target
-            } catch {
-                logger.error("Following the device rename failed: \(error.localizedDescription)")
-                // Another sync may have moved it already; never hand back a
-                // URL that no longer exists, or the mirror recreates it and
-                // future syncs ignore what it holds.
-                return fileManager.fileExists(atPath: existing.path) ? existing : target
-            }
+        guard let first = marked.first(where: { $0.lastPathComponent == device.displayName }) ?? marked.first else {
+            let folder = try freeName(startingAt: device.displayName, in: documents)
+            try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data().write(to: folder.appendingPathComponent(".\(deviceMarkerPrefix)\(device.identity)"))
+            return [folder]
         }
+        return [renamed(first, to: device.displayName, in: documents)] + marked.filter { $0 != first }
+    }
 
-        let folder = try freeName(startingAt: device.displayName, in: documents)
-        try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
-        try Data().write(to: folder.appendingPathComponent(".\(deviceMarkerPrefix)\(device.identity)"))
-        return folder
+    /// Moves a folder to `name` when that name is free, and otherwise leaves
+    /// it where it is. Never returns a URL that does not exist: another sync
+    /// may have moved it already, and mirroring into a vanished path would
+    /// recreate a folder every later sync ignores.
+    private nonisolated static func renamed(_ folder: URL, to name: String, in documents: URL) -> URL {
+        let fileManager = FileManager.default
+        guard folder.lastPathComponent != name else { return folder }
+        let target = documents.appendingPathComponent(name, isDirectory: true)
+        guard !fileManager.fileExists(atPath: target.path) else { return folder }
+        do {
+            try fileManager.moveItem(at: folder, to: target)
+            return target
+        } catch {
+            logger.error("Following the device rename failed: \(error.localizedDescription)")
+            return fileManager.fileExists(atPath: folder.path) ? folder : target
+        }
     }
 
     /// The first unused name in `documents`, so the mirror never claims a
@@ -276,17 +328,24 @@ enum ICloudDriveBackup {
 
     /// Serializes mirrors: the toggle-on sync and the background sync must
     /// never migrate the device folder or write meeting folders at once.
-    private actor Mirrorer {
+    /// Instantiable so tests get their own; production uses `shared`.
+    actor Mirrorer {
         static let shared = Mirrorer()
 
+        private var applied = 0
+
         func run(
-            _ items: [Item],
-            device: Device,
+            _ request: Request,
             documents: URL,
             shouldContinue: @Sendable () -> Bool
         ) throws {
-            let folder = try ICloudDriveBackup.deviceFolderURL(for: device, in: documents)
-            try ICloudDriveBackup.mirror(items, into: folder, shouldContinue: shouldContinue)
+            // A newer snapshot already ran. Applying this one would undo it
+            // — recreating the folder of a meeting it just deleted.
+            guard request.sequence > applied else { return }
+            applied = request.sequence
+            for folder in try ICloudDriveBackup.deviceFolderURLs(for: request.device, in: documents) {
+                try ICloudDriveBackup.mirror(request.items, into: folder, shouldContinue: shouldContinue)
+            }
         }
     }
 
@@ -294,7 +353,7 @@ enum ICloudDriveBackup {
     /// (iCloud Drive unavailable) so the Settings toggle can tell the user.
     /// Per-meeting errors are logged, not surfaced — the next sync repairs
     /// whatever is missing.
-    nonisolated static func syncNow(items: [Item], device: Device) async -> Bool {
+    nonisolated static func syncNow(_ request: Request) async -> Bool {
         // Defense in depth: with the fallback store active the snapshot
         // holds only this session's meetings, so mirroring it would delete
         // every previously backed-up meeting from iCloud Drive.
@@ -302,10 +361,10 @@ enum ICloudDriveBackup {
         let resolved = Task.detached(priority: .utility) { documentsURL() }
         guard let documents = await resolved.value else { return false }
         do {
-            // The preference is re-read between meetings, so switching the
+            // The preference is re-read as the mirror runs, so switching the
             // toggle off stops a sync this task doesn't own either — the
             // background one, say.
-            try await Mirrorer.shared.run(items, device: device, documents: documents) {
+            try await Mirrorer.shared.run(request, documents: documents) {
                 !Task.isCancelled && AppSettings.iCloudDriveBackupEnabled
             }
         } catch {
@@ -322,14 +381,13 @@ enum ICloudDriveBackup {
     static func syncIfEnabled(context: ModelContext) {
         guard AppSettings.iCloudDriveBackupEnabled, !MeetingStore.useEphemeralStorage else { return }
         guard let meetings = try? context.fetch(FetchDescriptor<Meeting>()) else { return }
-        let snapshot = items(for: meetings)
-        let device = currentDevice()
+        let snapshot = request(for: meetings)
         // Copying a long meeting's audio outlasts the seconds iOS grants a
         // backgrounded app; without this the copy is cut mid-file every
         // time and never finishes.
         let token = BackgroundTaskToken(name: "iCloud Drive mirror")
         Task {
-            _ = await syncNow(items: snapshot, device: device)
+            _ = await syncNow(snapshot)
             token.end()
         }
     }
@@ -342,15 +400,17 @@ enum ICloudDriveBackup {
     /// the user the backup it was replacing, and one unmirrorable meeting
     /// never blocks the rest.
     ///
-    /// `shouldContinue` is checked between meetings and after each copy, so
-    /// turning the setting off stops the mirror mid-run and discards a
-    /// recording that finished landing after the user said stop.
+    /// `shouldContinue` is checked before any folder is touched, between
+    /// meetings, and after each copy, so turning the setting off stops the
+    /// mirror mid-run and discards a recording that finished landing after
+    /// the user said stop.
     nonisolated static func mirror(
         _ items: [Item],
         into documents: URL,
         shouldContinue: @Sendable () -> Bool = { true }
     ) throws {
         let fileManager = FileManager.default
+        guard shouldContinue() else { return }
         try fileManager.createDirectory(at: documents, withIntermediateDirectories: true)
 
         let owned = ownedFolders(in: documents)
@@ -376,6 +436,9 @@ enum ICloudDriveBackup {
             uniquingKeysWith: { first, _ in first }
         )
         for item in items {
+            // Parking hides a folder until it is placed; never start that
+            // when the run is already stopping.
+            guard shouldContinue() else { return }
             guard let current = live[item.meetingID],
                   current.lastPathComponent != item.folderName,
                   let holder = holders[item.folderName.lowercased()],
@@ -430,10 +493,30 @@ enum ICloudDriveBackup {
                 }
                 return target
             }
-            // Ours already — a parking move that failed earlier, say.
-            if meetingID(inFolder: target) == item.meetingID { return target }
+            guard meetingID(inFolder: target) == item.meetingID else { continue }
+            // Ours already. On a case-insensitive volume a title edit that
+            // only changed capitalization resolves to this same directory,
+            // and a direct move would be a no-op that leaves Files showing
+            // the old spelling forever — go around through a temporary name.
+            if let existing, existing.lastPathComponent != candidate {
+                try recase(existing, to: target, in: documents, meetingID: item.meetingID)
+            }
+            return target
         }
         throw CocoaError(.fileWriteInvalidFileName)
+    }
+
+    private nonisolated static func recase(
+        _ folder: URL,
+        to target: URL,
+        in documents: URL,
+        meetingID: String
+    ) throws {
+        let fileManager = FileManager.default
+        let staging = documents.appendingPathComponent(stagingPrefix + meetingID, isDirectory: true)
+        guard !fileManager.fileExists(atPath: staging.path) else { return }
+        try fileManager.moveItem(at: folder, to: staging)
+        try fileManager.moveItem(at: staging, to: target)
     }
 
     /// Folders this app wrote, keyed by meeting id. Anything the user put in
@@ -468,23 +551,34 @@ enum ICloudDriveBackup {
             try notes.write(to: notesURL, options: .atomic)
         }
 
+        // Copy first, prune second: removing the recording this one replaces
+        // before the replacement has landed would leave the meeting with no
+        // audio at all if the copy then fails.
+        if let source = item.audioSourceURL, let sourceSize = fileSize(at: source) {
+            let destination = folder.appendingPathComponent(source.lastPathComponent)
+            if !isCurrent(destination, sourceSize: sourceSize) {
+                // Land the bytes under a hidden name so the previous copy
+                // survives a failure part-way through.
+                let partial = folder.appendingPathComponent(".\(source.lastPathComponent)\(partialSuffix)")
+                try? fileManager.removeItem(at: partial)
+                try fileManager.copyItem(at: source, to: partial)
+                // The copy runs to completion whatever happens around it, so
+                // a recording can land after the user opted out.
+                guard shouldContinue() else {
+                    try? fileManager.removeItem(at: partial)
+                    return
+                }
+                if fileManager.fileExists(atPath: destination.path) {
+                    try fileManager.removeItem(at: destination)
+                }
+                try fileManager.moveItem(at: partial, to: destination)
+            }
+        }
+
         // Keyed on what the meeting *says* its recording is, not on what
         // could be read: a temporarily unreadable local file must never
         // take the mirrored copy — possibly the last one — down with it.
         removeStaleAudio(in: folder, keeping: item.audioFileName)
-
-        guard let source = item.audioSourceURL, let sourceSize = fileSize(at: source) else { return }
-        let destination = folder.appendingPathComponent(source.lastPathComponent)
-        guard !isCurrent(destination, sourceSize: sourceSize) else { return }
-        if fileManager.fileExists(atPath: destination.path) {
-            try fileManager.removeItem(at: destination)
-        }
-        try fileManager.copyItem(at: source, to: destination)
-        // The copy runs to completion whatever happens around it, so a
-        // recording can land after the user opted out. Take it back.
-        if !shouldContinue() {
-            try? fileManager.removeItem(at: destination)
-        }
     }
 
     /// Deleting a meeting must leave zero bytes behind, and a folder whose
