@@ -237,11 +237,11 @@ struct SettingsView: View {
                 mirrorTask?.cancel()
                 guard iCloudDrive else { return }
                 let items = ICloudDriveBackup.items(for: meetings)
-                let deviceFolder = ICloudDriveBackup.deviceFolderName()
+                let device = ICloudDriveBackup.currentDevice()
                 mirrorTask = Task {
                     // Toggling on is the one moment to say "this can't work
                     // here" — afterwards the mirror quietly self-heals.
-                    let available = await ICloudDriveBackup.syncNow(items: items, deviceFolder: deviceFolder)
+                    let available = await ICloudDriveBackup.syncNow(items: items, device: device)
                     // Resolving the iCloud container is slow on first use;
                     // never overrule a choice the user made since then.
                     guard !Task.isCancelled, !available, iCloudDrive else { return }

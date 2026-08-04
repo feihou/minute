@@ -10,25 +10,28 @@ import UIKit
 /// title changed, rewrites changed notes, copies missing or half-copied
 /// audio, and removes the folders of meetings that no longer exist.
 ///
-/// A folder's identity is the meeting id in its marker file name, never the
-/// folder name: names change when a title is edited, when the clock shifts
-/// (DST or travel), or when the iPhone is renamed, and re-deriving identity
-/// from them would delete and re-upload every recording each time. The id
-/// lives in the file *name* so an iCloud-evicted marker — which iOS
-/// replaces with a `..minute-<id>.icloud` placeholder — still identifies
-/// its folder without reading a byte.
+/// Identity is a marker file name, never a folder name: names change when a
+/// title is edited, when the clock shifts (DST or travel), or when the
+/// iPhone is renamed, and re-deriving identity from them would delete and
+/// re-upload every recording each time. The id lives in the file *name* so
+/// an iCloud-evicted marker — which iOS replaces with a
+/// `..minute-<id>.icloud` placeholder — still identifies its folder without
+/// reading a byte.
 ///
-/// The folder is the user's to browse and edit, so the mirror only ever
-/// touches folders carrying its own marker: it never claims, overwrites, or
-/// deletes a directory someone put there themselves.
+/// These folders are the user's to browse and edit, so the mirror touches
+/// only what it can prove it created: a folder carrying its marker, and a
+/// recording named the way it names recordings. It never claims, overwrites,
+/// or deletes anything else.
 enum ICloudDriveBackup {
     private static let logger = Logger(subsystem: "com.minuteapp.Minute", category: "ICloudDriveBackup")
 
     static let notesFileName = "notes.md"
-    /// Marker file name prefix; the meeting id follows it.
+    /// Marker file name prefixes; a UUID follows each.
     private static let markerPrefix = "minute-"
+    private static let deviceMarkerPrefix = "minute-device-"
     /// Hidden name a folder is parked under while names are being swapped.
     private static let stagingPrefix = ".minute-staging-"
+    private static let placeholderSuffix = ".icloud"
 
     /// APFS caps a single path component at 255 UTF-8 bytes, and a folder
     /// name that exceeds it fails to create on every sync, forever.
@@ -38,7 +41,7 @@ enum ICloudDriveBackup {
     /// Give up rather than spin if a hundred names are all taken.
     private static let maxNameAttempts = 100
 
-    private static let deviceSuffixKey = "backup.deviceFolderSuffix"
+    private static let deviceIdentityKey = "backup.deviceIdentity"
     private static let deviceVendorKey = "backup.deviceVendorID"
 
     /// Everything the mirror needs from one meeting, captured on the main
@@ -52,6 +55,13 @@ enum ICloudDriveBackup {
         let audioFileName: String?
         /// The readable local file, or nil when it is missing.
         let audioSourceURL: URL?
+    }
+
+    /// This iPhone's mirror folder: a readable name for the Files app, and
+    /// a full UUID that identifies the folder no matter what it is called.
+    struct Device: Sendable {
+        let displayName: String
+        let identity: String
     }
 
     // MARK: - Names
@@ -125,99 +135,158 @@ enum ICloudDriveBackup {
         }
     }
 
-    /// "iPhone 3F2A" — the device name plus a suffix kept in UserDefaults.
-    /// Each device mirrors into its own subfolder; two iPhones on one Apple
-    /// ID would otherwise delete each other's meetings from a shared folder.
+    // MARK: - Device identity
+
+    /// This device's folder identity. The name is for humans — only the
+    /// UUID decides which folder belongs to this iPhone, so two devices can
+    /// share a name (or a display suffix) without ever sharing a folder.
     @MainActor
-    static func deviceFolderName() -> String {
+    static func currentDevice() -> Device {
         let defaults = UserDefaults.standard
         let vendorID = UIDevice.current.identifierForVendor?.uuidString
         if deviceIdentityChanged(stored: defaults.string(forKey: deviceVendorKey), current: vendorID) {
             defaults.set(vendorID, forKey: deviceVendorKey)
-            defaults.removeObject(forKey: deviceSuffixKey)
+            defaults.removeObject(forKey: deviceIdentityKey)
         }
-        // Not identifierForVendor alone: it is nil before the first unlock,
-        // and falling back to the bare (generic "iPhone") device name would
-        // put two devices in one folder — what this suffix prevents.
-        let suffix = defaults.string(forKey: deviceSuffixKey) ?? {
-            let generated = String(UUID().uuidString.prefix(4))
-            defaults.set(generated, forKey: deviceSuffixKey)
+        let identity = defaults.string(forKey: deviceIdentityKey) ?? {
+            let generated = UUID().uuidString
+            defaults.set(generated, forKey: deviceIdentityKey)
             return generated
         }()
-        return "\(UIDevice.current.name) \(suffix)"
+        // A short tail keeps two same-named iPhones apart in Files; it is
+        // decoration, never identity.
+        return Device(
+            displayName: "\(UIDevice.current.name) \(identity.prefix(4))",
+            identity: identity
+        )
     }
 
-    /// Whether the stored suffix belongs to a different physical iPhone.
-    /// Restoring a backup onto a replacement phone copies the suffix along
-    /// with everything else, and two phones sharing a mirror folder would
-    /// sweep each other's meetings — so the clone takes a new suffix. A nil
-    /// vendor id (before first unlock) can't tell, and must not churn.
+    /// Whether the stored identity belongs to a different physical iPhone.
+    /// Restoring a backup onto a replacement phone copies it along with
+    /// everything else, and two phones sharing a mirror folder would sweep
+    /// each other's meetings — so the clone takes a new one. A nil vendor id
+    /// (before first unlock) can't tell, and must not churn.
     static func deviceIdentityChanged(stored: String?, current: String?) -> Bool {
         guard let current else { return false }
         return stored != current
     }
 
-    // MARK: - Sync
+    // MARK: - Markers
 
-    /// This device's folder inside the app's ubiquity Documents directory,
-    /// or nil when iCloud Drive is unavailable (not signed in, iCloud Drive
-    /// off, or missing entitlement). Slow on first call — never call on the
-    /// main thread.
-    nonisolated static func containerURL(deviceFolder: String) -> URL? {
-        guard let documents = FileManager.default
-            .url(forUbiquityContainerIdentifier: nil)?
-            .appendingPathComponent("Documents", isDirectory: true)
-        else { return nil }
-        return deviceFolderURL(named: deviceFolder, in: documents)
+    /// The meeting id in a marker file name, or nil for anything else.
+    /// Only the exact name the mirror writes counts — a file the user
+    /// happens to call "minute-agenda" must never make their folder look
+    /// app-owned and get swept.
+    static func meetingID(fromMarkerName name: String) -> String? {
+        identity(fromMarkerName: name, prefix: markerPrefix)
     }
 
-    /// Where this device mirrors, following a renamed iPhone. The trailing
-    /// suffix is this device's identity, so a folder carrying it is moved to
-    /// the new name instead of being abandoned — an abandoned folder would
-    /// keep deleted meetings' recordings in iCloud with nothing left to
-    /// sweep them.
-    nonisolated static func deviceFolderURL(named name: String, in documents: URL) -> URL {
-        let fileManager = FileManager.default
-        let target = documents.appendingPathComponent(name, isDirectory: true)
-        guard !fileManager.fileExists(atPath: target.path),
-              let suffix = name.split(separator: " ").last.map({ " " + $0 })
-        else { return target }
+    private static func identity(fromMarkerName name: String, prefix: String) -> String? {
+        let candidate: String
+        if name.hasPrefix("." + prefix) {
+            candidate = String(name.dropFirst(prefix.count + 1))
+        } else if name.hasPrefix(".." + prefix), name.hasSuffix(placeholderSuffix) {
+            // What iCloud leaves behind when it evicts the local copy.
+            candidate = String(name.dropFirst(prefix.count + 2).dropLast(placeholderSuffix.count))
+        } else {
+            return nil
+        }
+        // Every id the app writes is a UUID; anything else is not ours.
+        return UUID(uuidString: candidate) != nil ? candidate : nil
+    }
 
-        let candidates = (try? fileManager.contentsOfDirectory(
+    /// The meeting a folder belongs to, taken from its marker file's *name*
+    /// so an evicted marker still identifies it.
+    static func meetingID(inFolder url: URL) -> String? {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
+        for name in names {
+            if let id = meetingID(fromMarkerName: name) { return id }
+        }
+        return nil
+    }
+
+    private nonisolated static func holdsDeviceMarker(_ url: URL, identity wanted: String) -> Bool {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
+        return names.contains { identity(fromMarkerName: $0, prefix: deviceMarkerPrefix) == wanted }
+    }
+
+    private nonisolated static func isDirectory(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+    }
+
+    // MARK: - Sync
+
+    /// The app's ubiquity Documents directory, or nil when iCloud Drive is
+    /// unavailable (not signed in, iCloud Drive off, or missing
+    /// entitlement). Slow on first call — never call on the main thread.
+    nonisolated static func documentsURL() -> URL? {
+        FileManager.default
+            .url(forUbiquityContainerIdentifier: nil)?
+            .appendingPathComponent("Documents", isDirectory: true)
+    }
+
+    /// This device's folder, found by its marker rather than its name, so a
+    /// renamed iPhone keeps the folder it already filled instead of
+    /// abandoning it — an abandoned folder would keep deleted meetings'
+    /// recordings in iCloud with nothing left to sweep them.
+    ///
+    /// Only ever called from `Mirrorer`, so two overlapping syncs can't both
+    /// try to migrate the same folder.
+    nonisolated static func deviceFolderURL(for device: Device, in documents: URL) throws -> URL {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: documents, withIntermediateDirectories: true)
+
+        let children = (try? fileManager.contentsOfDirectory(
             at: documents,
             includingPropertiesForKeys: [.isDirectoryKey]
         )) ?? []
-        let previous = candidates.first { url in
-            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-            // Only ever move a folder this app filled with meeting folders,
-            // so a user folder that happens to end the same way is safe.
-            return isDirectory && url.lastPathComponent.hasSuffix(suffix) && holdsMirrorFolders(url)
+        let target = documents.appendingPathComponent(device.displayName, isDirectory: true)
+
+        if let existing = children.first(where: { isDirectory($0) && holdsDeviceMarker($0, identity: device.identity) }) {
+            guard existing.lastPathComponent != device.displayName else { return existing }
+            guard !fileManager.fileExists(atPath: target.path) else { return existing }
+            do {
+                try fileManager.moveItem(at: existing, to: target)
+                return target
+            } catch {
+                logger.error("Following the device rename failed: \(error.localizedDescription)")
+                // Another sync may have moved it already; never hand back a
+                // URL that no longer exists, or the mirror recreates it and
+                // future syncs ignore what it holds.
+                return fileManager.fileExists(atPath: existing.path) ? existing : target
+            }
         }
-        guard let previous else { return target }
-        do {
-            try fileManager.moveItem(at: previous, to: target)
-        } catch {
-            logger.error("Following the device rename failed: \(error.localizedDescription)")
-            return previous
-        }
-        return target
+
+        let folder = try freeName(startingAt: device.displayName, in: documents)
+        try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data().write(to: folder.appendingPathComponent(".\(deviceMarkerPrefix)\(device.identity)"))
+        return folder
     }
 
-    private nonisolated static func holdsMirrorFolders(_ url: URL) -> Bool {
-        let children = (try? FileManager.default.contentsOfDirectory(
-            at: url,
-            includingPropertiesForKeys: nil
-        )) ?? []
-        return children.contains { meetingID(inFolder: $0) != nil }
+    /// The first unused name in `documents`, so the mirror never claims a
+    /// directory someone else put there.
+    private nonisolated static func freeName(startingAt base: String, in documents: URL) throws -> URL {
+        for attempt in 1...maxNameAttempts {
+            let candidate = attempt == 1 ? base : "\(base) \(attempt)"
+            let url = documents.appendingPathComponent(candidate, isDirectory: true)
+            if !FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        throw CocoaError(.fileWriteInvalidFileName)
     }
 
     /// Serializes mirrors: the toggle-on sync and the background sync must
-    /// never write the same folders at once.
+    /// never migrate the device folder or write meeting folders at once.
     private actor Mirrorer {
         static let shared = Mirrorer()
 
-        func run(_ items: [Item], into documents: URL) throws {
-            try ICloudDriveBackup.mirror(items, into: documents)
+        func run(
+            _ items: [Item],
+            device: Device,
+            documents: URL,
+            shouldContinue: @Sendable () -> Bool
+        ) throws {
+            let folder = try ICloudDriveBackup.deviceFolderURL(for: device, in: documents)
+            try ICloudDriveBackup.mirror(items, into: folder, shouldContinue: shouldContinue)
         }
     }
 
@@ -225,15 +294,20 @@ enum ICloudDriveBackup {
     /// (iCloud Drive unavailable) so the Settings toggle can tell the user.
     /// Per-meeting errors are logged, not surfaced — the next sync repairs
     /// whatever is missing.
-    nonisolated static func syncNow(items: [Item], deviceFolder: String) async -> Bool {
+    nonisolated static func syncNow(items: [Item], device: Device) async -> Bool {
         // Defense in depth: with the fallback store active the snapshot
         // holds only this session's meetings, so mirroring it would delete
         // every previously backed-up meeting from iCloud Drive.
         guard !MeetingStore.useEphemeralStorage else { return false }
-        let resolved = Task.detached(priority: .utility) { containerURL(deviceFolder: deviceFolder) }
+        let resolved = Task.detached(priority: .utility) { documentsURL() }
         guard let documents = await resolved.value else { return false }
         do {
-            try await Mirrorer.shared.run(items, into: documents)
+            // The preference is re-read between meetings, so switching the
+            // toggle off stops a sync this task doesn't own either — the
+            // background one, say.
+            try await Mirrorer.shared.run(items, device: device, documents: documents) {
+                !Task.isCancelled && AppSettings.iCloudDriveBackupEnabled
+            }
         } catch {
             logger.error("iCloud Drive mirror failed: \(error.localizedDescription)")
         }
@@ -249,13 +323,13 @@ enum ICloudDriveBackup {
         guard AppSettings.iCloudDriveBackupEnabled, !MeetingStore.useEphemeralStorage else { return }
         guard let meetings = try? context.fetch(FetchDescriptor<Meeting>()) else { return }
         let snapshot = items(for: meetings)
-        let deviceFolder = deviceFolderName()
+        let device = currentDevice()
         // Copying a long meeting's audio outlasts the seconds iOS grants a
         // backgrounded app; without this the copy is cut mid-file every
         // time and never finishes.
         let token = BackgroundTaskToken(name: "iCloud Drive mirror")
         Task {
-            _ = await syncNow(items: snapshot, deviceFolder: deviceFolder)
+            _ = await syncNow(items: snapshot, device: device)
             token.end()
         }
     }
@@ -263,15 +337,33 @@ enum ICloudDriveBackup {
     // MARK: - Mirror
 
     /// Brings `documents` to one folder per item: parks folders whose name
-    /// must change, places each item, and only then removes the folders of
-    /// meetings that are really gone. A write that fails therefore never
-    /// costs the user the backup it was replacing, and one unmirrorable
-    /// meeting never blocks the rest.
-    nonisolated static func mirror(_ items: [Item], into documents: URL) throws {
+    /// another one holds, places each item, and only then removes folders
+    /// that belong to no meeting. A write that fails therefore never costs
+    /// the user the backup it was replacing, and one unmirrorable meeting
+    /// never blocks the rest.
+    ///
+    /// `shouldContinue` is checked between meetings and after each copy, so
+    /// turning the setting off stops the mirror mid-run and discards a
+    /// recording that finished landing after the user said stop.
+    nonisolated static func mirror(
+        _ items: [Item],
+        into documents: URL,
+        shouldContinue: @Sendable () -> Bool = { true }
+    ) throws {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: documents, withIntermediateDirectories: true)
 
-        var owned = ownedFolders(in: documents)
+        let owned = ownedFolders(in: documents)
+        // One meeting can end up with several folders — an iCloud conflict,
+        // or a folder duplicated in Files. Keep one and let the rest be
+        // swept, or they stay invisible to every later sync and outlive the
+        // meeting they hold.
+        var live: [String: URL] = [:]
+        for item in items {
+            guard let candidates = owned[item.meetingID], !candidates.isEmpty else { continue }
+            live[item.meetingID] = candidates.first { $0.lastPathComponent == item.folderName } ?? candidates[0]
+        }
+        let removable = owned.flatMap { id, urls in urls.filter { $0 != live[id] } }
 
         // Park only a folder whose target another mirror folder is sitting
         // on — two meetings that swap titles each hold the other's name, and
@@ -280,11 +372,11 @@ enum ICloudDriveBackup {
         // across, so a move that fails leaves the backup visible where it
         // was instead of stranded under a hidden staging name.
         let holders = Dictionary(
-            owned.map { ($1.lastPathComponent.lowercased(), $0) },
+            live.map { ($1.lastPathComponent.lowercased(), $0) },
             uniquingKeysWith: { first, _ in first }
         )
         for item in items {
-            guard let current = owned[item.meetingID],
+            guard let current = live[item.meetingID],
                   current.lastPathComponent != item.folderName,
                   let holder = holders[item.folderName.lowercased()],
                   holder != item.meetingID
@@ -293,26 +385,25 @@ enum ICloudDriveBackup {
             guard !fileManager.fileExists(atPath: staging.path) else { continue }
             do {
                 try fileManager.moveItem(at: current, to: staging)
-                owned[item.meetingID] = staging
+                live[item.meetingID] = staging
             } catch {
                 logger.error("Parking \(current.lastPathComponent) failed: \(error.localizedDescription)")
             }
         }
 
         for item in items {
-            guard !Task.isCancelled else { return }
+            guard shouldContinue() else { return }
             do {
-                let folder = try place(item, existing: owned[item.meetingID], in: documents)
-                owned[item.meetingID] = folder
-                try write(item, into: folder)
+                let folder = try place(item, existing: live[item.meetingID], in: documents)
+                live[item.meetingID] = folder
+                try write(item, into: folder, shouldContinue: shouldContinue)
             } catch {
                 logger.error("Mirroring \(item.folderName) failed: \(error.localizedDescription)")
             }
         }
 
-        guard !Task.isCancelled else { return }
-        let expected = Set(items.map(\.meetingID))
-        for (id, url) in owned where !expected.contains(id) {
+        guard shouldContinue() else { return }
+        for url in removable {
             do {
                 try fileManager.removeItem(at: url)
             } catch {
@@ -327,8 +418,8 @@ enum ICloudDriveBackup {
     /// rather than claiming, overwriting, and eventually deleting it.
     private nonisolated static func place(_ item: Item, existing: URL?, in documents: URL) throws -> URL {
         let fileManager = FileManager.default
-        var candidate = item.folderName
         for attempt in 1...maxNameAttempts {
+            let candidate = attempt == 1 ? item.folderName : "\(item.folderName) \(attempt)"
             let target = documents.appendingPathComponent(candidate, isDirectory: true)
             if target == existing { return target }
             if !fileManager.fileExists(atPath: target.path) {
@@ -341,7 +432,6 @@ enum ICloudDriveBackup {
             }
             // Ours already — a parking move that failed earlier, say.
             if meetingID(inFolder: target) == item.meetingID { return target }
-            candidate = "\(item.folderName) \(attempt + 1)"
         }
         throw CocoaError(.fileWriteInvalidFileName)
     }
@@ -349,35 +439,24 @@ enum ICloudDriveBackup {
     /// Folders this app wrote, keyed by meeting id. Anything the user put in
     /// the folder has no marker and is invisible here — so it is never
     /// renamed and never deleted, however its name looks.
-    private nonisolated static func ownedFolders(in documents: URL) -> [String: URL] {
+    private nonisolated static func ownedFolders(in documents: URL) -> [String: [URL]] {
         let existing = (try? FileManager.default.contentsOfDirectory(
             at: documents,
             includingPropertiesForKeys: [.isDirectoryKey]
         )) ?? []
-        var owned: [String: URL] = [:]
-        for url in existing {
-            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-            guard isDirectory, let id = meetingID(inFolder: url) else { continue }
-            owned[id] = url
+        var owned: [String: [URL]] = [:]
+        for url in existing.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            guard isDirectory(url), let id = meetingID(inFolder: url) else { continue }
+            owned[id, default: []].append(url)
         }
         return owned
     }
 
-    /// The meeting a folder belongs to, taken from its marker file's *name*
-    /// so an evicted (`..minute-<id>.icloud`) marker still identifies it.
-    static func meetingID(inFolder url: URL) -> String? {
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
-        for name in names {
-            var trimmed = name
-            if trimmed.hasSuffix(".icloud") { trimmed.removeLast(".icloud".count) }
-            while trimmed.hasPrefix(".") { trimmed.removeFirst() }
-            guard trimmed.hasPrefix(markerPrefix) else { continue }
-            return String(trimmed.dropFirst(markerPrefix.count))
-        }
-        return nil
-    }
-
-    private nonisolated static func write(_ item: Item, into folder: URL) throws {
+    private nonisolated static func write(
+        _ item: Item,
+        into folder: URL,
+        shouldContinue: @Sendable () -> Bool
+    ) throws {
         let fileManager = FileManager.default
         if meetingID(inFolder: folder) == nil {
             try Data().write(to: folder.appendingPathComponent(".\(markerPrefix)\(item.meetingID)"))
@@ -401,27 +480,40 @@ enum ICloudDriveBackup {
             try fileManager.removeItem(at: destination)
         }
         try fileManager.copyItem(at: source, to: destination)
+        // The copy runs to completion whatever happens around it, so a
+        // recording can land after the user opted out. Take it back.
+        if !shouldContinue() {
+            try? fileManager.removeItem(at: destination)
+        }
     }
 
     /// Deleting a meeting must leave zero bytes behind, and a folder whose
     /// recording was replaced would otherwise keep the old one forever.
+    /// Only recordings the mirror itself copied are ever removed — every one
+    /// is named with a UUID, so an `agenda.mp3` the user dropped in the
+    /// folder is left exactly where they put it.
     private nonisolated static func removeStaleAudio(in folder: URL, keeping current: String?) {
         let fileManager = FileManager.default
         let names = (try? fileManager.contentsOfDirectory(atPath: folder.path)) ?? []
         for name in names {
-            // Match the real file and the placeholder iCloud leaves behind.
-            var trimmed = name
-            if trimmed.hasSuffix(".icloud") { trimmed.removeLast(".icloud".count) }
-            while trimmed.hasPrefix(".") { trimmed.removeFirst() }
-            let isAudio = MeetingStore.audioFileExtensions
-                .contains(URL(fileURLWithPath: trimmed).pathExtension.lowercased())
-            guard isAudio, trimmed != current else { continue }
+            let trimmed = localName(of: name)
+            let path = URL(fileURLWithPath: trimmed)
+            let isAudio = MeetingStore.audioFileExtensions.contains(path.pathExtension.lowercased())
+            let isMirrored = UUID(uuidString: path.deletingPathExtension().lastPathComponent) != nil
+            guard isAudio, isMirrored, trimmed != current else { continue }
             do {
                 try fileManager.removeItem(at: folder.appendingPathComponent(name))
             } catch {
                 logger.error("Removing stale audio failed: \(error.localizedDescription)")
             }
         }
+    }
+
+    /// The name a file has when its contents are local — evicted files are
+    /// on disk as a hidden ".name.icloud" placeholder.
+    private nonisolated static func localName(of name: String) -> String {
+        guard name.hasPrefix("."), name.hasSuffix(placeholderSuffix) else { return name }
+        return String(name.dropFirst().dropLast(placeholderSuffix.count))
     }
 
     /// Whether the mirrored audio can be left alone.
@@ -431,7 +523,7 @@ enum ICloudDriveBackup {
         // in iCloud Drive — re-copying it would just churn.
         let placeholder = destination
             .deletingLastPathComponent()
-            .appendingPathComponent(".\(destination.lastPathComponent).icloud")
+            .appendingPathComponent(".\(destination.lastPathComponent)\(placeholderSuffix)")
         if FileManager.default.fileExists(atPath: placeholder.path) { return true }
         // ponytail: size compare, not checksums — recordings are written
         // once, so a matching size means the copy completed.
