@@ -26,6 +26,7 @@ Meeting audio is some of the most sensitive data on your phone. Most meeting-not
 - ▶️ **Playback** with scrubbing; **edit** the meeting title and summary, **copy / share / delete** everything (transcripts are read-only today)
 - 🗑️ **Real deletion**: deleting a meeting deletes its audio file and notes from disk; a startup sweep removes any audio orphaned by a crash
 - ☁️ **Opt-in iCloud backup**: include meeting data in the iPhone's device backup, and/or mirror a browsable folder per meeting (notes + audio) into iCloud Drive — both off by default
+- 🏠 **Optional Home Screen widget** in small or medium sizes: provides a New Meeting / recording handoff that opens the app for title and consent before recording, plus links to recent meetings. Its local App Group snapshot contains only a meeting title, date, and duration, and is visible whenever you install the widget.
 - ♿ System-native UI: light/dark mode, Dynamic Type, VoiceOver labels
 
 ## Privacy guarantees
@@ -57,7 +58,7 @@ Each device mirrors into its own subfolder, so two iPhones on one Apple ID never
 - **Live transcription** needs a physical iPhone — `SpeechTranscriber` is unavailable on simulators (the app degrades gracefully and recording still works)
 - **Summaries** need an Apple Intelligence–capable iPhone with Apple Intelligence turned on (in the simulator, summaries work if the host Mac has Apple Intelligence enabled)
 - No third-party dependencies. None.
-- **Device builds** carry iCloud entitlements (for the optional iCloud Drive backup), which need a paid Apple Developer team; on a free personal team, delete `Minute/Minute.entitlements` and the `CODE_SIGN_ENTITLEMENTS` setting locally to run on a device (simulator builds and CI are unaffected)
+- **Device builds** carry iCloud entitlements (for the optional iCloud Drive backup) and an App Group entitlement (for the Home Screen widget). Like the existing iCloud capabilities, App Groups need matching paid-team provisioning for physical-device builds; simulator builds and CI are unaffected.
 
 ## Getting started
 
@@ -78,6 +79,14 @@ xcodebuild -project Minute.xcodeproj -scheme Minute \
 
 The suite includes a live Apple Intelligence integration test that exercises the real on-device model; it skips itself automatically on machines where the model is unavailable.
 
+### Add the Home Screen widget
+
+1. Long-press the Home Screen, then choose **Edit → Add Widget**.
+2. Search for **Minute**.
+3. Select the small or medium size, then add it.
+
+The small widget provides one New Meeting / recording handoff that opens the app for title and consent before recording. The medium widget also separates **New Meeting** from recent-meeting links.
+
 ## Architecture
 
 Plain SwiftUI + SwiftData with small, single-purpose services — no third-party frameworks:
@@ -92,9 +101,11 @@ Minute/
 │   ├── TranscriptionService    SpeechAnalyzer/SpeechTranscriber wrapper
 │   ├── SummarizationService    FoundationModels + chunk/merge pipeline
 │   ├── AudioPlayerController   AVAudioPlayer playback
-│   └── MeetingStore            files on disk, delete cascade, orphan sweep
+│   ├── MeetingStore            files on disk, delete cascade, orphan sweep
+│   └── WidgetSnapshotPublisher bounded Home Screen metadata snapshots
 ├── Support/        chunker, exporter, buffer conversion, formatting
 └── Views/          list, recording, detail, editor, playback, settings
+MinuteWidgets/      Home Screen widget extension
 ```
 
 The flow: `RecordingSession` starts the recorder immediately (audio capture never waits on anything), then attaches transcription asynchronously once the speech model is ready. On stop, the transcript is finalized and the meeting saved; summaries are generated on demand from the detail screen.

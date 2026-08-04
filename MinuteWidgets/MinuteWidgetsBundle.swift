@@ -4,6 +4,7 @@ import WidgetKit
 @main
 struct MinuteWidgetsBundle: WidgetBundle {
     var body: some Widget {
+        MinuteHomeWidget()
         RecordingLiveActivity()
     }
 }

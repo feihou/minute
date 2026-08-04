@@ -13,12 +13,13 @@ struct MeetingListView: View {
     @State private var showingNewMeeting = false
     @State private var showingSettings = false
     @State private var activeSession: RecordingSession?
-    @State private var justFinished: Meeting?
+    @State private var meetingDestination: Meeting?
     @State private var didSweepOrphans = false
     @State private var showingImporter = false
     @State private var importingFileName: String?
     @State private var importTask: Task<Void, Never>?
     @State private var importError: String?
+    @State private var deepLinkState = MeetingDeepLinkState()
 
     var body: some View {
         NavigationStack {
@@ -90,7 +91,7 @@ struct MeetingListView: View {
                     .padding(.horizontal)
                 }
             }
-            .navigationDestination(item: $justFinished) { meeting in
+            .navigationDestination(item: $meetingDestination) { meeting in
                 MeetingDetailView(meeting: meeting, autoGenerateSummary: AppSettings.autoSummarizeEnabled)
             }
             .safeAreaInset(edge: .bottom) {
@@ -119,6 +120,13 @@ struct MeetingListView: View {
             didSweepOrphans = true
             MeetingStore.removeOrphanedAudio(referencedFileNames: Set(meetings.compactMap(\.audioFileName)))
         }
+        .onChange(of: widgetSnapshot, initial: true) { _, snapshot in
+            WidgetSnapshotPublisher.publish(snapshot)
+        }
+        .onChange(of: meetings.map(\.id), initial: true) {
+            resolvePendingMeetingDeepLink()
+        }
+        .onOpenURL(perform: handleDeepLink)
         .sheet(isPresented: $showingNewMeeting) {
             NewMeetingSheet(title: $draftTitle) {
                 activeSession = RecordingSession(title: draftTitle)
@@ -131,7 +139,7 @@ struct MeetingListView: View {
             RecordingView(session: session) { finished in
                 activeSession = nil
                 if let finished {
-                    justFinished = finished
+                    meetingDestination = finished
                 }
             }
         }
@@ -207,6 +215,10 @@ struct MeetingListView: View {
             byTitle[title, default: []].append(meeting)
         }
         return order.map { (title: $0, items: byTitle[$0] ?? []) }
+    }
+
+    private var widgetSnapshot: WidgetSnapshot {
+        storeIsEphemeral ? .empty : WidgetSnapshotPublisher.snapshot(from: meetings)
     }
 
     // MARK: - Empty state
@@ -298,6 +310,25 @@ struct MeetingListView: View {
         showingNewMeeting = true
     }
 
+    private func handleDeepLink(_ url: URL) {
+        guard let deepLink = MinuteDeepLink(url: url) else { return }
+        switch deepLink {
+        case .newMeeting:
+            deepLinkState.receive(deepLink)
+            guard activeSession == nil else { return }
+            beginNewMeeting()
+        case .meeting:
+            deepLinkState.receive(deepLink)
+            resolvePendingMeetingDeepLink()
+        }
+    }
+
+    private func resolvePendingMeetingDeepLink() {
+        guard let id = deepLinkState.resolve(availableMeetingIDs: meetings.map(\.id)),
+              let meeting = meetings.first(where: { $0.id == id }) else { return }
+        meetingDestination = meeting
+    }
+
     private func startImport(_ url: URL) {
         importingFileName = url.lastPathComponent
         importTask = Task {
@@ -305,7 +336,7 @@ struct MeetingListView: View {
                 let meeting = try await AudioImporter.importAudio(from: url, context: context)
                 // Reuses the post-recording destination, so Auto-Summarize
                 // kicks in for imports too.
-                justFinished = meeting
+                meetingDestination = meeting
             } catch is CancellationError {
                 // User cancelled — nothing to report.
             } catch {
