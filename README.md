@@ -26,7 +26,7 @@ Meeting audio is some of the most sensitive data on your phone. Most meeting-not
 - ▶️ **Playback** with scrubbing; **edit** the meeting title and summary, **copy / share / delete** everything (transcripts are read-only today)
 - 🗑️ **Real deletion**: deleting a meeting deletes its audio file and notes from disk; a startup sweep removes any audio orphaned by a crash
 - ☁️ **Opt-in iCloud backup**: include meeting data in the iPhone's device backup, and/or mirror a browsable folder per meeting (notes + audio) into iCloud Drive — both off by default
-- 🏠 **Optional Home Screen widget** in small or medium sizes: quickly start a recording and jump to recent meetings. Its local App Group snapshot contains only a meeting title, date, and duration, and is visible whenever you install the widget.
+- 🏠 **Optional Home Screen widget** in small or medium sizes: provides a New Meeting / recording handoff that opens the app for title and consent before recording, plus links to recent meetings. Its local App Group snapshot contains only a meeting title, date, and duration, and is visible whenever you install the widget.
 - ♿ System-native UI: light/dark mode, Dynamic Type, VoiceOver labels
 
 ## Privacy guarantees
@@ -85,7 +85,7 @@ The suite includes a live Apple Intelligence integration test that exercises the
 2. Search for **Minute**.
 3. Select the small or medium size, then add it.
 
-The small widget gives you one recording action. The medium widget also separates **New Meeting** from recent-meeting links.
+The small widget provides one New Meeting / recording handoff that opens the app for title and consent before recording. The medium widget also separates **New Meeting** from recent-meeting links.
 
 ## Architecture
 
