@@ -18,11 +18,11 @@ struct MeetingDetailView: View {
         case transcript
     }
 
+    /// App-level owner of running generations — summarization survives
+    /// navigating away from this screen and re-attaches on return.
+    @Environment(SummaryGeneration.self) private var summaryGeneration
+
     @State private var player = AudioPlayerController()
-    @State private var isGenerating = false
-    @State private var generationStatus: String?
-    @State private var generationTask: Task<Void, Never>?
-    @State private var summaryError: String?
     @State private var showingEditor = false
     @State private var confirmingDelete = false
     @State private var confirmingRetranscribe = false
@@ -35,6 +35,10 @@ struct MeetingDetailView: View {
     @State private var renameText = ""
     @State private var selectedTab: Tab = .summary
     @AppStorage(AppSettings.summaryTemplateKey) private var summaryTemplateID = SummaryTemplate.standard.id
+
+    private var isGenerating: Bool { summaryGeneration.isGenerating(meeting) }
+    private var generationStatus: String? { summaryGeneration.status(for: meeting) }
+    private var summaryError: String? { summaryGeneration.error(for: meeting) }
 
     var body: some View {
         List {
@@ -234,7 +238,7 @@ struct MeetingDetailView: View {
                             .foregroundStyle(.secondary)
                         Spacer()
                         Button("Stop") {
-                            generationTask?.cancel()
+                            summaryGeneration.cancel(meeting)
                         }
                         .buttonStyle(.borderless)
                         .font(.subheadline.weight(.medium))
@@ -459,36 +463,12 @@ struct MeetingDetailView: View {
 
     private func generateSummary() {
         guard !isGenerating, !isRetranscribing, !isDiarizing else { return }
-        isGenerating = true
-        summaryError = nil
-        generationStatus = nil
-        let transcript = meeting.timestampedTranscriptText
-        let template = SummaryTemplate.template(for: summaryTemplateID)
-        let context = AppSettings.summaryContext
-        let language = AppSettings.summaryLanguage
-        generationTask = Task {
-            do {
-                let summary = try await SummarizationService(language: language)
-                    .summarize(transcript: transcript, template: template, context: context) { status in
-                        generationStatus = status
-                    }
-                // The meeting may have been deleted while the model was working.
-                if !meeting.isDeleted {
-                    meeting.summary = summary
-                    applySuggestedTitleIfDefault(summary)
-                    saveQuietly()
-                }
-            } catch is CancellationError {
-                // The user tapped Stop — nothing to report.
-            } catch {
-                if !meeting.isDeleted, !Task.isCancelled {
-                    summaryError = error.localizedDescription
-                }
-            }
-            isGenerating = false
-            generationStatus = nil
-            generationTask = nil
-        }
+        summaryGeneration.generate(
+            meeting,
+            template: SummaryTemplate.template(for: summaryTemplateID),
+            context: AppSettings.summaryContext,
+            language: AppSettings.summaryLanguage
+        )
     }
 
     private func retranscribe() {
@@ -576,18 +556,6 @@ struct MeetingDetailView: View {
 
     static func speakerColor(for index: Int) -> Color {
         speakerColors[index % speakerColors.count]
-    }
-
-    /// Adopts the model's title only while the meeting still carries the
-    /// default "Meeting <date>" name — never over a user-chosen title. The
-    /// stored default is authoritative; re-deriving it is only a fallback for
-    /// meetings saved before the default was persisted, and can miss when the
-    /// locale or time zone changed since then.
-    private func applySuggestedTitleIfDefault(_ summary: MeetingSummary) {
-        guard let suggested = summary.suggestedTitle else { return }
-        let baseline = meeting.defaultTitle ?? RecordingSession.defaultTitle(for: meeting.createdAt)
-        guard meeting.title == baseline else { return }
-        meeting.title = suggested
     }
 
     private func saveQuietly() {
