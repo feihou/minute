@@ -1,13 +1,13 @@
 # Minute
 
-**Privacy-first meeting notes for iPhone. Record, transcribe, and summarize — entirely on your device.**
+**Privacy-first meeting notes for iPhone. Process every meeting entirely on your device.**
 
 ![Platform](https://img.shields.io/badge/platform-iOS%2026%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-SwiftUI%20%2B%20SwiftData-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)
 
-Minute records in-person meetings, produces a live transcript with Apple's on-device speech models, and generates a structured summary (overview, key points, decisions, action items, open questions) with the on-device Apple Intelligence model. **Nothing ever leaves your iPhone** — no account, no backend, no analytics, no tracking.
+Minute records in-person meetings, produces a live transcript with Apple's on-device speech models, and generates a structured summary (overview, key points, decisions, action items, open questions) with the on-device Apple Intelligence model. **Your meeting data stays on your iPhone by default**; the only cloud copies are the backup options you explicitly enable — no account, no backend, no analytics, no tracking.
 
 | Meeting list | Recording | Meeting notes | Settings |
 |:---:|:---:|:---:|:---:|
@@ -58,7 +58,7 @@ Each device mirrors into its own subfolder, so two iPhones on one Apple ID never
 - **Live transcription** needs a physical iPhone — `SpeechTranscriber` is unavailable on simulators (the app degrades gracefully and recording still works)
 - **Summaries** need an Apple Intelligence–capable iPhone with Apple Intelligence turned on (in the simulator, summaries work if the host Mac has Apple Intelligence enabled)
 - No third-party dependencies. None.
-- **Device builds** carry iCloud entitlements (for the optional iCloud Drive backup) and an App Group entitlement (for the Home Screen widget). Like the existing iCloud capabilities, App Groups need matching paid-team provisioning for physical-device builds; simulator builds and CI are unaffected.
+- **Production device builds** use the `iCloud.com.minuteapp.Minute` container and an App Group for the optional Home Screen widget, so physical-device builds need a paid Apple Developer team with matching iCloud/App Group provisioning. Other signing teams must either replace those container/group references with identifiers they own, or remove `Minute/Minute.entitlements`, the widget/App Group entitlements, `CODE_SIGN_ENTITLEMENTS`, and the matching `NSUbiquitousContainers` entry locally; simulator builds and CI are unaffected.
 
 ## Getting started
 

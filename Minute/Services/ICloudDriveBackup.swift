@@ -353,19 +353,22 @@ enum ICloudDriveBackup {
     /// (iCloud Drive unavailable) so the Settings toggle can tell the user.
     /// Per-meeting errors are logged, not surfaced — the next sync repairs
     /// whatever is missing.
-    nonisolated static func syncNow(_ request: Request) async -> Bool {
+    nonisolated static func syncNow(
+        _ request: Request,
+        shouldContinue: @escaping @Sendable () -> Bool = { true }
+    ) async -> Bool {
         // Defense in depth: with the fallback store active the snapshot
         // holds only this session's meetings, so mirroring it would delete
         // every previously backed-up meeting from iCloud Drive.
-        guard !MeetingStore.useEphemeralStorage else { return false }
+        guard shouldContinue(), !MeetingStore.useEphemeralStorage else { return false }
         let resolved = Task.detached(priority: .utility) { documentsURL() }
-        guard let documents = await resolved.value else { return false }
+        guard let documents = await resolved.value, shouldContinue() else { return false }
         do {
             // The preference is re-read as the mirror runs, so switching the
             // toggle off stops a sync this task doesn't own either — the
             // background one, say.
             try await Mirrorer.shared.run(request, documents: documents) {
-                !Task.isCancelled && AppSettings.iCloudDriveBackupEnabled
+                shouldContinue() && !Task.isCancelled && AppSettings.iCloudDriveBackupEnabled
             }
         } catch {
             // Per-meeting problems are handled and logged inside the
@@ -383,17 +386,15 @@ enum ICloudDriveBackup {
     /// app enters the background — a copy cut short by suspension leaves a
     /// size mismatch the next sync repairs.
     @MainActor
-    static func syncIfEnabled(context: ModelContext) {
-        guard AppSettings.iCloudDriveBackupEnabled, !MeetingStore.useEphemeralStorage else { return }
-        guard let meetings = try? context.fetch(FetchDescriptor<Meeting>()) else { return }
+    static func syncIfEnabled(context: ModelContext) -> BackgroundMirrorTask? {
+        guard AppSettings.iCloudDriveBackupEnabled, !MeetingStore.useEphemeralStorage else { return nil }
+        guard let meetings = try? context.fetch(FetchDescriptor<Meeting>()) else { return nil }
         let snapshot = request(for: meetings)
         // Copying a long meeting's audio outlasts the seconds iOS grants a
         // backgrounded app; without this the copy is cut mid-file every
         // time and never finishes.
-        let token = BackgroundTaskToken(name: "iCloud Drive mirror")
-        Task {
-            _ = await syncNow(snapshot)
-            token.end()
+        return BackgroundMirrorTask(name: "iCloud Drive mirror") { shouldContinue in
+            _ = await syncNow(snapshot, shouldContinue: shouldContinue)
         }
     }
 
@@ -477,7 +478,13 @@ enum ICloudDriveBackup {
             do {
                 let placed = try place(item, existing: live[item.meetingID], in: documents)
                 live[item.meetingID] = placed.url
-                try write(item, into: placed.url, created: placed.created, shouldContinue: shouldContinue)
+                try write(
+                    item,
+                    into: placed.url,
+                    created: placed.created,
+                    verifyRecordingContents: (owned[item.meetingID]?.count ?? 0) > 1,
+                    shouldContinue: shouldContinue
+                )
             } catch {
                 logger.error("Mirroring \(item.folderName) failed: \(error.localizedDescription)")
             }
@@ -492,27 +499,33 @@ enum ICloudDriveBackup {
             }
         }
         // A duplicate goes only once the folder that was kept actually
-        // holds the recording. If the local file could not be read this
-        // round, the duplicate may be the only copy of it left.
+        // holds a recording verified against the readable local source. If
+        // the local file could not be read this round, a duplicate may hold
+        // the only complete copy left.
         for item in items {
-            guard let original = chosen[item.meetingID], let keep = live[item.meetingID] else { continue }
-            guard holdsRecording(keep, named: item.audioFileName) else {
+            guard let original = chosen[item.meetingID],
+                  let keep = live[item.meetingID],
+                  let candidates = owned[item.meetingID],
+                  candidates.contains(where: { $0 != original })
+            else { continue }
+            guard holdsCurrentRecording(keep, for: item) else {
                 logger.info("Kept duplicates of \(item.folderName): its recording is not in place yet")
                 continue
             }
-            for url in owned[item.meetingID] ?? [] where url != original {
+            for url in candidates where url != original {
                 removeMirror(at: url)
             }
         }
     }
 
-    /// Whether a folder holds the meeting's recording — either the file or
-    /// the placeholder iCloud leaves when it evicts one.
-    private nonisolated static func holdsRecording(_ folder: URL, named name: String?) -> Bool {
-        guard let name else { return true }
-        let fileManager = FileManager.default
-        return fileManager.fileExists(atPath: folder.appendingPathComponent(name).path)
-            || fileManager.fileExists(atPath: folder.appendingPathComponent(".\(name)\(placeholderSuffix)").path)
+    /// Whether the kept folder is safe enough for duplicate copies to go.
+    /// Existence alone is not proof: a same-named file may be truncated, an
+    /// iCloud placeholder has no locally verifiable bytes, and an unreadable
+    /// source gives this run no trustworthy size to compare.
+    private nonisolated static func holdsCurrentRecording(_ folder: URL, for item: Item) -> Bool {
+        guard let name = item.audioFileName else { return true }
+        guard let source = item.audioSourceURL, let sourceSize = fileSize(at: source) else { return false }
+        return filesMatch(source, folder.appendingPathComponent(name), sourceSize: sourceSize)
     }
 
     /// Removes the artifacts the mirror wrote, and the folder itself only
@@ -648,6 +661,7 @@ enum ICloudDriveBackup {
         _ item: Item,
         into folder: URL,
         created: Bool,
+        verifyRecordingContents: Bool,
         shouldContinue: @Sendable () -> Bool
     ) throws {
         let fileManager = FileManager.default
@@ -674,7 +688,12 @@ enum ICloudDriveBackup {
         // audio at all if the copy then fails.
         if let source = item.audioSourceURL, let sourceSize = fileSize(at: source) {
             let destination = folder.appendingPathComponent(source.lastPathComponent)
-            if !isCurrent(destination, sourceSize: sourceSize) {
+            if !isCurrent(
+                destination,
+                source: source,
+                sourceSize: sourceSize,
+                verifyContents: verifyRecordingContents
+            ) {
                 // Land the bytes under a hidden name so the previous copy
                 // survives a failure part-way through.
                 let partial = folder.appendingPathComponent(".\(source.lastPathComponent)\(partialSuffix)")
@@ -745,7 +764,12 @@ enum ICloudDriveBackup {
     }
 
     /// Whether the mirrored audio can be left alone.
-    private nonisolated static func isCurrent(_ destination: URL, sourceSize: Int64) -> Bool {
+    private nonisolated static func isCurrent(
+        _ destination: URL,
+        source: URL,
+        sourceSize: Int64,
+        verifyContents: Bool
+    ) -> Bool {
         // iCloud evicts local copies of synced files under storage
         // pressure, leaving a ".name.icloud" placeholder. The file is still
         // in iCloud Drive — re-copying it would just churn.
@@ -753,13 +777,92 @@ enum ICloudDriveBackup {
             .deletingLastPathComponent()
             .appendingPathComponent(".\(destination.lastPathComponent)\(placeholderSuffix)")
         if FileManager.default.fileExists(atPath: placeholder.path) { return true }
-        // ponytail: size compare, not checksums — recordings are written
-        // once, so a matching size means the copy completed.
-        return fileSize(at: destination) == sourceSize
+        guard fileSize(at: destination) == sourceSize else { return false }
+        // Recordings are immutable, so size is the efficient steady-state
+        // check. Before a duplicate sweep would destroy another copy, compare
+        // every byte and repair this one first if necessary.
+        return !verifyContents || filesMatch(source, destination, sourceSize: sourceSize)
+    }
+
+    /// Exact comparison is reserved for destructive duplicate cleanup so
+    /// ordinary background syncs do not reread every potentially large audio
+    /// file merely to confirm an immutable copy is still present.
+    private nonisolated static func filesMatch(_ source: URL, _ destination: URL, sourceSize: Int64) -> Bool {
+        guard fileSize(at: destination) == sourceSize else { return false }
+        do {
+            let sourceHandle = try FileHandle(forReadingFrom: source)
+            defer { try? sourceHandle.close() }
+            let destinationHandle = try FileHandle(forReadingFrom: destination)
+            defer { try? destinationHandle.close() }
+
+            while true {
+                let sourceChunk = try sourceHandle.read(upToCount: 1_048_576) ?? Data()
+                let destinationChunk = try destinationHandle.read(upToCount: 1_048_576) ?? Data()
+                guard sourceChunk == destinationChunk else { return false }
+                if sourceChunk.isEmpty { return true }
+            }
+        } catch {
+            return false
+        }
     }
 
     private nonisolated static func fileSize(at url: URL) -> Int64? {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? nil
+    }
+}
+
+/// Thread-safe cancellation shared by the lifecycle owner, UIKit's
+/// expiration callback, and the file-work continuation checks.
+private final class BackgroundMirrorCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    func shouldContinue() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !cancelled
+    }
+}
+
+/// Owns a lifecycle-triggered mirror so foregrounding or background-time
+/// expiration can stop its immutable snapshot at the next safety boundary.
+@MainActor
+final class BackgroundMirrorTask {
+    private let cancellation: BackgroundMirrorCancellation
+    private let token: BackgroundTaskToken
+    private var task: Task<Void, Never>?
+
+    init(
+        name: String,
+        operation: @escaping @Sendable (@escaping @Sendable () -> Bool) async -> Void
+    ) {
+        let cancellation = BackgroundMirrorCancellation()
+        self.cancellation = cancellation
+        let token = BackgroundTaskToken(name: name) {
+            cancellation.cancel()
+        }
+        self.token = token
+        task = Task { @MainActor in
+            await operation {
+                cancellation.shouldContinue() && !Task.isCancelled
+            }
+            token.end()
+        }
+    }
+
+    /// Returns the task so callers that need a graceful stop can await it.
+    @discardableResult
+    func cancel() -> Task<Void, Never>? {
+        cancellation.cancel()
+        task?.cancel()
+        token.end()
+        return task
     }
 }
 
@@ -770,10 +873,16 @@ enum ICloudDriveBackup {
 final class BackgroundTaskToken {
     private var identifier = UIBackgroundTaskIdentifier.invalid
 
-    init(name: String) {
+    init(
+        name: String,
+        expirationHandler: @escaping @MainActor @Sendable () -> Void = {}
+    ) {
         // The expiration handler is documented to run on the main thread.
         identifier = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
-            MainActor.assumeIsolated { self?.end() }
+            MainActor.assumeIsolated {
+                expirationHandler()
+                self?.end()
+            }
         }
     }
 
