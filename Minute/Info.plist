@@ -5,11 +5,23 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Minute uses the microphone to record meetings you start. Audio stays on this iPhone unless you turn on iCloud Backup in Settings.</string>
+	<string>Minute uses the microphone to record meetings you start. Audio stays on this iPhone unless you turn on an iCloud backup option in Settings.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Minute transcribes your recordings entirely on this iPhone. Transcripts stay on this iPhone unless you turn on iCloud Backup in Settings.</string>
+	<string>Minute transcribes your recordings entirely on this iPhone. Transcripts stay on this iPhone unless you turn on an iCloud backup option in Settings.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<key>NSUbiquitousContainers</key>
+	<dict>
+		<key>iCloud.com.minuteapp.Minute</key>
+		<dict>
+			<key>NSUbiquitousContainerIsDocumentScopePublic</key>
+			<true/>
+			<key>NSUbiquitousContainerName</key>
+			<string>Minute</string>
+			<key>NSUbiquitousContainerSupportedFolderLevels</key>
+			<string>Any</string>
+		</dict>
+	</dict>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

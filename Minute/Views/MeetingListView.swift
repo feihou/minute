@@ -251,7 +251,7 @@ struct MeetingListView: View {
                 featureRow("mic.fill", "Record", "High-quality audio with pause and resume")
                 featureRow("text.quote", "Transcribe", "Live speech-to-text as the meeting happens")
                 featureRow("sparkles", "Summarize", "Key points, decisions, and action items")
-                featureRow("lock.fill", "Private", "Stays on this iPhone unless you opt into iCloud Backup")
+                featureRow("lock.fill", "Private", "Stays on this iPhone unless you opt into iCloud backup")
             }
             .padding(.horizontal, 44)
 
@@ -446,5 +446,5 @@ struct NewMeetingSheet: View {
 
 #Preview {
     MeetingListView()
-        .modelContainer(for: Meeting.self, inMemory: true)
+        .modelContainer(MeetingStore.previewContainer())
 }

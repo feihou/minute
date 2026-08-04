@@ -23,7 +23,7 @@ struct AudioImporterTests {
     private func makeContainer() throws -> ModelContainer {
         try ModelContainer(
             for: Meeting.self,
-            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+            configurations: MeetingStore.modelConfiguration(inMemory: true)
         )
     }
 

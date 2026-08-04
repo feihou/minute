@@ -51,6 +51,28 @@ enum MeetingStore {
         try url.setResourceValues(values)
     }
 
+    /// A local-only SwiftData configuration. The iCloud Documents
+    /// entitlement makes SwiftData's `.automatic` mode assume CloudKit
+    /// mirroring and reject the schema — Minute copies files to iCloud,
+    /// it never syncs the database.
+    static func modelConfiguration(inMemory: Bool = false) -> ModelConfiguration {
+        ModelConfiguration(isStoredInMemoryOnly: inMemory, cloudKitDatabase: .none)
+    }
+
+    #if DEBUG
+    /// Throw-free in-memory container for SwiftUI previews, which can't
+    /// handle a throwing initializer. An in-memory store has nothing to
+    /// fail on, so the fallback only fires if SwiftData itself is broken.
+    @MainActor
+    static func previewContainer() -> ModelContainer {
+        do {
+            return try ModelContainer(for: Meeting.self, configurations: modelConfiguration(inMemory: true))
+        } catch {
+            fatalError("Unable to create the in-memory preview container: \(error)")
+        }
+    }
+    #endif
+
     static func recordingsDirectory() throws -> URL {
         applyBackupPolicy()
         if useEphemeralStorage {

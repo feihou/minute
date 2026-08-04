@@ -25,19 +25,31 @@ Meeting audio is some of the most sensitive data on your phone. Most meeting-not
 - 📚 **Long-meeting support**: transcripts are chunked, noted per chunk, and merged, staying inside the model's 4,096-token context window — including for dense-token languages like Chinese and Japanese
 - ▶️ **Playback** with scrubbing; **edit** the meeting title and summary, **copy / share / delete** everything (transcripts are read-only today)
 - 🗑️ **Real deletion**: deleting a meeting deletes its audio file and notes from disk; a startup sweep removes any audio orphaned by a crash
+- ☁️ **Opt-in iCloud backup**: include meeting data in the iPhone's device backup, and/or mirror a browsable folder per meeting (notes + audio) into iCloud Drive — both off by default
 - ♿ System-native UI: light/dark mode, Dynamic Type, VoiceOver labels
 
 ## Privacy guarantees
 
 | Guarantee | How |
 |---|---|
-| Audio, transcripts, summaries stay on device | Stored in the app sandbox (Application Support + SwiftData), excluded from iCloud/computer device backups by default; an opt-in **iCloud Backup** toggle in Settings includes them in the iPhone's own iCloud or computer backup — **no meeting content is ever sent anywhere else** |
+| Audio, transcripts, summaries stay on device | Stored in the app sandbox (Application Support + SwiftData), excluded from iCloud/computer device backups by default; opt-in Settings toggles can include them in the iPhone's own iCloud/computer backup (**iCloud Backup**) or mirror a browsable per-meeting folder into iCloud Drive (**iCloud Drive Folder**, under `Minute/<this device>/`); turning a toggle back off stops future copies but leaves existing ones for you to delete in Files — **no meeting content is ever sent anywhere else** |
 | No account, no analytics, no tracking | There is no server, SDK, or telemetry of any kind — grep the source |
 | Transcription is local | Apple `SpeechTranscriber` with on-device model assets |
 | Summarization is local | Apple `FoundationModels` (Apple Intelligence on-device model) |
 | Delete means delete | Removing a meeting removes its `.m4a` and database row; orphaned audio is swept at launch |
 
-> Beyond the opt-in iCloud Backup above, the one network operation in the app's lifetime: when transcription is first prepared, iOS downloads Apple's on-device speech model assets (`AssetInventory`). That is Apple system infrastructure fetching a model — it never includes your recordings, transcripts, or any meeting content.
+> Beyond the opt-in iCloud backup options above, the one network operation in the app's lifetime: when transcription is first prepared, iOS downloads Apple's on-device speech model assets (`AssetInventory`). That is Apple system infrastructure fetching a model — it never includes your recordings, transcripts, or any meeting content.
+
+### Where the two backup options put your data
+
+| | **iCloud Backup** | **iCloud Drive Folder** |
+|---|---|---|
+| Where it lands | Inside the iPhone's device backup blob — not browsable | `Files → iCloud Drive → Minute → <your iPhone>/<date> <title>/` |
+| What you see | Nothing in Files; the app appears in Settings → iCloud → iCloud Backup with its size | One folder per meeting containing `notes.md` and the audio file (plus a hidden `.minute-<id>` marker the sync uses to recognize its own folders) |
+| When it updates | Whenever iOS runs a device backup (charging, locked, Wi-Fi) | When you leave the app |
+| Getting data back | Only by restoring the whole iPhone from that backup | Open or copy any file directly, on iPhone or Mac |
+
+Each device mirrors into its own subfolder, so two iPhones on one Apple ID never overwrite each other. Deleting a meeting in the app removes its folder on the next sync; files left behind after you turn the toggle off are yours to delete in Files.
 
 ## Requirements
 
@@ -45,6 +57,7 @@ Meeting audio is some of the most sensitive data on your phone. Most meeting-not
 - **Live transcription** needs a physical iPhone — `SpeechTranscriber` is unavailable on simulators (the app degrades gracefully and recording still works)
 - **Summaries** need an Apple Intelligence–capable iPhone with Apple Intelligence turned on (in the simulator, summaries work if the host Mac has Apple Intelligence enabled)
 - No third-party dependencies. None.
+- **Device builds** carry iCloud entitlements (for the optional iCloud Drive backup), which need a paid Apple Developer team; on a free personal team, delete `Minute/Minute.entitlements` and the `CODE_SIGN_ENTITLEMENTS` setting locally to run on a device (simulator builds and CI are unaffected)
 
 ## Getting started
 

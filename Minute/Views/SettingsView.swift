@@ -18,12 +18,15 @@ struct SettingsView: View {
     @AppStorage(AppSettings.summaryContextKey) private var summaryContext = ""
     @AppStorage(AppSettings.summaryLanguageKey) private var summaryLanguage = ""
     @AppStorage(AppSettings.iCloudBackupKey) private var iCloudBackup = false
+    @AppStorage(AppSettings.iCloudDriveKey) private var iCloudDrive = false
 
     @State private var transcriptionStatus = "Checking…"
     @State private var usage: (fileCount: Int, totalBytes: Int64) = (0, 0)
     @State private var confirmingDeleteAll = false
     @State private var deleteAllFailed = false
     @State private var backupPolicyFailed = false
+    @State private var driveUnavailable = false
+    @State private var mirrorTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -71,6 +74,11 @@ struct SettingsView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text("Storage may be unavailable. Your choice is saved and will be applied automatically the next time the app launches.")
+            }
+            .alert("iCloud Drive isn't available", isPresented: $driveUnavailable) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Sign in to iCloud and turn on iCloud Drive in iOS Settings, then try again. A build signed without iCloud entitlements can't use this.")
             }
             .alert("Some meetings couldn't be deleted", isPresented: $deleteAllFailed) {
                 Button("OK", role: .cancel) {}
@@ -218,16 +226,38 @@ struct SettingsView: View {
                 // saved and re-applied at every launch, so it self-heals.
                 backupPolicyFailed = !MeetingStore.applyBackupPolicy()
             }
+
+            Toggle(isOn: $iCloudDrive) {
+                settingsLabel("iCloud Drive Folder", systemImage: "folder.badge.plus", tint: .cyan)
+            }
+            .onChange(of: iCloudDrive) {
+                // Switching off must stop a mirror already in flight, or it
+                // keeps copying recordings into iCloud that no later sync
+                // will clean up — the opt-out has to mean something.
+                mirrorTask?.cancel()
+                guard iCloudDrive else { return }
+                let request = ICloudDriveBackup.request(for: meetings)
+                mirrorTask = Task {
+                    // Toggling on is the one moment to say "this can't work
+                    // here" — afterwards the mirror quietly self-heals.
+                    let available = await ICloudDriveBackup.syncNow(request)
+                    // Resolving the iCloud container is slow on first use;
+                    // never overrule a choice the user made since then.
+                    guard !Task.isCancelled, !available, iCloudDrive else { return }
+                    iCloudDrive = false
+                    driveUnavailable = true
+                }
+            }
         } header: {
             Text("Backup")
         } footer: {
-            Text("Off by default. When on, recordings, transcripts, and summaries are included in this iPhone's iCloud (or computer) backup and come back when you restore the iPhone from that backup. Turning it off keeps meeting data out of future backups. Nothing else is uploaded — there is still no account and no server.")
+            Text("Both are off by default. iCloud Backup includes meeting data in this iPhone's device backup — it comes back only by restoring the iPhone from that backup. iCloud Drive Folder keeps a browsable copy in Files → iCloud Drive → Minute → this iPhone's folder (one folder per meeting with its notes and audio), updated when you leave the app. Turning either off stops future copies; files already in iCloud Drive stay until you delete them in Files. Nothing else is uploaded — there is still no account and no server.")
         }
     }
 
     private var privacySection: some View {
         Section("Privacy") {
-            settingsLabel("Recordings, transcripts, and summaries stay on this iPhone unless you turn on iCloud Backup.",
+            settingsLabel("Recordings, transcripts, and summaries stay on this iPhone unless you turn on an iCloud backup option above.",
                           systemImage: "iphone", tint: .green)
             settingsLabel("Transcription and summarization run entirely on device.",
                           systemImage: "cpu", tint: .green)
@@ -364,5 +394,5 @@ struct SettingsView: View {
 
 #Preview {
     SettingsView()
-        .modelContainer(for: Meeting.self, inMemory: true)
+        .modelContainer(MeetingStore.previewContainer())
 }

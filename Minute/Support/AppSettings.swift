@@ -11,12 +11,19 @@ enum AppSettings {
     static let summaryContextKey = "summary.context"
     static let summaryLanguageKey = "summary.language"
     static let iCloudBackupKey = "backup.iCloud"
+    static let iCloudDriveKey = "backup.iCloudDrive"
 
     /// Whether meeting data (audio, transcripts, summaries) is included in the
     /// iPhone's iCloud/computer device backup. Off by default — private by
     /// default, and nothing leaves the device unless the user opts in.
     static var iCloudBackupEnabled: Bool {
         UserDefaults.standard.bool(forKey: iCloudBackupKey)
+    }
+
+    /// Whether meetings are mirrored to a browsable "Minute" folder in
+    /// iCloud Drive (one folder per meeting: notes + audio). Off by default.
+    static var iCloudDriveBackupEnabled: Bool {
+        UserDefaults.standard.bool(forKey: iCloudDriveKey)
     }
 
     /// Encoder quality applied to new recordings.

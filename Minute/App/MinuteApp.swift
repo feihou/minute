@@ -3,16 +3,20 @@ import SwiftUI
 
 @main
 struct MinuteApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     private let container: ModelContainer
     private let storeIsEphemeral: Bool
 
     init() {
-        if let persistent = try? ModelContainer(for: Meeting.self) {
+        if let persistent = try? ModelContainer(
+            for: Meeting.self,
+            configurations: MeetingStore.modelConfiguration()
+        ) {
             container = persistent
             storeIsEphemeral = false
         } else if let inMemory = try? ModelContainer(
             for: Meeting.self,
-            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+            configurations: MeetingStore.modelConfiguration(inMemory: true)
         ) {
             // ponytail: corrupt store falls back to a session-only container so
             // recording still works; the list view shows a warning banner.
@@ -40,5 +44,12 @@ struct MinuteApp: App {
             MeetingListView(storeIsEphemeral: storeIsEphemeral)
         }
         .modelContainer(container)
+        // Leaving the app is the one moment meeting data is settled and
+        // there is still time to copy it — mirror to iCloud Drive then.
+        .onChange(of: scenePhase) {
+            if scenePhase == .background {
+                ICloudDriveBackup.syncIfEnabled(context: container.mainContext)
+            }
+        }
     }
 }
