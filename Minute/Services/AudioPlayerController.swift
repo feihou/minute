@@ -51,20 +51,32 @@ final class AudioPlayerController: NSObject, AVAudioPlayerDelegate {
             case .ended:
                 let options = (info?[AVAudioSessionInterruptionOptionKey] as? UInt)
                     .map(AVAudioSession.InterruptionOptions.init(rawValue:)) ?? []
-                guard options.contains(.shouldResume) else { return }
+                let allowsResume = options.contains(.shouldResume)
+                // Always delivered, resume or not: ownership has to be retired
+                // even when the system refuses the resume.
                 Task { @MainActor [weak self] in
-                    // Resume only what the interruption itself stopped. The
-                    // detail view loads the player as soon as a meeting is
-                    // opened, so `isLoaded` is true for a recording the user
-                    // never started — and resuming that would play private
-                    // meeting audio out loud with nobody having asked.
-                    guard let self, self.pausedByInterruption else { return }
-                    self.play()
+                    self?.endInterruption(resuming: allowsResume)
                 }
             default:
                 break
             }
         }
+    }
+
+    /// The interruption that paused playback is over. Resumes only what that
+    /// interruption stopped: the detail view loads the player as soon as a
+    /// meeting is opened, so a recording the user never started is loaded and
+    /// paused, and resuming it would play private audio out loud unasked.
+    ///
+    /// Ownership retires here whether or not the system permits the resume —
+    /// left armed through a `.ended` that denied it, the claim would be
+    /// inherited by an unrelated later interruption, which `.began` cannot
+    /// reset because it only arms while actually playing.
+    private func endInterruption(resuming: Bool) {
+        let wasOurs = pausedByInterruption
+        pausedByInterruption = false
+        guard resuming, wasOurs, isLoaded, !isPlaying else { return }
+        play()
     }
 
     deinit {

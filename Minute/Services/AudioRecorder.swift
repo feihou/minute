@@ -153,9 +153,11 @@ final class AudioRecorder {
                 // believing it is still recording.
                 let options = (info?[AVAudioSessionInterruptionOptionKey] as? UInt)
                     .map(AVAudioSession.InterruptionOptions.init(rawValue:)) ?? []
-                guard options.contains(.shouldResume) else { return }
+                let allowsResume = options.contains(.shouldResume)
+                // Always delivered, resume or not: ownership has to be retired
+                // even when the system refuses the resume.
                 Task { @MainActor [weak self] in
-                    self?.resumeAfterInterruption()
+                    self?.endInterruption(resuming: allowsResume)
                 }
             default:
                 break
@@ -195,15 +197,24 @@ final class AudioRecorder {
         onAutoPause?()
     }
 
-    /// Picks capture back up after the system signalled the interruption is
-    /// over — but only when that interruption is what stopped us. Resuming a
-    /// recording the *user* paused would turn a phone call or a Siri question
-    /// into a microphone they never switched back on.
+    /// The interruption that paused us is over. Picks capture back up, but
+    /// only when that interruption is what stopped us — resuming a recording
+    /// the *user* paused would turn a phone call or a Siri question into a
+    /// microphone they never switched back on.
     ///
-    /// A failure here is not fatal: everything recorded so far stays on disk
+    /// Ownership retires here whether or not the system permits the resume.
+    /// Leaving it armed through a `.ended` that denied the resume would hand
+    /// it to the *next* interruption: `systemPause` only arms while
+    /// `.recording`, so nothing would reset it while we sat paused, and an
+    /// unrelated later interruption ending with `.shouldResume` would restart
+    /// the microphone on the strength of a claim that expired long ago.
+    ///
+    /// A resume failure is not fatal: everything recorded so far stays on disk
     /// and the user can resume by hand from the paused state.
-    private func resumeAfterInterruption() {
-        guard state == .paused, pausedByInterruption else { return }
+    private func endInterruption(resuming: Bool) {
+        let wasOurs = pausedByInterruption
+        pausedByInterruption = false
+        guard resuming, wasOurs, state == .paused else { return }
         do {
             try resume()
             onAutoResume?()
