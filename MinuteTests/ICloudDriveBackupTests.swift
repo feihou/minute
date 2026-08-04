@@ -507,8 +507,9 @@ struct ICloudDriveBackupTests {
         let source = try recording(in: documents)
 
         let name = "2026-08-03 09.30 Standup"
-        // One check passes (entering the meeting), then the toggle is off.
-        let gate = Gate(allowing: 1)
+        // Passes the start, parking, write and notes checks, then the user
+        // flips the toggle while the copy is running.
+        let gate = Gate(allowing: 4)
         try ICloudDriveBackup.mirror(
             [item(folderName: name, audio: source)],
             into: documents,
@@ -517,6 +518,53 @@ struct ICloudDriveBackupTests {
 
         let folder = documents.appendingPathComponent(name, isDirectory: true)
         #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(source.lastPathComponent).path))
+        // The notes had already landed while the setting was still on.
+        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("notes.md").path))
+    }
+
+    /// notes.md holds the transcript and lands in one synchronous write; an
+    /// opt-out during it must not leave the transcript in iCloud, because
+    /// no later sync will clean it up.
+    @Test func mirrorTakesBackNotesWrittenAfterTheUserOptedOut() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+
+        let name = "2026-08-03 09.30 Standup"
+        // Passes the start, parking and write checks, then the toggle is off
+        // while notes.md is being written.
+        let gate = Gate(allowing: 3)
+        try ICloudDriveBackup.mirror(
+            [item(folderName: name, notes: "the whole transcript")],
+            into: documents,
+            shouldContinue: { gate.check() }
+        )
+
+        #expect(!FileManager.default.fileExists(atPath: documents.appendingPathComponent(name).path))
+    }
+
+    /// Deleting a meeting removes what the mirror wrote, but a file the
+    /// user added to the folder is not the meeting.
+    @Test func mirrorKeepsUserFilesWhenTheMeetingIsDeleted() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let source = try recording(in: documents)
+
+        let name = "2026-08-03 09.30 Standup"
+        try ICloudDriveBackup.mirror([item(folderName: name, audio: source)], into: documents)
+
+        let folder = documents.appendingPathComponent(name, isDirectory: true)
+        try Data("their tape".utf8).write(to: folder.appendingPathComponent("supplemental.mp3"))
+        try Data("their notes".utf8).write(to: folder.appendingPathComponent("my-thoughts.txt"))
+
+        try ICloudDriveBackup.mirror([], into: documents)
+
+        // Everything the app wrote is gone.
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("notes.md").path))
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(source.lastPathComponent).path))
+        #expect(ICloudDriveBackup.meetingID(inFolder: folder) == nil)
+        // Everything they wrote is not.
+        #expect(try Data(contentsOf: folder.appendingPathComponent("supplemental.mp3")) == Data("their tape".utf8))
+        #expect(try Data(contentsOf: folder.appendingPathComponent("my-thoughts.txt")) == Data("their notes".utf8))
     }
 
     @Test func mirrorWritesNothingWhenAlreadyStopped() throws {

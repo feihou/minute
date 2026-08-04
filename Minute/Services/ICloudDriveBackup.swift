@@ -457,9 +457,9 @@ enum ICloudDriveBackup {
         for item in items {
             guard shouldContinue() else { return }
             do {
-                let folder = try place(item, existing: live[item.meetingID], in: documents)
-                live[item.meetingID] = folder
-                try write(item, into: folder, shouldContinue: shouldContinue)
+                let placed = try place(item, existing: live[item.meetingID], in: documents)
+                live[item.meetingID] = placed.url
+                try write(item, into: placed.url, created: placed.created, shouldContinue: shouldContinue)
             } catch {
                 logger.error("Mirroring \(item.folderName) failed: \(error.localizedDescription)")
             }
@@ -467,31 +467,73 @@ enum ICloudDriveBackup {
 
         guard shouldContinue() else { return }
         for url in removable {
+            removeMirror(at: url)
+        }
+    }
+
+    /// Removes the artifacts the mirror wrote, and the folder itself only
+    /// when nothing else is left in it. Deleting a meeting must leave zero
+    /// bytes of it behind, but a file the user put in the folder is not the
+    /// meeting — a recursive delete would take their work with it.
+    private nonisolated static func removeMirror(at folder: URL) {
+        let fileManager = FileManager.default
+        let names = (try? fileManager.contentsOfDirectory(atPath: folder.path)) ?? []
+        for name in names where isAppArtifact(name) {
             do {
-                try fileManager.removeItem(at: url)
+                try fileManager.removeItem(at: folder.appendingPathComponent(name))
             } catch {
-                logger.error("Removing stale mirror failed: \(error.localizedDescription)")
+                logger.error("Removing \(name) failed: \(error.localizedDescription)")
             }
         }
+        let remaining = (try? fileManager.contentsOfDirectory(atPath: folder.path)) ?? []
+        guard remaining.isEmpty else {
+            logger.info("Kept \(folder.lastPathComponent): it holds files this app did not write")
+            return
+        }
+        do {
+            try fileManager.removeItem(at: folder)
+        } catch {
+            logger.error("Removing stale mirror failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Whether the mirror wrote this file: its marker, its notes, a
+    /// UUID-named recording it copied, or a partial copy it left behind —
+    /// each also in the hidden form iCloud leaves when it evicts one.
+    private nonisolated static func isAppArtifact(_ name: String) -> Bool {
+        if meetingID(fromMarkerName: name) != nil { return true }
+        var trimmed = localName(of: name)
+        if trimmed.hasSuffix(partialSuffix) {
+            trimmed.removeLast(partialSuffix.count)
+            if trimmed.hasPrefix(".") { trimmed.removeFirst() }
+        }
+        if trimmed == notesFileName { return true }
+        let path = URL(fileURLWithPath: trimmed)
+        return MeetingStore.audioFileExtensions.contains(path.pathExtension.lowercased())
+            && UUID(uuidString: path.deletingPathExtension().lastPathComponent) != nil
     }
 
     /// The folder an item owns — moved to its current name when it already
     /// exists, created when it doesn't. A directory the app didn't mark is
     /// someone else's: the mirror steps aside to the next numbered name
     /// rather than claiming, overwriting, and eventually deleting it.
-    private nonisolated static func place(_ item: Item, existing: URL?, in documents: URL) throws -> URL {
+    private nonisolated static func place(
+        _ item: Item,
+        existing: URL?,
+        in documents: URL
+    ) throws -> (url: URL, created: Bool) {
         let fileManager = FileManager.default
         for attempt in 1...maxNameAttempts {
             let candidate = attempt == 1 ? item.folderName : "\(item.folderName) \(attempt)"
             let target = documents.appendingPathComponent(candidate, isDirectory: true)
-            if target == existing { return target }
+            if target == existing { return (target, false) }
             if !fileManager.fileExists(atPath: target.path) {
                 if let existing {
                     try fileManager.moveItem(at: existing, to: target)
-                } else {
-                    try fileManager.createDirectory(at: target, withIntermediateDirectories: true)
+                    return (target, false)
                 }
-                return target
+                try fileManager.createDirectory(at: target, withIntermediateDirectories: true)
+                return (target, true)
             }
             guard meetingID(inFolder: target) == item.meetingID else { continue }
             // Ours already. On a case-insensitive volume a title edit that
@@ -501,7 +543,7 @@ enum ICloudDriveBackup {
             if let existing, existing.lastPathComponent != candidate {
                 try recase(existing, to: target, in: documents, meetingID: item.meetingID)
             }
-            return target
+            return (target, false)
         }
         throw CocoaError(.fileWriteInvalidFileName)
     }
@@ -538,6 +580,7 @@ enum ICloudDriveBackup {
     private nonisolated static func write(
         _ item: Item,
         into folder: URL,
+        created: Bool,
         shouldContinue: @Sendable () -> Bool
     ) throws {
         let fileManager = FileManager.default
@@ -547,8 +590,16 @@ enum ICloudDriveBackup {
 
         let notesURL = folder.appendingPathComponent(notesFileName)
         let notes = Data(item.notes.utf8)
-        if (try? Data(contentsOf: notesURL)) != notes {
+        let previousNotes = try? Data(contentsOf: notesURL)
+        if previousNotes != notes {
             try notes.write(to: notesURL, options: .atomic)
+            // notes.md carries the whole transcript and lands in one
+            // synchronous write. If the user opted out while it ran, take it
+            // back here — with the setting off, no later sync will.
+            guard shouldContinue() else {
+                revert(folder: folder, created: created, notesURL: notesURL, to: previousNotes)
+                return
+            }
         }
 
         // Copy first, prune second: removing the recording this one replaces
@@ -579,6 +630,22 @@ enum ICloudDriveBackup {
         // could be read: a temporarily unreadable local file must never
         // take the mirrored copy — possibly the last one — down with it.
         removeStaleAudio(in: folder, keeping: item.audioFileName)
+    }
+
+    /// Undoes a notes write the user opted out of mid-flight: a folder this
+    /// run created goes entirely, and an existing one keeps the notes it
+    /// already had.
+    private nonisolated static func revert(folder: URL, created: Bool, notesURL: URL, to previous: Data?) {
+        let fileManager = FileManager.default
+        guard !created else {
+            try? fileManager.removeItem(at: folder)
+            return
+        }
+        if let previous {
+            try? previous.write(to: notesURL, options: .atomic)
+        } else {
+            try? fileManager.removeItem(at: notesURL)
+        }
     }
 
     /// Deleting a meeting must leave zero bytes behind, and a folder whose
