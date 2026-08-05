@@ -142,6 +142,33 @@ struct MeetingListView: View {
             resolvePendingMeetingDeepLink()
         }
         .onOpenURL(perform: handleDeepLink)
+        #if DEBUG
+        // Screenshot automation: launch arguments stand in for the taps a
+        // simulator script can't perform. Debug-only, inert without the flags.
+        .onAppear {
+            let arguments = ProcessInfo.processInfo.arguments
+            if arguments.contains("-DemoOpenMeeting") {
+                handleDeepLink(MinuteDeepLink.meeting(DemoSeed.heroMeetingID).url)
+            }
+            if arguments.contains("-DemoOpenRecorder") {
+                let session = RecordingSession(title: "Weekly Product Sync")
+                session.transcription.stageDemo(
+                    segments: [
+                        TranscriptSegment(text: "Okay, quick agenda: onboarding metrics, the offline spike, and launch dates.", start: 2, end: 8),
+                        TranscriptSegment(text: "Completion in the beta cohort is up eighteen percent since the redesign.", start: 9, end: 15),
+                        TranscriptSegment(text: "Support tickets about the permissions step have basically disappeared.", start: 16, end: 21),
+                        TranscriptSegment(text: "Nice — then let's get into the offline sync estimate.", start: 22, end: 26),
+                        TranscriptSegment(text: "Rough scope is two weeks if we keep conflict resolution simple for v1.", start: 27, end: 32),
+                    ],
+                    volatileText: "and if the storage layer lands first, we can review it by"
+                )
+                activeSession = session
+            }
+            if arguments.contains("-DemoOpenSettings") {
+                showingSettings = true
+            }
+        }
+        #endif
         .sheet(isPresented: $showingNewMeeting) {
             NewMeetingSheet(title: $draftTitle) {
                 activeSession = RecordingSession(title: draftTitle)

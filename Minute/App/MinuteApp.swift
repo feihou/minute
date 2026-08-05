@@ -42,6 +42,9 @@ struct MinuteApp: App {
         // A crash or force-quit mid-recording leaves its Live Activity on the
         // lock screen; no recording survives process death, so clear them.
         RecordingLiveActivityController.endOrphans()
+        #if DEBUG
+        DemoSeed.seedIfRequested(container: container)
+        #endif
     }
 
     var body: some Scene {

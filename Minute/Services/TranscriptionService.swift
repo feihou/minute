@@ -39,8 +39,26 @@ final class TranscriptionService {
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
 
+    #if DEBUG
+    /// Screenshot staging: simulators can't run SpeechTranscriber, so the
+    /// live-transcript panel can never show its real content there. Staging
+    /// fills it with the state a supported iPhone shows; `prepare()` then
+    /// backs off so the availability probe doesn't overwrite it.
+    private var demoStaged = false
+
+    func stageDemo(segments: [TranscriptSegment], volatileText: String) {
+        demoStaged = true
+        availability = .available
+        self.segments = segments
+        self.volatileText = volatileText
+    }
+    #endif
+
     /// Checks device/locale support and downloads the speech model if needed.
     func prepare() async {
+        #if DEBUG
+        if demoStaged { return }
+        #endif
         guard SpeechTranscriber.isAvailable else {
             availability = .unavailable("On-device transcription isn't supported on this device. Recording still works.")
             return
