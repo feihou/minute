@@ -506,8 +506,10 @@ struct NewMeetingSheet: View {
     }
 }
 
+#if DEBUG
 #Preview {
     MeetingListView()
         .modelContainer(MeetingStore.previewContainer())
         .environment(MeetingJobs())
 }
+#endif
