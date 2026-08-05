@@ -83,7 +83,6 @@ If Minute's data practices ever change — for example, if a future version adds
 Questions about privacy in Minute:
 
 - **GitHub issues:** [https://github.com/feihou/minute/issues](https://github.com/feihou/minute/issues)
-- **Email:** [ADD CONTACT EMAIL HERE]
 
 ---
 
