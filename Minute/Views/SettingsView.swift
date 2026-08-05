@@ -438,7 +438,9 @@ struct SettingsView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     SettingsView()
         .modelContainer(MeetingStore.previewContainer())
 }
+#endif
