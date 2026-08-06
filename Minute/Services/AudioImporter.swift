@@ -37,12 +37,9 @@ enum AudioImporter {
     /// can't run), and saves.
     static func importAudio(
         from sourceURL: URL,
-        context: ModelContext,
-        transcription: TranscriptionService? = nil
+        context: ModelContext
     ) async throws -> Result {
-        // Built here rather than as a default argument — the class is
-        // MainActor-isolated, and default arguments evaluate nonisolated.
-        let transcription = transcription ?? TranscriptionService()
+        let transcription = TranscriptionService()
         let scoped = sourceURL.startAccessingSecurityScopedResource()
         defer {
             if scoped {

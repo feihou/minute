@@ -274,24 +274,17 @@ struct SummarizationService {
     private func summarizeWhole(_ transcript: String, template: SummaryTemplate, contextBlock: String?) async throws -> MeetingSummary {
         let session = LanguageModelSession(instructions: instructions)
         let context = contextBlock.map { "\n\($0)\n" } ?? ""
-        if template.isStandard {
-            let prompt = """
-                Create structured notes for this meeting transcript.
-                \(context)
-                <transcript>
-                \(transcript)
-                </transcript>
-                """
-            return normalized(try await session.respond(to: prompt, generating: SummaryDraft.self, options: options).content)
-        }
+        let section = template.isStandard ? "" : "\(sectionBlock(for: template))\n"
         let prompt = """
             Create structured notes for this meeting transcript.
-            \(sectionBlock(for: template))
-            \(context)
+            \(section)\(context)
             <transcript>
             \(transcript)
             </transcript>
             """
+        if template.isStandard {
+            return normalized(try await session.respond(to: prompt, generating: SummaryDraft.self, options: options).content)
+        }
         return normalized(try await session.respond(to: prompt, generating: TemplatedDraft.self, options: options).content, template: template)
     }
 
@@ -329,34 +322,26 @@ struct SummarizationService {
 
         let session = LanguageModelSession(instructions: instructions)
         let context = contextBlock.map { "\n\($0)\n" } ?? ""
-        if template.isStandard {
-            let prompt = """
-                These are notes taken from consecutive, overlapping parts of one meeting. \
-                Merge them into a single summary of the whole meeting:
-                - The parts overlap, so expect repeats: combine duplicate or overlapping items into one, \
-                keeping the most specific wording and preferring versions that name an owner or deadline.
-                - Drop any open question that another part shows was answered; if the answer matters, \
-                keep it as a key point or decision instead.
-                - Merge speaker perspectives into one entry per speaker, keeping their most specific points.
-                - Keep the wording faithful to the notes and do not add anything new.
-                \(context)
-                Notes:
-                \(rendered(current))
-                """
-            return normalized(try await session.respond(to: prompt, generating: SummaryDraft.self, options: options).content)
-        }
+        // Templated notes carry the requested sections instead of an
+        // open-questions list, so that rule only applies to the standard layout.
+        let openQuestionsRule = template.isStandard
+            ? "- Drop any open question that another part shows was answered; if the answer matters, keep it as a key point or decision instead.\n"
+            : ""
+        let section = template.isStandard ? "" : "\(sectionBlock(for: template))\n"
         let prompt = """
             These are notes taken from consecutive, overlapping parts of one meeting. \
             Merge them into a single summary of the whole meeting:
             - The parts overlap, so expect repeats: combine duplicate or overlapping items into one, \
             keeping the most specific wording and preferring versions that name an owner or deadline.
-            - Merge speaker perspectives into one entry per speaker, keeping their most specific points.
+            \(openQuestionsRule)- Merge speaker perspectives into one entry per speaker, keeping their most specific points.
             - Keep the wording faithful to the notes and do not add anything new.
-            \(sectionBlock(for: template))
-            \(context)
+            \(section)\(context)
             Notes:
             \(rendered(current))
             """
+        if template.isStandard {
+            return normalized(try await session.respond(to: prompt, generating: SummaryDraft.self, options: options).content)
+        }
         return normalized(try await session.respond(to: prompt, generating: TemplatedDraft.self, options: options).content, template: template)
     }
 
@@ -414,15 +399,7 @@ struct SummarizationService {
             overview: draft.overview.trimmingCharacters(in: .whitespacesAndNewlines),
             keyPoints: cleaned(draft.keyPoints),
             decisions: cleaned(draft.decisions),
-            actionItems: draft.actionItems.compactMap { item in
-                let task = item.task.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !task.isEmpty else { return nil }
-                return ActionItem(
-                    task: task,
-                    owner: normalizedField(item.owner),
-                    deadline: normalizedField(item.deadline)
-                )
-            },
+            actionItems: normalizedActionItems(draft.actionItems),
             openQuestions: cleaned(draft.openQuestions),
             generatedAt: .now,
             suggestedTitle: normalizedTitle(draft.title),
@@ -435,15 +412,7 @@ struct SummarizationService {
             overview: draft.overview.trimmingCharacters(in: .whitespacesAndNewlines),
             keyPoints: [],
             decisions: [],
-            actionItems: draft.actionItems.compactMap { item in
-                let task = item.task.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !task.isEmpty else { return nil }
-                return ActionItem(
-                    task: task,
-                    owner: normalizedField(item.owner),
-                    deadline: normalizedField(item.deadline)
-                )
-            },
+            actionItems: normalizedActionItems(draft.actionItems),
             openQuestions: [],
             generatedAt: .now,
             suggestedTitle: normalizedTitle(draft.title),
@@ -457,6 +426,19 @@ struct SummarizationService {
             ),
             speakerPerspectives: normalizedPerspectives(draft.speakerPerspectives)
         )
+    }
+
+    /// Trims tasks, drops empties, and normalizes owner/deadline fields.
+    private func normalizedActionItems(_ items: [DraftActionItem]) -> [ActionItem] {
+        items.compactMap { item in
+            let task = item.task.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !task.isEmpty else { return nil }
+            return ActionItem(
+                task: task,
+                owner: normalizedField(item.owner),
+                deadline: normalizedField(item.deadline)
+            )
+        }
     }
 
     /// Aligns model-returned sections with the template: configured names and

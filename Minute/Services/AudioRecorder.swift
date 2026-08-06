@@ -1,3 +1,4 @@
+import Accelerate
 import AVFoundation
 import Foundation
 import Observation
@@ -319,15 +320,9 @@ final class AudioRecorder {
             throw RecorderError.noAudioInput
         }
 
-        // nil converter means "formats already match" — a FAILED converter
-        // construction must not be conflated with that, or the tap would write
-        // mismatched-format buffers into the file.
-        let converter: AudioBufferConverter?
-        if hardwareFormat == file.processingFormat {
-            converter = nil
-        } else if let created = AudioBufferConverter(from: hardwareFormat, to: file.processingFormat) {
-            converter = created
-        } else {
+        // The converter is a passthrough when the formats already match, and
+        // init only fails on a real conversion-setup failure.
+        guard let converter = AudioBufferConverter(from: hardwareFormat, to: file.processingFormat) else {
             throw RecorderError.formatConversionFailed
         }
 
@@ -335,13 +330,7 @@ final class AudioRecorder {
         engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: hardwareFormat) { [weak self] buffer, _ in
             // Audio tap thread: normalize format, write to disk, feed the
             // transcriber, meter.
-            let normalized: AVAudioPCMBuffer
-            if let converter {
-                guard let converted = converter.convert(buffer) else { return }
-                normalized = converted
-            } else {
-                normalized = buffer
-            }
+            guard let normalized = converter.convert(buffer) else { return }
             do {
                 try file.write(from: normalized)
             } catch {
@@ -440,12 +429,7 @@ final class AudioRecorder {
 
     private nonisolated static func rmsLevel(of buffer: AVAudioPCMBuffer) -> Float {
         guard let data = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return 0 }
-        var sum: Float = 0
-        for frame in 0..<Int(buffer.frameLength) {
-            let sample = data[frame]
-            sum += sample * sample
-        }
-        let rms = (sum / Float(buffer.frameLength)).squareRoot()
+        let rms = vDSP.rootMeanSquare(UnsafeBufferPointer(start: data, count: Int(buffer.frameLength)))
         // Rough perceptual scaling so quiet speech still moves the meter.
         return min(1, rms * 12)
     }

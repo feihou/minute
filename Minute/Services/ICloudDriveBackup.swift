@@ -81,32 +81,25 @@ enum ICloudDriveBackup {
     /// only `unavailable` means the feature can't work here, and only
     /// `interrupted` leaves the previous verdict standing because this run
     /// never reached a verdict of its own.
-    enum SyncOutcome: Sendable {
+    ///
+    /// Cases are declared in severity order so `max` folds many outcomes into
+    /// one: the most alarming wins, and a run that both failed an item and
+    /// stopped early reports the failure.
+    enum SyncOutcome: Int, Sendable, Comparable {
         /// Every meeting mirrored and every stale folder swept.
         case complete
-        /// Ran, but at least one meeting could not be written or removed.
-        case incomplete
         /// Stopped early — the user opted out, the app was foregrounded, or
         /// the background assertion expired. Nothing is known to have failed.
         case interrupted
+        /// Ran, but at least one meeting could not be written or removed.
+        case incomplete
         /// Could not run at all: no iCloud container, or the device folder
         /// could not be prepared.
         case unavailable
-    }
 
-    /// Ordering used to fold many outcomes into one: the most alarming wins,
-    /// so a run that both failed an item and stopped early reports the failure.
-    private static func rank(_ outcome: SyncOutcome) -> Int {
-        switch outcome {
-        case .complete: 0
-        case .interrupted: 1
-        case .incomplete: 2
-        case .unavailable: 3
+        static func < (lhs: SyncOutcome, rhs: SyncOutcome) -> Bool {
+            lhs.rawValue < rhs.rawValue
         }
-    }
-
-    private static func worse(_ lhs: SyncOutcome, _ rhs: SyncOutcome) -> SyncOutcome {
-        rank(lhs) >= rank(rhs) ? lhs : rhs
     }
 
     /// One snapshot of the library, numbered so a slow sync can never apply
@@ -133,16 +126,9 @@ enum ICloudDriveBackup {
     /// Cuts on a character boundary so a multi-byte character is never
     /// split into invalid UTF-8.
     private static func truncated(_ text: String, toUTF8Bytes limit: Int) -> String {
-        guard text.utf8.count > limit else { return text }
-        var result = ""
-        var used = 0
-        for character in text {
-            let size = String(character).utf8.count
-            guard used + size <= limit else { break }
-            result.append(character)
-            used += size
-        }
-        return result
+        var trimmed = Substring(text)
+        while trimmed.utf8.count > limit { trimmed = trimmed.dropLast() }
+        return String(trimmed)
     }
 
     /// "2026-08-03 09.30 Standup" — date-prefixed so folders sort by meeting
@@ -450,7 +436,7 @@ enum ICloudDriveBackup {
                     into: folder,
                     shouldContinue: shouldContinue
                 )
-                outcome = ICloudDriveBackup.worse(outcome, mirrored)
+                outcome = Swift.max(outcome, mirrored)
             }
             return outcome
         }
@@ -592,7 +578,7 @@ enum ICloudDriveBackup {
         for item in items {
             // Parking hides a folder until it is placed; never start that
             // when the run is already stopping.
-            guard shouldContinue() else { return worse(outcome, .interrupted) }
+            guard shouldContinue() else { return Swift.max(outcome, .interrupted) }
             guard let current = live[item.meetingID],
                   current.lastPathComponent != item.folderName,
                   let holder = holders[item.folderName.lowercased()],
@@ -610,7 +596,7 @@ enum ICloudDriveBackup {
         }
 
         for item in items {
-            guard shouldContinue() else { return worse(outcome, .interrupted) }
+            guard shouldContinue() else { return Swift.max(outcome, .interrupted) }
             do {
                 let placed = try place(item, existing: live[item.meetingID], in: documents)
                 live[item.meetingID] = placed.url
@@ -630,7 +616,7 @@ enum ICloudDriveBackup {
             }
         }
 
-        guard shouldContinue() else { return worse(outcome, .interrupted) }
+        guard shouldContinue() else { return Swift.max(outcome, .interrupted) }
 
         // A meeting that is gone takes everything it left behind. A removal
         // that fails leaves a deleted meeting's notes and recording sitting in
@@ -988,47 +974,26 @@ enum ICloudDriveBackup {
     }
 }
 
-/// Thread-safe cancellation shared by the lifecycle owner, UIKit's
-/// expiration callback, and the file-work continuation checks.
-private final class BackgroundMirrorCancellation: @unchecked Sendable {
-    private let lock = NSLock()
-    private var cancelled = false
-
-    func cancel() {
-        lock.lock()
-        cancelled = true
-        lock.unlock()
-    }
-
-    func shouldContinue() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return !cancelled
-    }
-}
-
 /// Owns a lifecycle-triggered mirror so foregrounding or background-time
 /// expiration can stop its immutable snapshot at the next safety boundary.
+/// Cancellation rides on the Task itself: UIKit's expiration callback and
+/// the lifecycle owner both funnel into `cancel()`, and the file-work
+/// continuation checks observe it through `Task.isCancelled`.
 @MainActor
 final class BackgroundMirrorTask {
-    private let cancellation: BackgroundMirrorCancellation
-    private let token: BackgroundTaskToken
+    private var token: BackgroundTaskToken?
     private var task: Task<Void, Never>?
 
     init(
         name: String,
         operation: @escaping @Sendable (@escaping @Sendable () -> Bool) async -> Void
     ) {
-        let cancellation = BackgroundMirrorCancellation()
-        self.cancellation = cancellation
-        let token = BackgroundTaskToken(name: name) {
-            cancellation.cancel()
+        let token = BackgroundTaskToken(name: name) { [weak self] in
+            self?.cancel()
         }
         self.token = token
         task = Task { @MainActor in
-            await operation {
-                cancellation.shouldContinue() && !Task.isCancelled
-            }
+            await operation { !Task.isCancelled }
             token.end()
         }
     }
@@ -1036,9 +1001,8 @@ final class BackgroundMirrorTask {
     /// Returns the task so callers that need a graceful stop can await it.
     @discardableResult
     func cancel() -> Task<Void, Never>? {
-        cancellation.cancel()
         task?.cancel()
-        token.end()
+        token?.end()
         return task
     }
 }
