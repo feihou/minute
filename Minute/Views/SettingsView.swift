@@ -104,15 +104,7 @@ struct SettingsView: View {
     private var identitySection: some View {
         Section {
             HStack(spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .fill(LinearGradient.brand)
-                    Image(systemName: "waveform")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-                .frame(width: 48, height: 48)
-                .accessibilityHidden(true)
+                BrandIconTile(size: 48, cornerRadius: 11, iconSize: 20)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Minute")
                         .font(.headline)
