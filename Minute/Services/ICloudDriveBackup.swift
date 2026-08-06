@@ -899,9 +899,10 @@ enum ICloudDriveBackup {
 
     /// Deleting a meeting must leave zero bytes behind, and a folder whose
     /// recording was replaced would otherwise keep the old one forever.
-    /// Only recordings the mirror itself copied are ever removed — every one
-    /// is named with a UUID, so an `agenda.mp3` the user dropped in the
-    /// folder is left exactly where they put it.
+    /// Mirrored recordings use UUID filenames, so stale cleanup treats any
+    /// supported UUID-named audio as app-owned. A descriptive name such as
+    /// `agenda.mp3` is preserved, but a user-added UUID-named file can be
+    /// removed even when Minute did not copy it.
     private nonisolated static func removeStaleAudio(in folder: URL, keeping current: String?) {
         let fileManager = FileManager.default
         let names = (try? fileManager.contentsOfDirectory(atPath: folder.path)) ?? []

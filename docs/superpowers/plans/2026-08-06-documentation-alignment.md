@@ -90,7 +90,7 @@ Describe the Apple system speech-asset download separately from the FluidAudio/H
 
 - [x] **Step 2: Correct backup and deletion scope**
 
-Explain that deleting a meeting removes filename-recognized mirror artifacts on the next enabled sync, document the UUID-audio ownership caveat, and clarify that Delete All Meetings does not erase app preferences or summary context.
+Explain that deleting a meeting removes filename-recognized mirror artifacts on the next enabled sync, disclose that any enabled sync can remove a user-added supported audio file with a UUID-only name, and clarify that Delete All Meetings does not erase app preferences or summary context.
 
 - [x] **Step 3: Disclose the summary-context backup limitation**
 

@@ -55,7 +55,7 @@ Meeting audio is some of the most sensitive data on your phone. Most meeting-not
 | When it updates | On iOS's normal device-backup schedule | When you enable it, and again when the app enters the background |
 | Getting data back | Only by restoring the whole iPhone from that backup | Open or copy any file directly, on iPhone or Mac |
 
-Each device mirrors into its own subfolder, so two iPhones on one Apple ID never overwrite each other. Deleting a meeting removes files Minute recognizes as its mirrored notes, audio, and markers on the next enabled sync. The folder remains when other, unrecognized files are present. Because Minute recognizes copied audio by its UUID-based filename, keep extra files outside these generated meeting folders—or avoid UUID-only audio filenames—if they must never be mistaken for a mirrored recording. Files left after you turn the toggle off are yours to manage in Files.
+Each device mirrors into its own subfolder, so two iPhones on one Apple ID never overwrite each other. Deleting a meeting removes files Minute recognizes as its mirrored notes, audio, and markers on the next enabled sync. The folder remains when other, unrecognized files are present. During every enabled mirror sync, Minute also removes supported audio files whose UUID-only names look like its own but do not match the meeting's current recording. Keep extra files outside these generated meeting folders—or avoid UUID-only audio filenames—because such files can be removed even while the meeting still exists. Files left after you turn the toggle off are yours to manage in Files.
 
 ## Requirements
 
