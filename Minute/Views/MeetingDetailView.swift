@@ -199,15 +199,7 @@ struct MeetingDetailView: View {
         Section {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 12) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(LinearGradient.brand)
-                        Image(systemName: "waveform")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.white)
-                    }
-                    .frame(width: 42, height: 42)
-                    .accessibilityHidden(true)
+                    BrandIconTile(size: 42, cornerRadius: 10, iconSize: 17)
 
                     TextField("Title", text: $meeting.title, axis: .vertical)
                         .font(.title3.bold())

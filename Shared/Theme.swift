@@ -22,3 +22,23 @@ extension LinearGradient {
         endPoint: .bottom
     )
 }
+
+/// Square brand-gradient tile with a white waveform glyph. Decorative only,
+/// so it is always hidden from accessibility.
+struct BrandIconTile: View {
+    let size: CGFloat
+    let cornerRadius: CGFloat
+    let iconSize: CGFloat
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(LinearGradient.brand)
+            Image(systemName: "waveform")
+                .font(.system(size: iconSize, weight: .semibold))
+                .foregroundStyle(.white)
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
