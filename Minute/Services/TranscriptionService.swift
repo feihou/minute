@@ -10,17 +10,10 @@ import Speech
 /// finalized, timestamped segments come out for the UI.
 @MainActor
 @Observable
-final class TranscriptionService {
-    enum Availability: Equatable {
-        case unknown
-        case available
-        case downloadingModel
-        case unavailable(String)
-    }
-
+final class TranscriptionService: TranscriptionEngine {
     private static let logger = Logger(subsystem: "com.minuteapp.Minute", category: "Transcription")
 
-    private(set) var availability: Availability = .unknown
+    private(set) var availability: TranscriptionAvailability = .unknown
     /// In-progress (not yet finalized) text for the live transcript view.
     private(set) var volatileText: String = ""
     /// Finalized transcript segments in audio order.

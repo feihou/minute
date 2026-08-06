@@ -17,6 +17,8 @@ struct SettingsView: View {
     @AppStorage(AppSettings.summaryTemplateKey) private var summaryTemplate = SummaryTemplate.standard.id
     @AppStorage(AppSettings.summaryContextKey) private var summaryContext = ""
     @AppStorage(AppSettings.summaryLanguageKey) private var summaryLanguage = ""
+    @AppStorage(AppSettings.transcriptionEngineKey) private var transcriptionEngineRaw = TranscriptionEngineChoice.appleSpeech.rawValue
+    @AppStorage(AppSettings.whisperModelKey) private var whisperModelRaw = ""
     @AppStorage(AppSettings.iCloudBackupKey) private var iCloudBackup = false
     @AppStorage(AppSettings.iCloudDriveKey) private var iCloudDrive = false
     // Persisted, not @State: resolving the iCloud container on first use is
@@ -58,7 +60,9 @@ struct SettingsView: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .task { await refreshTranscriptionStatus() }
+            // task(id:) so returning from the engine/model picker refreshes
+            // the capability row without reopening Settings.
+            .task(id: "\(transcriptionEngineRaw)|\(whisperModelRaw)") { await refreshTranscriptionStatus() }
             .task { usage = MeetingStore.recordingsUsage() }
             .confirmationDialog(
                 "Delete all meetings?",
@@ -159,7 +163,7 @@ struct SettingsView: View {
         } header: {
             Text("Recording")
         } footer: {
-            Text("\(selectedQuality.label): \(selectedQuality.detail). Settings apply to new recordings. Auto-Summarize generates the summary on device right after a meeting is saved — it needs Live Transcription to produce the transcript it summarizes. The template controls how notes are organized (e.g. Yesterday/Today/Blockers for standups).")
+            Text("\(selectedQuality.label): \(selectedQuality.detail). Settings apply to new recordings. Auto-Summarize generates the summary on device right after a meeting is saved — it needs Live Transcription to produce the transcript it summarizes. With the Whisper engine, Live Transcription instead controls whether a recording is transcribed right after you save it. The template controls how notes are organized (e.g. Yesterday/Today/Blockers for standups).")
         }
     }
 
@@ -174,15 +178,27 @@ struct SettingsView: View {
         }
     }
 
-    // ponytail: display-only rows — becomes a Picker when there is more than
-    // one model to choose from (e.g. user-downloaded models).
+    private var transcriptionModelName: String {
+        switch AppSettings.transcriptionEngine {
+        case .appleSpeech:
+            return "Apple Speech"
+        case .whisper:
+            let label = WhisperModelCatalog.model(for: AppSettings.whisperModel)?.label ?? "Custom"
+            return "Whisper · \(label)"
+        }
+    }
+
     private var modelsSection: some View {
         Section {
-            LabeledContent {
-                Text("Apple Speech")
-                    .foregroundStyle(.secondary)
+            NavigationLink {
+                TranscriptionModelView()
             } label: {
-                settingsLabel("Transcription Model", systemImage: "text.bubble", tint: .blue)
+                LabeledContent {
+                    Text(transcriptionModelName)
+                        .foregroundStyle(.secondary)
+                } label: {
+                    settingsLabel("Transcription Model", systemImage: "text.bubble", tint: .blue)
+                }
             }
             LabeledContent {
                 Text("Apple Intelligence")
@@ -200,10 +216,9 @@ struct SettingsView: View {
             Text("Models")
         } footer: {
             Text(
-                "Transcription and summaries use Apple models that run entirely on this iPhone; the transcription model may need a one-time download before first use. "
-                + "Identifying speakers uses a third-party model (FluidAudio) downloaded once from Hugging Face and then cached — that download is Minute's only non-Apple request, and your recordings are never part of it. "
-                + "If you enable iCloud backups or the iCloud Drive folder, Apple may also sync meeting copies to your own account. "
-                + "Support for custom models may come in a future update."
+                "Transcription and summaries run entirely on this iPhone; the Apple models may need a one-time download before first use. "
+                + "The speaker model (FluidAudio) and any Whisper transcription models you choose are downloaded once from Hugging Face and then cached — those model downloads are Minute's only non-Apple requests, and your recordings are never part of them. "
+                + "If you enable iCloud backups or the iCloud Drive folder, Apple may also sync meeting copies to your own account."
             )
         }
     }
@@ -418,6 +433,12 @@ struct SettingsView: View {
     }
 
     private func refreshTranscriptionStatus() async {
+        if AppSettings.transcriptionEngine == .whisper {
+            transcriptionStatus = WhisperModelStore.isDownloaded(AppSettings.whisperModel)
+                ? "Ready"
+                : "Model not downloaded"
+            return
+        }
         guard SpeechTranscriber.isAvailable else {
             transcriptionStatus = "Not supported"
             return

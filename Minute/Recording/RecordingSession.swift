@@ -27,6 +27,9 @@ final class RecordingSession: Identifiable {
     /// Captured when the session is created so a settings change mid-recording
     /// can't half-apply.
     let isTranscriptionEnabled = AppSettings.liveTranscriptionEnabled
+    /// Whisper transcribes the finished file after saving instead of live —
+    /// the meeting screen runs it once the recording lands there.
+    let isTranscriptionDeferred = AppSettings.transcriptionEngine == .whisper
 
     private let liveActivity = RecordingLiveActivityController()
 
@@ -115,7 +118,7 @@ final class RecordingSession: Identifiable {
             return
         }
 
-        guard isTranscriptionEnabled else { return }
+        guard isTranscriptionEnabled, !isTranscriptionDeferred else { return }
         transcriptionTask = Task { [weak self] in
             guard let self else { return }
             await self.transcription.prepare()

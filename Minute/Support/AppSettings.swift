@@ -6,6 +6,8 @@ import Foundation
 enum AppSettings {
     static let audioQualityKey = "recording.audioQuality"
     static let liveTranscriptionKey = "recording.liveTranscription"
+    static let transcriptionEngineKey = "transcription.engine"
+    static let whisperModelKey = "transcription.whisperModel"
     static let autoSummarizeKey = "recording.autoSummarize"
     static let summaryTemplateKey = "summary.template"
     static let summaryContextKey = "summary.context"
@@ -52,6 +54,18 @@ enum AppSettings {
         UserDefaults.standard.object(forKey: liveTranscriptionKey) as? Bool ?? true
     }
 
+    /// The engine that transcribes meetings. Apple Speech is the default;
+    /// Whisper is opt-in and needs a model downloaded in Settings first.
+    static var transcriptionEngine: TranscriptionEngineChoice {
+        TranscriptionEngineChoice(rawValue: UserDefaults.standard.string(forKey: transcriptionEngineKey) ?? "") ?? .appleSpeech
+    }
+
+    /// The Whisper model variant selected in Settings.
+    static var whisperModel: String {
+        let value = UserDefaults.standard.string(forKey: whisperModelKey) ?? ""
+        return value.isEmpty ? WhisperModelCatalog.defaultModel.variant : value
+    }
+
     /// Whether a summary is generated automatically after a recording is saved.
     static var autoSummarizeEnabled: Bool {
         UserDefaults.standard.bool(forKey: autoSummarizeKey)
@@ -81,6 +95,28 @@ enum AppSettings {
         "English", "Spanish", "French", "German", "Italian",
         "Portuguese", "Japanese", "Korean", "Chinese",
     ]
+}
+
+/// Which speech model transcribes meetings.
+enum TranscriptionEngineChoice: String, CaseIterable, Identifiable {
+    case appleSpeech = "apple"
+    case whisper
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .appleSpeech: "Apple Speech"
+        case .whisper: "Whisper"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .appleSpeech: "Built into iOS. Transcribes live while you record, in this iPhone's language."
+        case .whisper: "Open model by OpenAI. Transcribes after you save and auto-detects the spoken language."
+        }
+    }
 }
 
 /// AAC encoder quality for new recordings. The sample rate always follows the
