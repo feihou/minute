@@ -14,26 +14,6 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build:
-
-    runs-on: macos-26
-
-    steps:
-    - uses: actions/checkout@v7
-    - name: Select newest Xcode 26
-      run: |
-        XCODE_APP="$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
-        echo "Using $XCODE_APP"
-        sudo xcode-select -s "$XCODE_APP"
-        xcodebuild -version
-    - name: Build
-      run: |
-        xcodebuild build \
-          -project Minute.xcodeproj \
-          -scheme Minute \
-          -destination 'generic/platform=iOS Simulator' \
-          CODE_SIGNING_ALLOWED=NO
-
   test:
 
     runs-on: macos-26
