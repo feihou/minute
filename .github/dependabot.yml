@@ -1,5 +1,5 @@
-# The app itself has no package dependencies (Apple frameworks only), so
-# only the GitHub Actions pins need automated updates.
+# FluidAudio is pinned in Package.resolved and updated deliberately through
+# Xcode/SPM review. This file automates GitHub Actions pins only.
 
 version: 2
 updates:

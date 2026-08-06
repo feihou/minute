@@ -1,172 +1,190 @@
-# Minute v1.0 — App Store Product Page Copy
+# Minute v1.0 — App Store Product Page and Compliance Draft
 
-Grounded in /Users/feihou/workplace/minute/.claude/worktrees/app-ui-settings-redesign-db71a8/README.md and /Users/feihou/workplace/minute/.claude/worktrees/app-ui-settings-redesign-db71a8/Minute/Views/SettingsView.swift. Verified: recording + live transcription work on any iPhone running iOS 26 (README states transcription needs a physical iPhone only vs. simulator — no special hardware); summaries require an Apple-Intelligence-capable iPhone. Network traffic disclosed honestly (Apple speech model fetched by iOS + one-time ~22 MB FluidAudio speaker model) — no "no network access" claim anywhere.
+**Verified against the repository and official Apple guidance: August 6, 2026.**
 
-## 1. App Name (max 30)
+Repository sources: `README.md`, `docs/privacy-policy.md`, `Minute/Views/SettingsView.swift`, `Minute/Views/MeetingDetailView.swift`, `Minute/Services/TranscriptionService.swift`, `Minute/Services/DiarizationService.swift`, `Minute/Info.plist`, `Minute/PrivacyInfo.xcprivacy`, `MinuteWidgets/PrivacyInfo.xcprivacy`, and `Minute.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`.
 
-1. "Minute — AI Meeting Notes" — 25 chars (recommended)
-2. "Minute: Private Meeting Notes" — 29 chars
-3. "Minute — On-Device Meeting AI" — 29 chars
+This is a release-owner draft, not legal advice. Product copy below is ready to paste after the release checks; privacy, export, rating, pricing, and support fields remain the App Store Connect account holder's responsibility.
 
-## 2. Subtitle (max 30)
+## Product page copy
 
-1. "Private, on-device AI notes" — 27 chars (recommended)
-2. "On-device transcripts & notes" — 29 chars
-3. "Meetings stay on your iPhone" — 28 chars
+### 1. App Name (25 of 30 characters)
 
-## 3. Promotional Text (max 170)
+`Minute — AI Meeting Notes`
 
-Option A — 164 chars:
-"Meeting notes that never leave your iPhone. Record, transcribe live, and get AI summaries — all on device. No account, no server, no tracking. Free and open source."
+### 2. Subtitle (27 of 30 characters)
 
-Option B — 159 chars:
-"Stop uploading your meetings. Minute records, transcribes, and summarizes entirely on your iPhone — speaker ID, decisions, action items. Open source under MIT."
+`Private, on-device AI notes`
 
-## 4. Description (2,201 chars of 4,000)
+### 3. Promotional Text (134 of 170 characters)
 
-Minute takes notes at your meetings so you can be in them. Record any in-person conversation, watch the transcript appear live, and get structured notes — all processed on your iPhone. No account. No server. No analytics. Your conversations never leave the room.
+`Record, transcribe, identify speakers, and create AI notes on your iPhone. No account, no backend, no tracking. Open source under MIT.`
+
+### 4. Description (2,895 of 4,000 characters)
+
+Minute takes notes at your meetings so you can be in them. Record an in-person conversation, watch the transcript appear live, and create structured notes — all processed on your iPhone. No account. No backend. No analytics. Meeting content is not uploaded to an AI or transcription service.
 
 WHAT YOU GET
 
-• One-tap recording — pause, resume, and keep recording in the background. Phone calls and AirPods switches are handled gracefully, and the audio captured so far is always offered for saving.
+• One-tap recording — pause, resume, and keep recording in the background. Phone calls and audio-route changes are handled gracefully, and recoverable failures offer to save the audio captured so far.
 
-• Live transcription — Apple's on-device speech engine turns talk into timestamped text while you record. Tap any line to jump playback to that moment.
+• Live transcription — Apple's on-device speech engine turns speech into timestamped text while you record. Tap a line to jump playback to that moment. Availability depends on Apple Speech support for your iPhone's current language and on the local model being ready.
 
-• Speaker identification — see who said what, powered by on-device speaker recognition.
+• Speaker identification — after a meeting, optionally identify and rename speakers with FluidAudio's on-device model. The model downloads from Hugging Face when first used; recordings are never part of that request.
 
-• AI meeting notes — Apple Intelligence writes an overview, key points, decisions, action items, open questions, and per-speaker perspectives, entirely on device. Long meetings are chunked and merged automatically.
+• AI meeting notes — Apple Intelligence creates an overview, key points, decisions, action items, and open questions entirely on device. Choose a meeting template and output language, add spelling context, and get per-speaker perspectives after speakers have been identified. Long meetings are chunked and merged automatically.
 
-• Playback and editing — scrub the recording, edit titles and summaries, copy or share everything.
+• Import, search, and revisit — import existing audio for best-effort local transcription; search titles, transcripts, notes, and speaker names; re-transcribe saved audio when needed.
 
-• Widget and Live Activity — start a meeting from your Home Screen and follow the recording from the Lock Screen.
+• Playback and editing — scrub recordings, edit titles and summaries, rename speakers, and copy or share plain-text notes with the transcript included.
+
+• Widget and Live Activity — start a meeting from the Home Screen, open recent meetings from the medium widget, and follow recording state from the Lock Screen or Dynamic Island.
 
 PRIVATE BY DESIGN
 
-Recordings, transcripts, and notes stay on your iPhone unless you decide otherwise. Two optional backups — including meetings in your iCloud device backup, or mirroring a browsable iCloud Drive folder with each meeting's notes and audio — are both off by default. Deleting a meeting deletes its audio and notes from disk. The only network traffic in the app's lifetime is a one-time download of the on-device models themselves: Apple's speech model, fetched by iOS, and a small (~22 MB) speaker model. Your recordings, transcripts, and notes are never part of any upload.
+Recordings, transcripts, and summaries stay on your iPhone by default. Two optional meeting-data backups — including them in your iPhone backup, or mirroring browsable notes and audio to iCloud Drive — are both off by default. Deleting a meeting removes its local recording and notes. Network activity is limited to model setup and user-chosen iCloud features: iOS may fetch Apple's speech assets, and FluidAudio fetches its speaker model from Hugging Face. Meeting content is never uploaded to either model host.
 
 REQUIREMENTS
 
 • iOS 26 or later. iPhone only.
-• Recording and live transcription work on any iPhone running iOS 26.
-• AI summaries require an Apple Intelligence–capable iPhone with Apple Intelligence turned on.
+• Recording works without transcription. Live transcription requires Apple Speech support for the current device language and model availability.
+• AI notes require an Apple Intelligence-capable iPhone with Apple Intelligence enabled.
 
 OPEN SOURCE
 
-Minute is open source under the MIT license. Read every line at github.com/feihou/minute — there is no server, no analytics SDK, and no tracking to find.
+Minute is open source under the MIT License. Read the code at github.com/feihou/minute — there is no backend, analytics SDK, or tracking.
 
-Recording laws differ by region — always tell everyone in the room before you record.
+Recording laws differ by region. Always tell everyone in the room before you record.
 
-## 5. Keywords (max 100)
+### 5. Keywords (97 of 100 bytes)
 
-"transcribe,recorder,voice,memo,summary,private,offline,transcript,speech,interview,standup,scribe" — 97 chars
+`transcribe,recorder,voice,memo,summary,private,offline,transcript,speech,interview,standup,scribe`
 
-No word repeats the recommended app name (Minute/AI/Meeting/Notes); "meeting" and "notes" are already indexed from the name, "minutes" via the name stem. No spaces after commas.
+The list does not repeat words from the recommended app name. App Store Connect measures this field in bytes, not characters.
 
-## 6. What's New — 1.0 (335 chars)
+### 6. What's New
 
-Welcome to Minute 1.0 — meeting notes that stay on your iPhone.
+App Store Connect does not show a What's New field for an app's first version. For the first update, adapt this copy to the changes that actually ship:
+
+Minute brings private meeting notes to your iPhone:
 
 • One-tap recording with live on-device transcription
-• Speaker identification
-• On-device AI notes: overview, key points, decisions, action items, open questions
+• Optional speaker identification and renameable labels
+• On-device AI notes with templates, action items, and open questions
+• Audio import, search, playback, and re-transcription
 • Optional iCloud backup and browsable iCloud Drive folder
 • Home Screen widget and recording Live Activity
 
-## Notes for the caller
+## Release checks before pasting product copy
 
-- The README's roadmap still lists diarization as pending; the copy follows the task brief and SettingsView (Speaker Model: FluidAudio row), which confirm speaker ID ships. If diarization is NOT in the 1.0 binary, drop the "Speaker identification" bullet, the "per-speaker perspectives" phrase, the ~22 MB speaker-model sentence, and the speaker line in What's New before submitting.
-- Description uses plain text only: unicode bullets and CAPS section leads, no markdown.
-- "Free and open source" in Promo A assumes a free listing; remove "Free and" if the app is paid.
+- Confirm the App Store price before adding any pricing language; the product copy above makes no free/paid claim.
+- Test live transcription for the release device languages. Recording still works when transcription is unavailable or its model is not ready.
+- Confirm the archived app still contains FluidAudio 0.15.5 and inspect the archive's privacy report before upload.
+- Verify the FluidAudio model size/host and the model host's request-data retention practices for the exact release dependency. The copy intentionally does not promise that connection metadata is never retained.
+- Speaker perspectives are conditional: they appear only after the transcript has speaker labels.
+- Imported audio can be saved without a transcript when Apple Speech is unavailable or transcription fails.
+- Summary Context and other `UserDefaults` preferences can participate in the user's normal device backup independently of Minute's in-app meeting-data backup toggle; the privacy policy discloses this current limitation.
+- Visually inspect all four files in `docs/app-store/` at release time. The privacy screenshot deliberately says “On-device processing. Optional iCloud backup.” instead of “No server,” because model setup uses Apple and Hugging Face hosts even though meeting processing remains local.
+- **Release blocker:** add an easily accessible Privacy Policy link inside the app. The current Settings screen has no policy link, while Apple's App Review Guidelines require one in both App Store Connect metadata and the app.
 
 ---
 
-# App Store Connect Compliance Answers — Minute v1.0
+# App Store Connect Compliance Draft
 
-## 1. App Privacy questionnaire (Privacy Nutrition Label)
+## 1. App Privacy questionnaire
 
-**Top-level question: "Do you or your third-party partners collect data from this app?" → Answer: No.**
+**Candidate top-level answer:** `No, we do not collect data from this app.`
 
-Resulting label: **"Data Not Collected."**
+Do not submit that answer until the release owner verifies the current FluidAudio/Hugging Face request behavior. Apple defines collection as transmitting data off-device so the developer or a third-party partner can access it for longer than needed to service the request in real time. An IP address or similar request data does not need disclosure only when it is not retained beyond servicing the request. See [Apple's App Privacy details](https://developer.apple.com/app-store/app-privacy-details/).
 
-Why "No" is defensible under Apple's definition: Apple defines "collect" as transmitting data off the device in a way that is accessible to you (the developer) or your third-party partners for longer than necessary to service the transmitted request. Minute fails that definition on every count:
+Repository-backed reasoning:
 
-- **User's own iCloud is not collection.** The opt-in iCloud device backup and opt-in iCloud Drive folder mirror put data into the *user's own* iCloud account via Apple system frameworks. The developer has no server, no account system, and no access to any of it. Apple's guidance explicitly excludes data stored where only the user can access it.
-- **The model download is transient request servicing.** The only network request the app itself makes is a one-time, anonymous HTTPS download of FluidAudio's CoreML speaker-identification models (~22 MB) from Hugging Face. No user data, identifiers, recordings, or content are sent — only the standard connection metadata (IP address) any HTTPS request carries, used transiently to serve the file and not retained by or accessible to the developer. That falls squarely under Apple's "data used only to service a request and not retained" exclusion. (Apple's own speech-model assets are downloaded by iOS itself via AssetInventory — Apple system infrastructure, not the app.)
+- **Meeting processing is on device.** Recordings, transcripts, speaker assignments, summaries, settings, and searches are processed locally. On-device-only processing is not collection.
+- **The developer has no backend access.** The code contains no account, analytics, advertising, telemetry, or crash-reporting service.
+- **User-controlled iCloud uses Apple services.** The optional device-backup and iCloud Drive paths copy data only to the user's Apple account; the developer has no retrieval path. Apple's guidance says developers are not responsible for disclosing data Apple collects through Apple frameworks and services. This supports the candidate answer, but Apple does not publish the broader phrase “the user's own iCloud is never collection.”
+- **The speaker-model request is conditional.** The candidate `No` answer depends on Hugging Face/FluidAudio not retaining accessible request data beyond real-time request servicing and on the dependency adding no telemetry. Re-check the exact release version.
+- **Persistent preferences may be backed up.** Summary Context and other `UserDefaults` values can be included in the user's device backup. That is an Apple backup path, not developer access, and it is disclosed in the privacy policy.
 
-Walk-through of data types a reviewer or user might wonder about — all **Not Collected**:
+Data-type audit, assuming the candidate answer remains valid:
 
-| Data type | Reality | Label answer |
+| Data type | Repository behavior | Candidate label answer |
 |---|---|---|
-| Audio Data (User Content) | Recordings are written to the app sandbox, never transmitted. Deleting a meeting deletes the file. | Not Collected |
-| Other User Content (transcripts, summaries, notes, "summary context" text) | Generated and stored on device only; optional copies go solely to the user's own iCloud. | Not Collected |
-| Contact Info / Name / Email | No account, no sign-in, no forms. | Not Collected |
-| Identifiers (User ID / Device ID) | None generated, none transmitted. | Not Collected |
-| Usage Data / Product Interaction | No analytics or telemetry SDK of any kind. | Not Collected |
-| Diagnostics / Crash Data | No crash-reporting SDK. (Opt-in crash logs users share with Apple are Apple's collection, not yours — Apple says not to declare those.) | Not Collected |
-| Location, Contacts, Health, Financial, Browsing/Search History, Photos | Never accessed. | Not Collected |
+| Audio Data (User Content) | Recordings remain in the app sandbox unless the user backs up or shares them; no model service receives them. | Not Collected |
+| Other User Content | Transcripts, summaries, speaker names, and Summary Context are processed locally; user-chosen copies use Apple backup/share services. | Not Collected |
+| Contact Info | No account, sign-in, or contact form in the app. | Not Collected |
+| Identifiers | Minute creates no account/user/device advertising identifier for transmission. | Not Collected |
+| Usage Data | No analytics or telemetry code. | Not Collected |
+| Diagnostics | No app-integrated crash-reporting service. | Not Collected |
+| Location, Contacts, Health, Financial, Photos, Browsing History | Not accessed by app code. | Not Collected |
 
-**Tracking question ("Is this data used to track users?")**: No data types are collected, so tracking is automatically No. No AppTrackingTransparency prompt exists or is needed.
+**Tracking:** Candidate answer `No`; the privacy manifests set `NSPrivacyTracking` to `false` and declare no tracking domains.
 
-**Third-party partners check**: FluidAudio is a library whose static model files are fetched from a CDN (Hugging Face); neither is a "partner collecting data from this app." No SDK in the binary phones home.
+**Third-party review:** FluidAudio is third-party code and Hugging Face is an external vendor for the model fetch. Review both under Apple's third-party-partner definition; package identity alone does not decide the App Privacy answer.
+
+**Privacy manifests:** FluidAudio is not currently named on Apple's [commonly used third-party SDK list](https://developer.apple.com/support/third-party-SDK-requirements/), so the special listed-SDK signature/manifest rule does not apply by name. The app must still cover required-reason APIs used by its own code or dependencies. `Minute/PrivacyInfo.xcprivacy` declares UserDefaults and file-timestamp access; the widget manifest declares its App Group UserDefaults access. Confirm the combined archive privacy report before submission.
 
 ## 2. Age rating questionnaire
 
-Expected answers — every content question is **None / No**:
+Expected questionnaire posture, subject to the release binary and App Store Connect's resulting rating:
 
-| Question area | Answer |
-|---|---|
-| Cartoon/fantasy/realistic violence | None |
-| Profanity or crude humor | None |
-| Mature/suggestive themes, sexual content, nudity | None |
-| Horror/fear themes | None |
-| Medical/treatment information | None |
-| Alcohol, tobacco, drug use or references | None |
-| Simulated gambling / real gambling | None / No |
-| Contests | No |
-| Unrestricted web access | No (the only web touchpoint is a fixed model-file download; no browser) |
-| User-generated content shared with others / social features / messaging | No (users' notes are private to their device; nothing is shared to other users) |
-| App-provided or third-party advertising | No |
-| Parental controls / age assurance | No |
+| Question area | Expected answer | Basis |
+|---|---|---|
+| Violence, profanity, mature/suggestive themes, sexual content, horror, medical, substance use, gambling | None | Minute supplies no catalog of such content. |
+| User-Generated Content | No | Apple defines this category around broad distribution of user-created content; Minute keeps private recordings/notes for the same user and has no social distribution feature. |
+| Unrestricted Web Access | No | Users cannot browse the web; a fixed model-download endpoint is not unrestricted browsing under Apple's definition. |
+| Advertising | No | No advertising code or inventory. |
+| Messaging/social features | No | No accounts, shared feed, messaging, or in-app user-to-user delivery. |
+| Parental controls / age assurance | No | No such feature. |
 
-**Resulting rating: 4+** (regional equivalents are derived automatically).
+Use App Store Connect's generated rating as the source of truth; do not hard-code a `4+` outcome in release notes before completing the current questionnaire.
+
+Official definitions: [Age rating values and definitions](https://developer.apple.com/help/app-store-connect/reference/app-information/age-ratings-values-and-definitions/).
 
 ## 3. App Review notes (ready to paste)
 
-> Minute records in-person meetings and processes everything on the device: live transcription uses Apple's on-device SpeechTranscriber (iOS 26), and meeting notes (overview, key points, decisions, action items, open questions, speaker perspectives) are generated by Apple's on-device FoundationModels (Apple Intelligence). There is no account, no login, and no server — no demo credentials are needed. To test: launch the app, tap the record button (a microphone permission prompt appears on first recording — please allow), speak a few sentences, tap stop, and open the meeting to see the transcript; then generate notes from the meeting detail screen. Network usage: the app itself makes exactly one kind of network request — a one-time, anonymous download (~22 MB) of the FluidAudio speaker-identification CoreML models from Hugging Face when speaker identification is first used; iOS may also download Apple's own on-device speech model on first recording via Apple system infrastructure. No user content or identifiers are ever transmitted. AI note generation requires an Apple-Intelligence-capable iPhone with Apple Intelligence enabled and its model downloaded; on other devices the app shows a clear "summarization unavailable" message (visible in Settings > On-Device Capabilities) while recording, playback, and live transcription continue to work — this message is expected behavior, not a bug. Optional features: a Home Screen widget and a recording Live Activity; opt-in (off by default) iCloud backup options that copy data only to the user's own iCloud. The app is open source (MIT): https://github.com/feihou/minute
+> Minute records in-person meetings and processes meeting content on the device. Live transcription uses Apple's on-device SpeechTranscriber (iOS 26). Structured notes use Apple's on-device FoundationModels and require Apple Intelligence. Optional speaker identification uses FluidAudio's offline CoreML pipeline; the model files are downloaded from Hugging Face when first used and cached, but recordings, transcripts, summaries, and identifiers created by Minute are not part of that request. There is no account, login, backend, analytics, or demo credential. To test: launch the app, tap the record button, allow microphone access, speak a few sentences, stop, and open the saved meeting. Transcription depends on Apple Speech support for the device language and local model readiness; recording and playback continue when it is unavailable. Generate notes from the meeting detail screen. Speaker identification is a separate optional action on a saved meeting and may need network access for its first model setup. Optional iCloud Backup and iCloud Drive Folder features are both off by default and copy meeting data only to the reviewer's own iCloud account. The project is open source under the MIT License: https://github.com/feihou/minute
 
 ## 4. Export compliance
 
-Confirmed in the repo: `ITSAppUsesNonExemptEncryption` is set to `false` in `Minute/Info.plist` (lines 5–6). With that key present, App Store Connect skips the export-compliance questions on every build upload.
+Repository fact: `ITSAppUsesNonExemptEncryption` is `false` in `Minute/Info.plist`.
 
-If asked anyway (e.g., in the submission UI):
-- "Does your app use encryption?" → **Yes** (HTTPS/TLS via ATS for the model download, plus OS-provided data protection and iCloud transport).
-- "Does your app qualify for any of the exemptions in Category 5, Part 2 of the EAR?" → **Yes** — the app uses only the standard encryption built into Apple's operating system; it implements no proprietary or non-standard cryptography. No CCATS or France declaration is needed for this classification.
+That key does **not** mean the app uses no encryption. It represents the developer's determination that the app does not use non-exempt encryption requiring App Store Connect documentation. The current code relies on encryption provided by Apple's operating system for HTTPS, device data protection, and iCloud; it implements no proprietary cryptography.
+
+Apple's current reference says apps whose encryption is limited to the Apple operating system require no export-compliance documentation in App Store Connect. The release owner must still confirm that classification for the final binary and distribution territories. See [Apple's export-compliance overview](https://developer.apple.com/help/app-store-connect/manage-app-information/overview-of-export-compliance/) and [documentation matrix](https://developer.apple.com/help/app-store-connect/reference/app-information/export-compliance-documentation-for-encryption/).
 
 ## 5. Category recommendation
 
-**Primary: Productivity. Secondary: Business.**
+**Primary:** Productivity
 
-Productivity should be primary: Minute is a personal note-taking/meeting-notes tool in the same shelf as transcription and notes apps that live in Productivity, and the category matches the app's core loop (capture → transcript → actionable notes for one user). The Business category skews toward enterprise/team tooling (CRM, collaboration suites) and implies an organizational buyer Minute doesn't have — no accounts, no teams. Business as secondary still captures "meeting" search intent.
+**Secondary:** Business
 
-## 6. Copyright line
+Productivity matches the core personal workflow: capture, transcript, search, and actionable notes. Business remains a useful secondary category without implying accounts, teams, CRM, or enterprise administration.
 
-App Store Connect copyright field (per Apple's format — year + rights owner, no URL, © is added by the store):
+## 6. Copyright
 
-**`2026 Fei Hou`**
+App Store Connect field: `2026 Fei Hou`
 
-(If a literal line is wanted elsewhere: `© 2026 Fei Hou`.)
+Apple adds the copyright symbol automatically.
 
-## 7. Support URL and Marketing URL
+## 7. Support, marketing, and privacy URLs
 
-- **Support URL (required):** `https://github.com/feihou/minute/issues` — a GitHub Issues page is acceptable to App Review as a support URL: it is reachable, current, and gives users a working way to contact the developer.
-- **Marketing URL (optional):** `https://github.com/feihou/minute` — the README already functions as a product page (positioning, screenshots, privacy guarantees). Leave blank or upgrade to a GitHub Pages site later; it can be changed anytime without a new build.
+- **Support URL — release blocker:** `https://github.com/feihou/minute/issues` alone is not enough under Apple's written requirement. Apple says the Support URL must lead to actual contact information such as a legal address, email address, or telephone number. Publish a stable support page containing the required contact information, then use that page's full HTTPS URL. See [Apple's platform version information reference](https://developer.apple.com/help/app-store-connect/reference/app-information/platform-version-information/).
+- **Marketing URL (optional):** `https://github.com/feihou/minute`
+- **Privacy Policy URL (required):** publish `docs/privacy-policy.md` at a stable public HTTPS URL before submission. A raw repository path is source material, not a guaranteed product-facing policy URL.
+- **Privacy Choices URL (optional):** a published privacy/help page can explain local deletion, clearing Summary Context, iCloud Drive cleanup, and device-backup management.
 
-## 8. Pricing (free app)
+## 8. Pricing and agreements
 
-Nothing special — confirmed:
-- Set price to **Free (Tier 0)**; choose territories.
-- No in-app purchases and no subscriptions, so the **Paid Applications Agreement is not required** — the standard free Apple Developer Program License Agreement covers it.
-- Free + no IAP also means no additional tax/banking setup is needed in App Store Connect, and none of the age-rating or privacy answers above change.
+Pricing is an App Store Connect release decision, not a repository fact. If the account holder chooses **Free** and the app has no in-app purchases or subscriptions, confirm the current agreement, banking, tax, and territory requirements directly in App Store Connect before release. Do not carry a pricing assumption from this document into promotional copy.
 
----
-Sources verified: `/Users/feihou/workplace/minute/.claude/worktrees/app-ui-settings-redesign-db71a8/README.md`, `/Users/feihou/workplace/minute/.claude/worktrees/app-ui-settings-redesign-db71a8/Minute/Views/SettingsView.swift` (in-app privacy copy, including the FluidAudio/Hugging Face disclosure), `/Users/feihou/workplace/minute/.claude/worktrees/app-ui-settings-redesign-db71a8/Minute/Info.plist` (export-compliance key).
+## Official Apple sources checked
+
+- [App information limits (name and subtitle)](https://developer.apple.com/help/app-store-connect/reference/app-information/app-information/)
+- [Platform version fields (promotional text, description, keywords, support URL, What's New)](https://developer.apple.com/help/app-store-connect/reference/app-information/platform-version-information/)
+- [App Review Guidelines (privacy policy availability)](https://developer.apple.com/app-store/review/guidelines/)
+- [App Privacy details and transient request-servicing exclusion](https://developer.apple.com/app-store/app-privacy-details/)
+- [Third-party SDK privacy requirements](https://developer.apple.com/support/third-party-SDK-requirements/)
+- [Age rating values and definitions](https://developer.apple.com/help/app-store-connect/reference/app-information/age-ratings-values-and-definitions/)
+- [Export compliance overview](https://developer.apple.com/help/app-store-connect/manage-app-information/overview-of-export-compliance/)
+- [Export compliance documentation matrix](https://developer.apple.com/help/app-store-connect/reference/app-information/export-compliance-documentation-for-encryption/)
+- [UserDefaults backup behavior](https://developer.apple.com/documentation/foundation/userdefaults)
