@@ -13,16 +13,9 @@ struct WidgetMeeting: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct WidgetSnapshot: Codable, Equatable, Sendable {
-    static let currentVersion = 1
     static let empty = WidgetSnapshot(meetings: [])
 
-    let version: Int
     let meetings: [WidgetMeeting]
-
-    init(version: Int = currentVersion, meetings: [WidgetMeeting]) {
-        self.version = version
-        self.meetings = meetings
-    }
 }
 
 struct WidgetSnapshotStore {
@@ -47,8 +40,7 @@ struct WidgetSnapshotStore {
 
     private func validStoredSnapshot() -> WidgetSnapshot? {
         guard let data = defaults?.data(forKey: Self.storageKey),
-              let snapshot = try? JSONDecoder().decode(WidgetSnapshot.self, from: data),
-              snapshot.version == WidgetSnapshot.currentVersion else { return nil }
+              let snapshot = try? JSONDecoder().decode(WidgetSnapshot.self, from: data) else { return nil }
         return snapshot
     }
 }
