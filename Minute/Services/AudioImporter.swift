@@ -39,7 +39,7 @@ enum AudioImporter {
         from sourceURL: URL,
         context: ModelContext
     ) async throws -> Result {
-        let transcription = TranscriptionService()
+        let transcription = TranscriptionEngines.current()
         let scoped = sourceURL.startAccessingSecurityScopedResource()
         defer {
             if scoped {

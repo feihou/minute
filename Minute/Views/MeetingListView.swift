@@ -18,6 +18,10 @@ struct MeetingListView: View {
     /// Only a just-finished recording does — opening an old meeting from the
     /// Home Screen widget must never kick off work the user didn't ask for.
     @State private var destinationAutoSummarizes = false
+    /// Whether the meeting being opened should transcribe on sight — only a
+    /// just-saved recording made while Whisper (which transcribes after
+    /// saving, not live) is the selected engine.
+    @State private var destinationAutoTranscribes = false
     @State private var deleteFailed = false
     @State private var didSweepOrphans = false
     @State private var showingImporter = false
@@ -107,7 +111,11 @@ struct MeetingListView: View {
                 }
             }
             .navigationDestination(item: $meetingDestination) { meeting in
-                MeetingDetailView(meeting: meeting, autoGenerateSummary: destinationAutoSummarizes)
+                MeetingDetailView(
+                    meeting: meeting,
+                    autoGenerateSummary: destinationAutoSummarizes,
+                    autoTranscribe: destinationAutoTranscribes
+                )
             }
             .safeAreaInset(edge: .bottom) {
                 if !meetings.isEmpty {
@@ -182,6 +190,11 @@ struct MeetingListView: View {
                 activeSession = nil
                 if let finished {
                     destinationAutoSummarizes = AppSettings.autoSummarizeEnabled
+                    // Whisper skipped live transcription; transcribe the saved
+                    // file as soon as the meeting screen appears.
+                    destinationAutoTranscribes = AppSettings.liveTranscriptionEnabled
+                        && AppSettings.transcriptionEngine == .whisper
+                        && !finished.hasTranscript
                     meetingDestination = finished
                 }
             }
@@ -382,6 +395,7 @@ struct MeetingListView: View {
         // not to summarize it — a deliberately un-summarized recording must
         // stay that way.
         destinationAutoSummarizes = false
+        destinationAutoTranscribes = false
         meetingDestination = meeting
     }
 
@@ -394,6 +408,9 @@ struct MeetingListView: View {
                 // Reuses the post-recording destination, so Auto-Summarize
                 // kicks in for imports too.
                 destinationAutoSummarizes = AppSettings.autoSummarizeEnabled
+                // Imports transcribe inline with the selected engine, so the
+                // meeting arrives already transcribed (or with a note why not).
+                destinationAutoTranscribes = false
                 meetingDestination = result.meeting
             } catch is CancellationError {
                 // User cancelled — nothing to report.

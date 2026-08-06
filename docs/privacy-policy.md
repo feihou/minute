@@ -2,13 +2,13 @@
 
 **Effective date: August 6, 2026**
 
-Minute is an iPhone app that records in-person meetings, transcribes them live on your device, identifies speakers when you ask it to, and generates meeting notes with on-device AI. This policy explains what data the app handles and what happens to it. The short version: the developer never receives your meeting content; recordings, transcripts, and summaries stay on your iPhone unless you back up or share them, and model setup never uploads them.
+Minute is an iPhone app that records in-person meetings, transcribes them on your device, identifies speakers when you ask it to, and generates meeting notes with on-device AI. This policy explains what data the app handles and what happens to it. The short version: the developer never receives your meeting content; recordings, transcripts, and summaries stay on your iPhone unless you back up or share them, and model setup never uploads them.
 
 Minute is open source under the MIT license. You can verify everything in this policy by reading the code at [github.com/feihou/minute](https://github.com/feihou/minute).
 
 ## What Minute is
 
-Minute records meeting audio with your iPhone's microphone, produces a live transcript using Apple's on-device speech recognition (SpeechTranscriber, iOS 26), optionally identifies speakers using FluidAudio's on-device model, and generates structured summaries — overview, key points, decisions, action items, open questions, and, when speakers have been identified, per-speaker perspectives — using Apple's on-device Apple Intelligence model (FoundationModels). Audio analysis, transcription, speaker identification, and summary generation happen on your iPhone.
+Minute records meeting audio with your iPhone's microphone, produces a transcript on-device — live with Apple's speech recognition (SpeechTranscriber, iOS 26), or shortly after saving if you switch to the optional Whisper engine (WhisperKit) with a Whisper model you download in Settings — optionally identifies speakers using FluidAudio's on-device model, and generates structured summaries — overview, key points, decisions, action items, open questions, and, when speakers have been identified, per-speaker perspectives — using Apple's on-device Apple Intelligence model (FoundationModels). Audio analysis, transcription, speaker identification, and summary generation happen on your iPhone.
 
 ## Data the app handles
 
@@ -29,7 +29,7 @@ If you add the optional Home Screen widget, it displays recent meeting titles, d
 - **No account.** You never sign up, log in, or provide an email address.
 - **No backend.** Minute has no developer-operated server. Your meeting content is never uploaded to the developer, an AI service, FluidAudio, or Hugging Face.
 - **No analytics or telemetry.** The app contains no analytics SDK and sends no usage data, crash reports, or diagnostics.
-- **No tracking by Minute or the developer.** Minute creates no account, advertising identifier, or tracking profile and shares no data with data brokers or ad networks. The speaker-model host receives routine connection metadata under its own privacy policy, as described below.
+- **No tracking by Minute or the developer.** Minute creates no account, advertising identifier, or tracking profile and shares no data with data brokers or ad networks. Model hosts receive routine connection metadata under their own privacy policies, as described below.
 - **No ads.**
 - **No sale of data.** The developer has no user data to sell, and never will under this design.
 
@@ -39,11 +39,13 @@ To identify different speakers in a meeting (diarization), Minute uses the open-
 
 **What is transmitted:** a standard HTTPS download request with no Minute account or app-generated identifier. Like any web request, it includes routine connection metadata such as your IP address and standard HTTP headers, which are visible to Hugging Face as the hosting provider (see [Hugging Face's privacy policy](https://huggingface.co/privacy)).
 
-Hugging Face controls whether and how it retains that routine connection metadata. Minute does not receive those logs and cannot use them to identify or profile you. Review Hugging Face's current policy before using speaker identification if this connection metadata is a concern.
+Hugging Face controls whether and how it retains that routine connection metadata. Minute does not receive those logs and cannot use them to identify or profile you. Review Hugging Face's current policy before using speaker identification or downloading a Whisper model if this connection metadata is a concern.
 
-**What is never transmitted:** your recordings, transcripts, summaries, settings, or any other content from the app. The request contains no account information or identifiers created by Minute — the app has none. It is a file download, nothing more.
+Separately, if you switch the transcription engine to **Whisper** in Settings, Minute downloads the Whisper model you choose (about 150–630 MB depending on the model, via the open-source WhisperKit library) from Hugging Face when you tap Get. The model is cached on your device, and transcription with it runs entirely on your iPhone. The same transmission facts apply as for the speaker model: a standard HTTPS file download with routine connection metadata, and nothing from your meetings.
 
-The speaker-model fetch is Minute's only request to a non-Apple endpoint. When you enable **iCloud Drive Folder**, Minute also asks Apple's iCloud APIs to mirror meeting notes and audio to your own account when the option is enabled and when the app enters the background. Separately, iOS may download Apple's on-device speech-recognition assets when transcription is prepared, and iOS manages any device backup you enable. These Apple-service paths are described next; none sends meeting content to the developer or a model provider.
+**What is never transmitted:** your recordings, transcripts, summaries, settings, or any other content from the app. The requests contain no account information or identifiers created by Minute — the app has none. They are file downloads, nothing more.
+
+These model fetches — the speaker model, and any Whisper models you choose to download — are Minute's only requests to non-Apple endpoints. When you enable **iCloud Drive Folder**, Minute also asks Apple's iCloud APIs to mirror meeting notes and audio to your own account when the option is enabled and when the app enters the background. Separately, iOS may download Apple's on-device speech-recognition assets when transcription is prepared, and iOS manages any device backup you enable. These Apple-service paths are described next; none sends meeting content to the developer or a model provider.
 
 ## Optional iCloud features (off by default)
 
@@ -59,7 +61,7 @@ The **iCloud Backup** toggle controls Minute's meeting store, recordings, and wi
 ## Permissions
 
 - **Microphone.** Required to record meetings. Minute asks for permission before your first recording and records only when you explicitly start a recording. You can revoke this at any time in iOS Settings.
-- **Speech recognition.** Transcription uses Apple's on-device speech framework. Audio is processed locally; it is not sent to Apple's servers for recognition.
+- **Speech recognition.** By default, transcription uses Apple's on-device speech framework. Audio is processed locally; it is not sent to Apple's servers for recognition. With the optional Whisper engine, transcription instead uses a Whisper model stored on your device — audio is likewise processed locally and never uploaded.
 
 A reminder that is your responsibility, not a data practice of the app: recording laws differ by region. Always tell everyone in the room before recording.
 

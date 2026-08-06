@@ -97,7 +97,7 @@ final class MeetingJobs {
     @discardableResult
     func retranscribe(_ meeting: Meeting, audioAt url: URL) -> Task<Void, Never>? {
         start(.transcription, for: meeting) {
-            let transcription = TranscriptionService()
+            let transcription = TranscriptionEngines.current()
             await transcription.prepare()
             if case .unavailable(let message) = transcription.availability {
                 throw JobMessage(message: message)
@@ -117,8 +117,13 @@ final class MeetingJobs {
             // has no speech". Replacing a good transcript with it destroys the
             // only copy the user has.
             guard !segments.isEmpty || !meeting.hasTranscript else {
+                // Whisper auto-detects the language, so the "device language"
+                // hint only applies to Apple Speech.
+                let hint = AppSettings.transcriptionEngine == .appleSpeech
+                    ? " Check that the iPhone's language matches the language spoken in this meeting."
+                    : ""
                 throw JobMessage(
-                    message: "Re-transcription produced no text, so the existing transcript was kept. Check that the iPhone's language matches the language spoken in this meeting."
+                    message: "Re-transcription produced no text, so the existing transcript was kept." + hint
                 )
             }
             meeting.segments = segments
