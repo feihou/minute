@@ -29,7 +29,7 @@ If you add the optional Home Screen widget, it displays recent meeting titles, d
 - **No account.** You never sign up, log in, or provide an email address.
 - **No backend.** Minute has no developer-operated server. Your meeting content is never uploaded to the developer, an AI service, FluidAudio, or Hugging Face.
 - **No analytics or telemetry.** The app contains no analytics SDK and sends no usage data, crash reports, or diagnostics.
-- **No tracking.** No identifiers are collected, no profiles are built, and no data is shared with data brokers or ad networks.
+- **No tracking by Minute or the developer.** Minute creates no account, advertising identifier, or tracking profile and shares no data with data brokers or ad networks. The speaker-model host receives routine connection metadata under its own privacy policy, as described below.
 - **No ads.**
 - **No sale of data.** The developer has no user data to sell, and never will under this design.
 
@@ -38,6 +38,8 @@ If you add the optional Home Screen widget, it displays recent meeting titles, d
 To identify different speakers in a meeting (diarization), Minute uses the open-source FluidAudio library, which runs entirely on-device. The first time this feature is prepared, FluidAudio downloads its CoreML model files (about 22 MB) from Hugging Face, a public model-hosting service. The models are then cached on your device.
 
 **What is transmitted:** a standard HTTPS download request with no Minute account or app-generated identifier. Like any web request, it includes routine connection metadata such as your IP address and standard HTTP headers, which are visible to Hugging Face as the hosting provider (see [Hugging Face's privacy policy](https://huggingface.co/privacy)).
+
+Hugging Face controls whether and how it retains that routine connection metadata. Minute does not receive those logs and cannot use them to identify or profile you. Review Hugging Face's current policy before using speaker identification if this connection metadata is a concern.
 
 **What is never transmitted:** your recordings, transcripts, summaries, settings, or any other content from the app. The request contains no account information or identifiers created by Minute — the app has none. It is a file download, nothing more.
 
@@ -68,7 +70,7 @@ Your meeting data stays in Minute's local storage unless you back up or share it
 - **Deleting a meeting in the app permanently removes** its audio file, transcript, summary, and database entry from your iPhone. A cleanup pass at app launch also removes any audio files orphaned by a crash.
 - **Delete All Meetings** in Settings removes all meetings and their recordings, transcripts, summaries, and speaker labels. It does not reset app preferences such as Summary Context, audio quality, template/language, or backup choices; you can edit or clear those settings separately.
 - **Deleting the app** removes all of its local data, as with any iOS app.
-- **iCloud copies are yours to manage.** If you enabled the iCloud Drive folder, deleting a meeting removes Minute's mirrored notes, audio, and marker files on the next enabled sync. Minute preserves any files you added yourself, so that folder may remain. Files left after you turn the option off, and data inside past device backups, are under your control — delete them in the Files app or in your iCloud settings.
+- **iCloud copies are yours to manage.** If you enabled the iCloud Drive folder, deleting a meeting removes files Minute recognizes as its mirrored notes, audio, and markers on the next enabled sync. The folder remains when unrecognized files are present. Recognition is filename-based: during every enabled mirror sync, Minute removes supported audio files whose UUID-only names look like its own but do not match the meeting's current recording. A user-added file matching that pattern can therefore be removed even while the meeting still exists. Keep unrelated files outside generated meeting folders, or rename them, if they must be preserved. Files left after you turn the option off, and data inside past device backups, are under your control — delete them in the Files app or in your iCloud settings.
 
 The developer cannot delete your data for you, because the developer never has it.
 

@@ -199,7 +199,12 @@ struct SettingsView: View {
         } header: {
             Text("Models")
         } footer: {
-            Text("Transcription and summaries use Apple models that run entirely on this iPhone; the transcription model may need a one-time download before first use. Identifying speakers uses a third-party model (FluidAudio) downloaded once from Hugging Face and then cached — that download is the only network request Minute makes, and your recordings are never part of it. Support for custom models may come in a future update.")
+            Text(
+                "Transcription and summaries use Apple models that run entirely on this iPhone; the transcription model may need a one-time download before first use. "
+                + "Identifying speakers uses a third-party model (FluidAudio) downloaded once from Hugging Face and then cached — that download is Minute's only non-Apple request, and your recordings are never part of it. "
+                + "If you enable iCloud backups or the iCloud Drive folder, Apple may also sync meeting copies to your own account. "
+                + "Support for custom models may come in a future update."
+            )
         }
     }
 

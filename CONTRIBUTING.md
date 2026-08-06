@@ -42,12 +42,9 @@ xcodebuild -project Minute.xcodeproj -scheme Minute \
 - `SummarizationIntegrationTests` runs against the **real on-device model** and skips itself where the model is unavailable. Keep its assertions structural (non-flaky) — model output wording is nondeterministic.
 - New logic needs tests. Pure logic (parsers, chunkers, exporters) belongs in `Support/` or `Services/` where it's testable without UI.
 
-To match CI more closely, build first, run unit and UI tests separately, and skip the live Apple Intelligence integration suite on a model-less CI simulator:
+To match CI, run unit and UI tests separately and skip the live Apple Intelligence integration suite on a model-less CI simulator:
 
 ```bash
-xcodebuild build -project Minute.xcodeproj -scheme Minute \
-  -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
-
 xcodebuild test -project Minute.xcodeproj -scheme Minute \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
   -only-testing:MinuteTests \
@@ -74,7 +71,7 @@ GitHub Actions also scan the full history for secrets and require a Conventional
 Every PR must keep these true. They are the product:
 
 1. **No meeting content on the wire except user-chosen copies.** No cloud transcription, cloud LLMs, telemetry, crash reporters, analytics SDKs, or remote content. The existing network paths are narrowly scoped: iOS may fetch Apple's on-device model assets; FluidAudio downloads its speaker model from Hugging Face when speaker identification is first used; and the two off-by-default iCloud options copy data only to the user's own account. None sends meeting content to the developer or a model provider. Any new network behavior needs prior discussion, a privacy review, and matching updates to public disclosures.
-2. **No new data at rest without a delete path.** Anything written to disk must be removed by `MeetingStore.delete` (or the orphan sweep). Deleting a meeting must remove every app-owned byte of it. While iCloud Drive mirroring is enabled, the next sync removes Minute's notes, audio, and marker files for a deleted meeting; folders containing user-added files are preserved, and copies left after the user turns the toggle off are theirs to manage in Files.
+2. **No new data at rest without a delete path.** Anything written to disk must be removed by `MeetingStore.delete` (or the orphan sweep). Deleting a meeting must remove every app-owned byte of it. While iCloud Drive mirroring is enabled, the next sync removes artifacts Minute recognizes as its own and leaves the folder when unrecognized files remain. Ownership is currently inferred from filenames, and every sync removes supported UUID-named audio that does not match the meeting's current recording. Public copy must disclose that a user-added file matching that pattern can be removed during any sync, even while the meeting exists, unless the ownership mechanism changes. Copies left after the user turns the toggle off are theirs to manage in Files.
 3. **AI output stays grounded.** Summarization instructions must forbid invented decisions, owners, deadlines, names, or facts; missing owner/deadline is the literal `"Not specified"`. Don't weaken the instructions or the normalization in `SummarizationService`.
 4. **Recording never depends on optional capabilities.** Transcription and summarization are best-effort extras; audio capture must start fast and survive their absence or failure.
 5. **No new third-party dependencies** without prior discussion in an issue. FluidAudio is the current audited exception for optional offline speaker identification. Auditability, privacy-manifest coverage, licensing, model-host behavior, binary size, and removal strategy are part of any dependency review.

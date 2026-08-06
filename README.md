@@ -9,9 +9,9 @@
 
 Minute records in-person meetings, produces a live transcript with Apple's on-device speech models, and generates structured notes with the on-device Apple Intelligence model. **Recordings, transcripts, and summaries stay on your iPhone by default**; meeting-content copies are created only through the backup or sharing options you choose. There is no account, backend, analytics, or tracking.
 
-| Meeting library | Recording | Meeting notes | Settings |
-|:---:|:---:|:---:|:---:|
-| <img src="docs/app-store/3-library.png" width="200" alt="Searchable meeting library"> | <img src="docs/app-store/1-recording.png" width="200" alt="Recording screen with a live transcript"> | <img src="docs/app-store/2-notes.png" width="200" alt="Structured on-device meeting notes"> | <img src="docs/app-store/4-privacy.png" width="200" alt="Settings for recording, summaries, models, and backup"> |
+| Meeting library | Recording | Meeting notes |
+|:---:|:---:|:---:|
+| <img src="docs/app-store/3-library.png" width="200" alt="Searchable meeting library"> | <img src="docs/app-store/1-recording.png" width="200" alt="Recording screen with a live transcript"> | <img src="docs/app-store/2-notes.png" width="200" alt="Structured on-device meeting notes"> |
 
 ## Why
 
@@ -55,7 +55,7 @@ Meeting audio is some of the most sensitive data on your phone. Most meeting-not
 | When it updates | On iOS's normal device-backup schedule | When you enable it, and again when the app enters the background |
 | Getting data back | Only by restoring the whole iPhone from that backup | Open or copy any file directly, on iPhone or Mac |
 
-Each device mirrors into its own subfolder, so two iPhones on one Apple ID never overwrite each other. Deleting a meeting removes Minute's mirrored notes, audio, and markers on the next enabled sync. If you added other files to that meeting folder, Minute preserves them and the folder; files left after you turn the toggle off are yours to manage in Files.
+Each device mirrors into its own subfolder, so two iPhones on one Apple ID never overwrite each other. Deleting a meeting removes files Minute recognizes as its mirrored notes, audio, and markers on the next enabled sync. The folder remains when other, unrecognized files are present. During every enabled mirror sync, Minute also removes supported audio files whose UUID-only names look like its own but do not match the meeting's current recording. Keep extra files outside these generated meeting folders—or avoid UUID-only audio filenames—because such files can be removed even while the meeting still exists. Files left after you turn the toggle off are yours to manage in Files.
 
 ## Requirements
 
