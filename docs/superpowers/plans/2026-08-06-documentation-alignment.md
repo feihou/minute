@@ -63,7 +63,7 @@ Explain that Xcode resolves the pinned FluidAudio Swift package automatically; i
 
 - [x] **Step 2: Document local and CI verification**
 
-Add the generic simulator build, unit/UI test split, integration-test exception, strict SwiftLint command, secret scan, and Conventional Commit PR-title gate.
+Document the CI unit/UI test split, integration-test exception, strict SwiftLint command, secret scan, and Conventional Commit PR-title gate; keep the generic simulator build clearly labeled as an optional additional local check.
 
 - [x] **Step 3: Update repository templates and comments**
 
@@ -90,7 +90,7 @@ Describe the Apple system speech-asset download separately from the FluidAudio/H
 
 - [x] **Step 2: Correct backup and deletion scope**
 
-Explain that deleting a meeting removes app-owned mirror artifacts on the next enabled sync, preserves user-added files/folders, and that Delete All Meetings does not erase app preferences or summary context.
+Explain that deleting a meeting removes filename-recognized mirror artifacts on the next enabled sync, document the UUID-audio ownership caveat, and clarify that Delete All Meetings does not erase app preferences or summary context.
 
 - [x] **Step 3: Disclose the summary-context backup limitation**
 
@@ -104,7 +104,7 @@ Check every local link target and every privacy claim against the cited implemen
 
 **Files:**
 - Modify: `docs/app-store/metadata.md`
-- Modify: `docs/app-store/4-privacy.png`
+- Remove: `docs/app-store/4-privacy.png` after review confirmed that its captured Summary Context helper overstated the backup guarantee
 
 **Interfaces:**
 - Consumes: the aligned README/privacy policy, current UI behavior, Info.plist, entitlements, package lock, and current official Apple guidance.
@@ -126,9 +126,9 @@ Mark pricing, rating outcome, support URL acceptance, export classification, and
 
 Verify app name, subtitle, promotional text, description, and keyword character counts after edits.
 
-- [x] **Step 5: Refresh the privacy screenshot**
+- [x] **Step 5: Retire the inaccurate privacy screenshot**
 
-Replace the broad “No server” marketing line with copy that accurately distinguishes on-device meeting processing from model downloads and optional iCloud backup, then inspect the rendered image.
+Do not publish a Settings capture that says Summary Context “Stays on device” while `UserDefaults` can participate in device backup. Keep the asset out of the release set until the UI/storage behavior is corrected or a truthful replacement is captured.
 
 ### Task 5: Integrated verification and review
 

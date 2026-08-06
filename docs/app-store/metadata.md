@@ -84,7 +84,7 @@ Minute brings private meeting notes to your iPhone:
 - Speaker perspectives are conditional: they appear only after the transcript has speaker labels.
 - Imported audio can be saved without a transcript when Apple Speech is unavailable or transcription fails.
 - Summary Context and other `UserDefaults` preferences can participate in the user's normal device backup independently of Minute's in-app meeting-data backup toggle; the privacy policy discloses this current limitation.
-- Visually inspect all four files in `docs/app-store/` at release time. The privacy screenshot deliberately says “On-device processing. Optional iCloud backup.” instead of “No server,” because model setup uses Apple and Hugging Face hosts even though meeting processing remains local.
+- Visually inspect the three numbered screenshots in `docs/app-store/` at release time. A fourth privacy screenshot is intentionally withheld: the current Settings UI says Summary Context “Stays on device,” while ordinary `UserDefaults` can participate in device backup. Add a replacement only after the UI/storage behavior is corrected or the inaccurate helper is outside the captured frame.
 - **Release blocker:** add an easily accessible Privacy Policy link inside the app. The current Settings screen has no policy link, while Apple's App Review Guidelines require one in both App Store Connect metadata and the app.
 
 ---
