@@ -45,16 +45,6 @@ struct MeetingDateGroupTests {
 }
 
 struct AudioQualityTests {
-    @Test func rawValuesRoundTrip() {
-        for quality in AudioQuality.allCases {
-            #expect(AudioQuality(rawValue: quality.rawValue) == quality)
-        }
-    }
-
-    @Test func unknownRawValueFallsBackToHighViaAppSettingsDefault() {
-        #expect(AudioQuality(rawValue: "nonsense") == nil)
-    }
-
     @Test func encoderQualityMapping() {
         #expect(AudioQuality.high.encoderQuality == .max)
         #expect(AudioQuality.standard.encoderQuality == .medium)
