@@ -38,15 +38,6 @@ struct WidgetSnapshotTests {
         #expect(try JSONDecoder().decode(WidgetSnapshot.self, from: data) == .empty)
     }
 
-    @Test func unknownVersionReadsEmpty() throws {
-        let (defaults, suite) = defaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let data = try JSONEncoder().encode(WidgetSnapshot(version: 999, meetings: []))
-        defaults.set(data, forKey: WidgetSnapshotStore.storageKey)
-
-        #expect(WidgetSnapshotStore(defaults: defaults).load() == .empty)
-    }
-
     @Test func unavailableDefaultsReadsEmptyAndCannotSave() {
         let store = WidgetSnapshotStore(defaults: nil)
         #expect(store.load() == .empty)

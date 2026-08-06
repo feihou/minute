@@ -74,13 +74,4 @@ final class Meeting {
         }
         return "Speaker \(index + 1)"
     }
-
-    /// Speaker indices that appear in the transcript, in first-spoken order.
-    var speakerIndices: [Int] {
-        var seen = Set<Int>()
-        return segments.compactMap { segment in
-            guard let speaker = segment.speaker, seen.insert(speaker).inserted else { return nil }
-            return speaker
-        }
-    }
 }

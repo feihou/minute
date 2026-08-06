@@ -80,14 +80,11 @@ struct SpeakerNamingTests {
         #expect(lines[2].hasSuffix("] unlabeled"))
     }
 
-    @Test func speakerIndicesComeInFirstSpokenOrder() {
+    @Test func hasSpeakersReflectsLabeledSegments() {
         let meeting = Meeting(title: "T", segments: [
             TranscriptSegment(text: "a", start: 0, end: 1, speaker: 1),
-            TranscriptSegment(text: "b", start: 1, end: 2, speaker: 0),
-            TranscriptSegment(text: "c", start: 2, end: 3, speaker: 1),
             TranscriptSegment(text: "d", start: 3, end: 4),
         ])
-        #expect(meeting.speakerIndices == [1, 0])
         #expect(meeting.hasSpeakers)
         #expect(!Meeting(title: "empty").hasSpeakers)
     }
