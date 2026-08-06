@@ -10,16 +10,35 @@ enum TranscriptionAvailability: Equatable {
     case unavailable(String)
 }
 
-/// The file-transcription contract the import, re-transcribe, and
-/// after-save paths talk to, instead of a concrete engine. Live streaming
-/// during recording remains Apple-only for now — Whisper transcribes the
-/// finished file instead.
+/// The transcription contract the recording, import, and re-transcribe paths
+/// talk to, instead of a concrete engine. Live sessions stream buffers in and
+/// observable text out; the file path transcribes in one throwing call.
 @MainActor
 protocol TranscriptionEngine: AnyObject {
     var availability: TranscriptionAvailability { get }
 
+    /// In-progress (not yet finalized) text for the live transcript view.
+    var volatileText: String { get }
+    /// Finalized transcript segments in audio order.
+    var segments: [TranscriptSegment] { get }
+    /// Seconds of audio already recorded before the first buffer reached the
+    /// engine (it can attach late); added to every live segment timestamp so
+    /// transcript taps seek the right spot. Set before buffers flow.
+    var timestampOffset: TimeInterval { get set }
+
     /// Checks device/model support and loads (or downloads) what's needed.
     func prepare() async
+
+    /// Starts a live session and returns the closure the recorder calls with
+    /// each audio buffer, or nil when transcription can't run (never throws —
+    /// the recording must not depend on it).
+    func start(inputFormat: AVAudioFormat) async -> (@Sendable (AVAudioPCMBuffer) -> Void)?
+
+    /// Flushes remaining audio, waits for final results, and returns them.
+    func finish() async -> [TranscriptSegment]
+
+    /// Abandons the live session without waiting for results.
+    func cancel() async
 
     /// Transcribes a whole audio file. ANY failure throws — callers replacing
     /// an existing transcript must never mistake a partial result for a

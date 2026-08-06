@@ -8,7 +8,7 @@ Minute is open source under the MIT license. You can verify everything in this p
 
 ## What Minute is
 
-Minute records meeting audio with your iPhone's microphone, produces a transcript on-device — live with Apple's speech recognition (SpeechTranscriber, iOS 26), or shortly after saving if you switch to the optional Whisper engine (WhisperKit) with a Whisper model you download in Settings — optionally identifies speakers using FluidAudio's on-device model, and generates structured summaries — overview, key points, decisions, action items, open questions, and, when speakers have been identified, per-speaker perspectives — using Apple's on-device Apple Intelligence model (FoundationModels). Audio analysis, transcription, speaker identification, and summary generation happen on your iPhone.
+Minute records meeting audio with your iPhone's microphone, produces a live transcript on-device — with Apple's speech recognition (SpeechTranscriber, iOS 26) or, optionally, a Whisper model (WhisperKit) you download in Settings — optionally identifies speakers using FluidAudio's on-device model, and generates structured summaries — overview, key points, decisions, action items, open questions, and, when speakers have been identified, per-speaker perspectives — using Apple's on-device Apple Intelligence model (FoundationModels). Audio analysis, transcription, speaker identification, and summary generation happen on your iPhone.
 
 ## Data the app handles
 

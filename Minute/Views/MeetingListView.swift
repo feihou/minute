@@ -18,10 +18,6 @@ struct MeetingListView: View {
     /// Only a just-finished recording does — opening an old meeting from the
     /// Home Screen widget must never kick off work the user didn't ask for.
     @State private var destinationAutoSummarizes = false
-    /// Whether the meeting being opened should transcribe on sight — only a
-    /// just-saved recording made while Whisper (which transcribes after
-    /// saving, not live) is the selected engine.
-    @State private var destinationAutoTranscribes = false
     @State private var deleteFailed = false
     @State private var didSweepOrphans = false
     @State private var showingImporter = false
@@ -111,11 +107,7 @@ struct MeetingListView: View {
                 }
             }
             .navigationDestination(item: $meetingDestination) { meeting in
-                MeetingDetailView(
-                    meeting: meeting,
-                    autoGenerateSummary: destinationAutoSummarizes,
-                    autoTranscribe: destinationAutoTranscribes
-                )
+                MeetingDetailView(meeting: meeting, autoGenerateSummary: destinationAutoSummarizes)
             }
             .safeAreaInset(edge: .bottom) {
                 if !meetings.isEmpty {
@@ -160,7 +152,10 @@ struct MeetingListView: View {
             }
             if arguments.contains("-DemoOpenRecorder") {
                 let session = RecordingSession(title: "Weekly Product Sync")
-                session.transcription.stageDemo(
+                // Staging is a hook on the Apple engine only; the screenshot
+                // simulator always runs with default settings, so the cast
+                // holds there and staging is silently skipped elsewhere.
+                (session.transcription as? TranscriptionService)?.stageDemo(
                     segments: [
                         TranscriptSegment(text: "Okay, quick agenda: onboarding metrics, the offline spike, and launch dates.", start: 2, end: 8),
                         TranscriptSegment(text: "Completion in the beta cohort is up eighteen percent since the redesign.", start: 9, end: 15),
@@ -190,11 +185,6 @@ struct MeetingListView: View {
                 activeSession = nil
                 if let finished {
                     destinationAutoSummarizes = AppSettings.autoSummarizeEnabled
-                    // Whisper skipped live transcription; transcribe the saved
-                    // file as soon as the meeting screen appears.
-                    destinationAutoTranscribes = AppSettings.liveTranscriptionEnabled
-                        && AppSettings.transcriptionEngine == .whisper
-                        && !finished.hasTranscript
                     meetingDestination = finished
                 }
             }
@@ -395,7 +385,6 @@ struct MeetingListView: View {
         // not to summarize it — a deliberately un-summarized recording must
         // stay that way.
         destinationAutoSummarizes = false
-        destinationAutoTranscribes = false
         meetingDestination = meeting
     }
 
@@ -408,9 +397,6 @@ struct MeetingListView: View {
                 // Reuses the post-recording destination, so Auto-Summarize
                 // kicks in for imports too.
                 destinationAutoSummarizes = AppSettings.autoSummarizeEnabled
-                // Imports transcribe inline with the selected engine, so the
-                // meeting arrives already transcribed (or with a note why not).
-                destinationAutoTranscribes = false
                 meetingDestination = result.meeting
             } catch is CancellationError {
                 // User cancelled — nothing to report.

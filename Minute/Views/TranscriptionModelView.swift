@@ -71,7 +71,7 @@ struct TranscriptionModelView: View {
         } header: {
             Text("Engine")
         } footer: {
-            Text("Apple Speech shows the transcript live while you record, in this iPhone's language. Whisper transcribes right after you save and detects the spoken language automatically — English, Chinese, Spanish, and about 100 more. Both run entirely on this iPhone.")
+            Text("Apple Speech transcribes in this iPhone's language. Whisper detects the spoken language automatically — English, Chinese, Spanish, and about 100 more — and uses more battery while recording. Both transcribe live, entirely on this iPhone.")
         }
     }
 
@@ -91,7 +91,7 @@ struct TranscriptionModelView: View {
         } header: {
             Text("Whisper Model")
         } footer: {
-            Text("Models are downloaded once from Hugging Face and stored on this iPhone — your recordings are never uploaded. Larger models are more accurate but transcribe more slowly.")
+            Text("Models are downloaded once from Hugging Face and stored on this iPhone — your recordings are never uploaded. Larger models are more accurate but slower, and use more battery during recording.")
         }
     }
 

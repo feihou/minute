@@ -108,19 +108,27 @@ enum WhisperModelStore {
     }
 }
 
-/// File transcription on a user-downloaded Whisper model (WhisperKit).
-/// Covers the import, re-transcribe, and after-save paths; the spoken
-/// language is auto-detected, so a meeting in Chinese transcribes correctly
-/// on an English-language iPhone.
+/// Transcription on a user-downloaded Whisper model (WhisperKit): live
+/// streaming during recording plus the import and re-transcribe file paths.
+/// The spoken language is auto-detected, so a meeting in Chinese transcribes
+/// correctly on an English-language iPhone.
 @MainActor
 @Observable
 final class WhisperTranscriptionService: TranscriptionEngine {
     private static let logger = Logger(subsystem: "com.minuteapp.Minute", category: "WhisperTranscription")
 
     private(set) var availability: TranscriptionAvailability = .unknown
+    /// In-progress (not yet finalized) text for the live transcript view.
+    private(set) var volatileText: String = ""
+    /// Finalized transcript segments in audio order.
+    private(set) var segments: [TranscriptSegment] = []
+    /// See TranscriptionEngine — set before buffers flow.
+    var timestampOffset: TimeInterval = 0
 
     private let variant = AppSettings.whisperModel
     private var whisperKit: WhisperKit?
+    private var liveFeed: WhisperLiveFeed?
+    private var liveTask: Task<Void, Never>?
 
     /// Loads the selected model. Never downloads — the user downloads models
     /// explicitly in Settings, so a big Hugging Face fetch can't start as a
@@ -154,6 +162,187 @@ final class WhisperTranscriptionService: TranscriptionEngine {
         }
     }
 
+    // MARK: - Live session
+
+    /// Starts a live streaming session: buffers from the recorder feed a
+    /// lock-guarded sample store, and a decode loop turns the growing tail
+    /// into confirmed segments plus a volatile hypothesis.
+    func start(inputFormat: AVAudioFormat) async -> (@Sendable (AVAudioPCMBuffer) -> Void)? {
+        guard availability == .available, let whisperKit else { return nil }
+
+        segments = []
+        volatileText = ""
+
+        guard let whisperFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: Double(WhisperKit.sampleRate),
+            channels: 1,
+            interleaved: false
+        ), let converter = AudioBufferConverter(from: inputFormat, to: whisperFormat) else {
+            availability = .unavailable("Transcription can't process this microphone's audio format. Recording still works.")
+            return nil
+        }
+
+        let feed = WhisperLiveFeed()
+        liveFeed = feed
+        // weak: the task must not keep a dropped service (and its loaded
+        // model) alive — matching TranscriptionService's resultsTask.
+        liveTask = Task { [weak self] in
+            await self?.runLiveLoop(feed: feed, whisperKit: whisperKit)
+        }
+
+        return { @Sendable buffer in
+            guard let converted = converter.convert(buffer),
+                  let channel = converted.floatChannelData else { return }
+            feed.append(Array(UnsafeBufferPointer(start: channel[0], count: Int(converted.frameLength))))
+        }
+    }
+
+    /// Flushes remaining audio (one final decode pass) and returns the
+    /// complete segment list.
+    func finish() async -> [TranscriptSegment] {
+        liveFeed?.stop()
+        await liveTask?.value
+        liveTask = nil
+        liveFeed = nil
+        // The final pass normally clears this; only its failure path leaves
+        // a hypothesis behind, kept rather than lost.
+        promoteVolatileText()
+        return segments
+    }
+
+    /// Abandons the session without waiting for results (user discarded).
+    /// Deliberately does NOT await the loop: an in-flight decode can't be
+    /// preempted mid-window (WhisperKit only checks cancellation between
+    /// stages), and Discard must not freeze the screen for those seconds.
+    /// The orphaned pass observes the cancellation and exits without
+    /// touching state.
+    func cancel() async {
+        liveFeed?.stop()
+        liveTask?.cancel()
+        liveTask = nil
+        liveFeed = nil
+        volatileText = ""
+        segments = []
+    }
+
+    /// The streaming decode loop. Runs as a MainActor task, but the heavy
+    /// whisperKit.transcribe calls are async and execute off the main thread;
+    /// only cheap bookkeeping between awaits touches main. Mirrors WhisperKit's
+    /// AudioStreamTranscriber algorithm (decode the unconfirmed tail, confirm
+    /// all but the trailing segments) without its microphone ownership.
+    private func runLiveLoop(feed: WhisperLiveFeed, whisperKit: WhisperKit) async {
+        // Absolute sample count (purged + kept) already decoded.
+        var decodedSampleCount = 0
+        // Recording-clock end of the last appended segment. The monotonic
+        // guard below (mirrored from WhisperKit's AudioStreamTranscriber)
+        // refuses non-advancing "confirmations" — a hallucinated near-zero
+        // timestamp would otherwise re-confirm the same audio every pass,
+        // duplicating transcript text.
+        var lastConfirmedEnd: TimeInterval = -1
+        // Pinned after the first pass so live text stops flickering between
+        // per-window detection hypotheses; nil means "detect on this pass".
+        var pinnedLanguage: String?
+
+        while !feed.isStopped, !Task.isCancelled {
+            let snapshot = feed.snapshot()
+            let totalSamples = snapshot.droppedSamples + snapshot.samples.count
+            let newSeconds = Float(totalSamples - decodedSampleCount) / Float(WhisperKit.sampleRate)
+            // Decode only once at least a second of new audio arrived, and
+            // only when it contains voice — otherwise idle cheaply.
+            if newSeconds < 1 {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                continue
+            }
+            if !AudioProcessor.isVoiceDetected(
+                in: snapshot.relativeEnergies,
+                nextBufferInSeconds: newSeconds,
+                silenceThreshold: 0.3
+            ) {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                continue
+            }
+
+            decodedSampleCount = totalSamples
+            let timeBase = TimeInterval(snapshot.droppedSamples) / TimeInterval(WhisperKit.sampleRate) + timestampOffset
+            do {
+                let results = try await whisperKit.transcribe(
+                    audioArray: snapshot.samples,
+                    decodeOptions: liveOptions(language: pinnedLanguage)
+                )
+                // A pass that raced finish() still applies its confirmations
+                // below, so the final pass only re-decodes the shrunken tail
+                // instead of repeating this whole pass's work.
+                guard !Task.isCancelled else { break }
+                if pinnedLanguage == nil {
+                    pinnedLanguage = results.first?.language
+                }
+                let mapped = Self.mapSegments(results, timeBase: timeBase)
+                let split = Self.splitForConfirmation(mapped, keepingLast: 2)
+                if let lastConfirmed = split.confirmed.last, lastConfirmed.end > lastConfirmedEnd {
+                    lastConfirmedEnd = lastConfirmed.end
+                    segments.append(contentsOf: split.confirmed)
+                    // Purge audio the loop will never decode again, keeping
+                    // memory and per-pass copy cost bounded to the tail.
+                    // ponytail: an unconfirmable stretch re-decodes its whole
+                    // tail each pass; whisper's ~30s window breaks bound that
+                    // tail in practice, so no explicit cap.
+                    let cutoff = Int((lastConfirmed.end - timestampOffset) * TimeInterval(WhisperKit.sampleRate))
+                    feed.purge(throughAbsoluteSample: cutoff)
+                    volatileText = split.unconfirmed.map(\.text).joined(separator: " ")
+                } else {
+                    // Nothing safely confirmable — keep the whole hypothesis
+                    // visible and try again on the next pass.
+                    volatileText = mapped.map(\.text).joined(separator: " ")
+                }
+            } catch is CancellationError {
+                break
+            } catch {
+                Self.logger.error("Live whisper pass failed: \(error.localizedDescription)")
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
+
+        // One final pass over the remaining tail so the last words aren't
+        // lost to the one-second/voice gates. Cancellation (discard) skips it.
+        guard !Task.isCancelled else { return }
+        let snapshot = feed.snapshot()
+        guard !snapshot.samples.isEmpty else { return }
+        let timeBase = TimeInterval(snapshot.droppedSamples) / TimeInterval(WhisperKit.sampleRate) + timestampOffset
+        do {
+            let results = try await whisperKit.transcribe(
+                audioArray: snapshot.samples,
+                decodeOptions: liveOptions(language: pinnedLanguage)
+            )
+            segments.append(contentsOf: Self.mapSegments(results, timeBase: timeBase))
+            volatileText = ""
+        } catch {
+            // Keep the best hypothesis rather than losing the tail.
+            Self.logger.error("Final whisper pass failed: \(error.localizedDescription)")
+            promoteVolatileText()
+        }
+    }
+
+    /// detectLanguage must be explicit: it defaults to !usePrefillPrompt,
+    /// i.e. false, and then a nil language silently decodes as English.
+    private func liveOptions(language: String?) -> DecodingOptions {
+        DecodingOptions(
+            task: .transcribe,
+            language: language,
+            detectLanguage: language == nil,
+            skipSpecialTokens: true
+        )
+    }
+
+    private func promoteVolatileText() {
+        guard !volatileText.isEmpty else { return }
+        let lastEnd = segments.last?.end ?? timestampOffset
+        segments.append(TranscriptSegment(text: volatileText, start: lastEnd, end: lastEnd))
+        volatileText = ""
+    }
+
+    // MARK: - File transcription
+
     func transcribe(file: AVAudioFile) async throws -> [TranscriptSegment] {
         guard availability == .available, let whisperKit else {
             throw CocoaError(.featureUnsupported)
@@ -180,17 +369,113 @@ final class WhisperTranscriptionService: TranscriptionEngine {
         )
         try Task.checkCancellation()
 
-        return results
+        return Self.mapSegments(results, timeBase: 0)
+    }
+
+    // MARK: - Segment mapping
+
+    /// Maps WhisperKit segments to TranscriptSegments with absolute
+    /// timestamps; timeBase covers purged audio and the recording offset.
+    private static func mapSegments(_ results: [TranscriptionResult], timeBase: TimeInterval) -> [TranscriptSegment] {
+        results
             .flatMap(\.segments)
             .compactMap { segment in
                 let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { return nil }
                 return TranscriptSegment(
                     text: text,
-                    start: TimeInterval(segment.start),
-                    end: TimeInterval(segment.end)
+                    start: timeBase + TimeInterval(segment.start),
+                    end: timeBase + TimeInterval(segment.end)
                 )
             }
             .sorted { $0.start < $1.start }
+    }
+
+    /// Splits a live pass's segments into ones stable enough to show as final
+    /// and the trailing ones whisper may still revise on the next pass.
+    static func splitForConfirmation(
+        _ segments: [TranscriptSegment],
+        keepingLast keep: Int
+    ) -> (confirmed: [TranscriptSegment], unconfirmed: [TranscriptSegment]) {
+        guard segments.count > keep else { return ([], segments) }
+        return (Array(segments.prefix(segments.count - keep)), Array(segments.suffix(keep)))
+    }
+}
+
+/// Lock-guarded 16 kHz mono sample store bridging the audio tap thread
+/// (writes) and the decode loop (reads). Confirmed audio is purged, so the
+/// buffer only ever holds the unconfirmed tail of the recording.
+final class WhisperLiveFeed: @unchecked Sendable {
+    struct Snapshot {
+        let samples: [Float]
+        /// Samples already purged — the absolute position of samples[0].
+        let droppedSamples: Int
+        let relativeEnergies: [Float]
+    }
+
+    /// The silence baseline looks back this many chunks (~2 s of audio).
+    private static let averageEnergyWindow = 20
+    /// The VAD gate only ever inspects the recent window; older entries are
+    /// dead weight.
+    private static let relativeEnergyCap = 200
+
+    private let lock = NSLock()
+    private var samples: ContiguousArray<Float> = []
+    private var droppedSamples = 0
+    private var relativeEnergies: [Float] = []
+    private var averageEnergies: [Float] = []
+    private var stopped = false
+
+    func append(_ chunk: [Float]) {
+        guard !chunk.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        // ponytail: the VAD gate assumes one energy entry ≈ 100 ms; tap
+        // chunks are ~85 ms after resampling, close enough that the gate's
+        // lookback window is only approximately calibrated.
+        let baseline = averageEnergies.isEmpty
+            ? nil
+            : averageEnergies.reduce(Float.infinity, Swift.min)
+        relativeEnergies.append(AudioProcessor.calculateRelativeEnergy(of: chunk, relativeTo: baseline))
+        averageEnergies.append(AudioProcessor.calculateAverageEnergy(of: chunk))
+        if averageEnergies.count > Self.averageEnergyWindow {
+            averageEnergies.removeFirst(averageEnergies.count - Self.averageEnergyWindow)
+        }
+        if relativeEnergies.count > Self.relativeEnergyCap {
+            relativeEnergies.removeFirst(relativeEnergies.count - Self.relativeEnergyCap)
+        }
+        samples.append(contentsOf: chunk)
+    }
+
+    func snapshot() -> Snapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return Snapshot(
+            samples: Array(samples),
+            droppedSamples: droppedSamples,
+            relativeEnergies: relativeEnergies
+        )
+    }
+
+    /// Drops samples up to an absolute position (clamped; never past the end).
+    func purge(throughAbsoluteSample cutoff: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        let toDrop = min(max(0, cutoff - droppedSamples), samples.count)
+        guard toDrop > 0 else { return }
+        samples.removeFirst(toDrop)
+        droppedSamples += toDrop
+    }
+
+    var isStopped: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopped
+    }
+
+    func stop() {
+        lock.lock()
+        defer { lock.unlock() }
+        stopped = true
     }
 }

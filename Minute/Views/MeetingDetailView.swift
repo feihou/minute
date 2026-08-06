@@ -11,9 +11,6 @@ struct MeetingDetailView: View {
     /// Kick off summary generation as soon as the view appears (used right
     /// after a recording finishes when Auto-Summarize is on in Settings).
     var autoGenerateSummary = false
-    /// Set when a just-saved recording arrives without a transcript because
-    /// Whisper (after-save transcription) is the selected engine.
-    var autoTranscribe = false
 
     private enum Tab {
         case summary
@@ -186,15 +183,6 @@ struct MeetingDetailView: View {
             Text("Used on this speaker's transcript lines and in newly generated summaries.")
         }
         .task {
-            // Whisper's after-save transcription runs first so Auto-Summarize
-            // below has a transcript to work with.
-            if autoTranscribe, !meeting.hasTranscript,
-               let url = MeetingStore.audioURL(for: meeting) {
-                selectedTab = .transcript
-                if let job = jobs.retranscribe(meeting, audioAt: url) {
-                    await job.value
-                }
-            }
             guard autoGenerateSummary, meeting.summary == nil, meeting.hasTranscript,
                   SummarizationService.availabilityMessage == nil else { return }
             generateSummary()
