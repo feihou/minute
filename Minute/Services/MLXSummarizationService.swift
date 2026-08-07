@@ -397,7 +397,13 @@ final class MLXSummarizationService: SummarizationEngine {
             """
         // A fresh session per chunk keeps each request small and independent.
         let reply = try await session(container).respond(to: prompt)
-        return try Self.decode(reply)
+        let notes: LocalChunkNotes = try Self.decode(reply)
+        // Counted as a skipped part by the caller — silently accepting it
+        // would drop this chunk's content with no accounting at all.
+        guard !notes.ignoredSchema else {
+            throw SummarizerError.generationFailed(Self.unreadableMessage)
+        }
+        return notes
     }
 
     /// Keeps the merge prompt inside the local models' context windows even
@@ -472,7 +478,13 @@ final class MLXSummarizationService: SummarizationEngine {
             \(Self.rendered(notes))
             """
         let reply = try await session(container).respond(to: prompt)
-        return try Self.decode(reply)
+        let condensed: LocalChunkNotes = try Self.decode(reply)
+        // A schema-ignoring condense reply would silently drop the whole
+        // group's content — fail the summary instead.
+        guard !condensed.ignoredSchema else {
+            throw SummarizerError.generationFailed(Self.unreadableMessage)
+        }
+        return condensed
     }
 
     private static func rendered(_ notes: [LocalChunkNotes]) -> String {
@@ -599,6 +611,15 @@ struct LocalChunkNotes: Codable {
     var actionItems: [LocalActionItem]?
     var openQuestions: [String]?
     var speakerPerspectives: [LocalPerspective]?
+
+    /// True when NO expected key was present at all ("{}", or only
+    /// unrecognized keys) — the model ignored the schema. Distinct from
+    /// explicitly empty arrays, which are an honest "this chunk had
+    /// nothing noteworthy" and stay valid.
+    var ignoredSchema: Bool {
+        keyPoints == nil && decisions == nil && actionItems == nil
+            && openQuestions == nil && speakerPerspectives == nil
+    }
 }
 
 struct LocalSummaryDraft: Codable {
