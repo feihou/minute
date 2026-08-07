@@ -163,7 +163,7 @@ struct SettingsView: View {
         } header: {
             Text("Recording")
         } footer: {
-            Text("\(selectedQuality.label): \(selectedQuality.detail). Settings apply to new recordings. Auto-Summarize generates the summary on device right after a meeting is saved — it needs Live Transcription to produce the transcript it summarizes. With the Whisper engine, Live Transcription instead controls whether a recording is transcribed right after you save it. The template controls how notes are organized (e.g. Yesterday/Today/Blockers for standups).")
+            Text("\(selectedQuality.label): \(selectedQuality.detail). Settings apply to new recordings. Auto-Summarize generates the summary on device right after a meeting is saved — it needs Live Transcription to produce the transcript it summarizes. The template controls how notes are organized (e.g. Yesterday/Today/Blockers for standups).")
         }
     }
 

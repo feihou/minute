@@ -114,7 +114,7 @@ enum TranscriptionEngineChoice: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .appleSpeech: "Built into iOS. Transcribes live while you record, in this iPhone's language."
-        case .whisper: "Open model by OpenAI. Transcribes after you save and auto-detects the spoken language."
+        case .whisper: "Open model by OpenAI. Transcribes live, auto-detects the spoken language, and uses more battery."
         }
     }
 }

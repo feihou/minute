@@ -181,18 +181,7 @@ struct RecordingView: View {
     }
 
     @ViewBuilder private var transcriptArea: some View {
-        if session.isTranscriptionEnabled, session.isTranscriptionDeferred {
-            VStack(spacing: 8) {
-                Image(systemName: "text.badge.checkmark")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
-                Text("Whisper transcribes after you finish — the transcript appears on the meeting page shortly after you save, in the language spoken.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if !session.isTranscriptionEnabled {
+        if !session.isTranscriptionEnabled {
             VStack(spacing: 8) {
                 Image(systemName: "waveform.slash")
                     .font(.title2)

@@ -23,13 +23,12 @@ final class RecordingSession: Identifiable {
     private static let logger = Logger(subsystem: "com.minuteapp.Minute", category: "RecordingSession")
 
     let recorder = AudioRecorder()
-    let transcription = TranscriptionService()
+    /// The engine selected in Settings (Apple Speech or Whisper), captured at
+    /// session creation like the settings below.
+    let transcription: any TranscriptionEngine = TranscriptionEngines.current()
     /// Captured when the session is created so a settings change mid-recording
     /// can't half-apply.
     let isTranscriptionEnabled = AppSettings.liveTranscriptionEnabled
-    /// Whisper transcribes the finished file after saving instead of live —
-    /// the meeting screen runs it once the recording lands there.
-    let isTranscriptionDeferred = AppSettings.transcriptionEngine == .whisper
 
     private let liveActivity = RecordingLiveActivityController()
 
@@ -118,7 +117,7 @@ final class RecordingSession: Identifiable {
             return
         }
 
-        guard isTranscriptionEnabled, !isTranscriptionDeferred else { return }
+        guard isTranscriptionEnabled else { return }
         transcriptionTask = Task { [weak self] in
             guard let self else { return }
             await self.transcription.prepare()

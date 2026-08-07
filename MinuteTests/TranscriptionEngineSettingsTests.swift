@@ -78,3 +78,37 @@ struct TranscriptionEngineSettingsTests {
         #expect(!WhisperModelStore.isDownloaded("nonexistent-model-variant"))
     }
 }
+
+/// The live loop's confirmation split decides which words are shown as final
+/// versus still-revisable — an off-by-one here duplicates or drops text.
+struct WhisperLiveSplitTests {
+    private func segment(_ index: Int) -> TranscriptSegment {
+        TranscriptSegment(text: "s\(index)", start: TimeInterval(index), end: TimeInterval(index + 1))
+    }
+
+    @MainActor
+    @Test("Fewer segments than the hold-back count stay unconfirmed")
+    func fewSegmentsStayUnconfirmed() {
+        let segments = [segment(0), segment(1)]
+        let split = WhisperTranscriptionService.splitForConfirmation(segments, keepingLast: 2)
+        #expect(split.confirmed.isEmpty)
+        #expect(split.unconfirmed == segments)
+    }
+
+    @MainActor
+    @Test("Extra segments confirm in order, keeping the trailing ones volatile")
+    func confirmsPrefixInOrder() {
+        let segments = (0..<5).map(segment)
+        let split = WhisperTranscriptionService.splitForConfirmation(segments, keepingLast: 2)
+        #expect(split.confirmed == Array(segments.prefix(3)))
+        #expect(split.unconfirmed == Array(segments.suffix(2)))
+    }
+
+    @MainActor
+    @Test("Empty input yields empty output")
+    func emptyInput() {
+        let split = WhisperTranscriptionService.splitForConfirmation([], keepingLast: 2)
+        #expect(split.confirmed.isEmpty)
+        #expect(split.unconfirmed.isEmpty)
+    }
+}
