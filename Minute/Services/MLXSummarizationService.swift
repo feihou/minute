@@ -155,6 +155,11 @@ enum MLXModelStore {
                 Task { @MainActor in onProgress(fraction) }
             }
         )
+        // A cancel can be swallowed downstream: when the repo listing fails,
+        // HubClient falls back to ANY cached snapshot directory with a
+        // matching file, so a cancelled retry can "succeed" with partial
+        // files on disk. Those must never earn the marker below.
+        try Task.checkCancellation()
         // Only a fully resolved snapshot earns the marker isDownloaded
         // needs — and a marker that can't be written (disk full at the very
         // end) must fail the download, or the UI reports success while
