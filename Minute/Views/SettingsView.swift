@@ -19,6 +19,8 @@ struct SettingsView: View {
     @AppStorage(AppSettings.summaryLanguageKey) private var summaryLanguage = ""
     @AppStorage(AppSettings.transcriptionEngineKey) private var transcriptionEngineRaw = TranscriptionEngineChoice.appleSpeech.rawValue
     @AppStorage(AppSettings.whisperModelKey) private var whisperModelRaw = ""
+    @AppStorage(AppSettings.summarizationEngineKey) private var summarizationEngineRaw = SummarizationEngineChoice.appleIntelligence.rawValue
+    @AppStorage(AppSettings.localSummaryModelKey) private var localSummaryModelRaw = ""
     @AppStorage(AppSettings.iCloudBackupKey) private var iCloudBackup = false
     @AppStorage(AppSettings.iCloudDriveKey) private var iCloudDrive = false
     // Persisted, not @State: resolving the iCloud container on first use is
@@ -188,6 +190,15 @@ struct SettingsView: View {
         }
     }
 
+    private var summaryModelName: String {
+        switch AppSettings.summarizationEngine {
+        case .appleIntelligence:
+            return "Apple Intelligence"
+        case .localModel:
+            return MLXModelCatalog.model(for: AppSettings.localSummaryModel)?.label ?? "Local Model"
+        }
+    }
+
     private var modelsSection: some View {
         Section {
             NavigationLink {
@@ -200,11 +211,15 @@ struct SettingsView: View {
                     settingsLabel("Transcription Model", systemImage: "text.bubble", tint: .blue)
                 }
             }
-            LabeledContent {
-                Text("Apple Intelligence")
-                    .foregroundStyle(.secondary)
+            NavigationLink {
+                SummaryModelView()
             } label: {
-                settingsLabel("Summary Model", systemImage: "brain", tint: .purple)
+                LabeledContent {
+                    Text(summaryModelName)
+                        .foregroundStyle(.secondary)
+                } label: {
+                    settingsLabel("Summary Model", systemImage: "brain", tint: .purple)
+                }
             }
             LabeledContent {
                 Text("FluidAudio")
@@ -217,7 +232,7 @@ struct SettingsView: View {
         } footer: {
             Text(
                 "Transcription and summaries run entirely on this iPhone; the Apple models may need a one-time download before first use. "
-                + "The speaker model (FluidAudio) and any Whisper transcription models you choose are downloaded once from Hugging Face and then cached — those model downloads are Minute's only non-Apple requests, and your recordings are never part of them. "
+                + "The speaker model (FluidAudio) and any Whisper transcription or local summary models you choose are downloaded once from Hugging Face and then cached — those model downloads are Minute's only non-Apple requests, and your recordings are never part of them. "
                 + "If you enable iCloud backups or the iCloud Drive folder, Apple may also sync meeting copies to your own account."
             )
         }
@@ -344,7 +359,7 @@ struct SettingsView: View {
             } label: {
                 settingsLabel("Summarization", systemImage: "brain", tint: .purple)
             }
-            if let message = SummarizationService.availabilityMessage {
+            if let message = SummarizationEngines.availabilityMessage {
                 Text(message)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -416,7 +431,7 @@ struct SettingsView: View {
     }
 
     private var summarizationStatus: String {
-        SummarizationService.availabilityMessage == nil ? "Ready" : "Unavailable"
+        SummarizationEngines.availabilityMessage == nil ? "Ready" : "Unavailable"
     }
 
     // MARK: - Actions

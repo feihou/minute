@@ -397,12 +397,12 @@ struct SummarizationService {
     private func normalized(_ draft: SummaryDraft) -> MeetingSummary {
         MeetingSummary(
             overview: draft.overview.trimmingCharacters(in: .whitespacesAndNewlines),
-            keyPoints: cleaned(draft.keyPoints),
-            decisions: cleaned(draft.decisions),
+            keyPoints: Self.cleaned(draft.keyPoints),
+            decisions: Self.cleaned(draft.decisions),
             actionItems: normalizedActionItems(draft.actionItems),
-            openQuestions: cleaned(draft.openQuestions),
+            openQuestions: Self.cleaned(draft.openQuestions),
             generatedAt: .now,
-            suggestedTitle: normalizedTitle(draft.title),
+            suggestedTitle: Self.normalizedTitle(draft.title),
             speakerPerspectives: normalizedPerspectives(draft.speakerPerspectives)
         )
     }
@@ -415,12 +415,12 @@ struct SummarizationService {
             actionItems: normalizedActionItems(draft.actionItems),
             openQuestions: [],
             generatedAt: .now,
-            suggestedTitle: normalizedTitle(draft.title),
+            suggestedTitle: Self.normalizedTitle(draft.title),
             sections: Self.reconciledSections(
                 draft.sections.compactMap { section in
                     let title = section.name.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !title.isEmpty else { return nil }
-                    return SummarySection(title: title, items: cleaned(section.items))
+                    return SummarySection(title: title, items: Self.cleaned(section.items))
                 },
                 with: template
             ),
@@ -435,8 +435,8 @@ struct SummarizationService {
             guard !task.isEmpty else { return nil }
             return ActionItem(
                 task: task,
-                owner: normalizedField(item.owner),
-                deadline: normalizedField(item.deadline)
+                owner: Self.normalizedField(item.owner),
+                deadline: Self.normalizedField(item.deadline)
             )
         }
     }
@@ -465,21 +465,23 @@ struct SummarizationService {
     private func normalizedPerspectives(_ drafts: [DraftSpeakerPerspective]) -> [SpeakerPerspective]? {
         let perspectives = drafts.compactMap { draft -> SpeakerPerspective? in
             let name = draft.speaker.trimmingCharacters(in: .whitespacesAndNewlines)
-            let points = cleaned(draft.points)
+            let points = Self.cleaned(draft.points)
             guard !name.isEmpty, !points.isEmpty else { return nil }
             return SpeakerPerspective(speaker: name, points: points)
         }
         return perspectives.isEmpty ? nil : perspectives
     }
 
-    private func cleaned(_ items: [String]) -> [String] {
+    /// Shared with the local-model engine so both honor one output contract.
+    static func cleaned(_ items: [String]) -> [String] {
         var seen = Set<String>()
         return items
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
     }
 
-    private func normalizedField(_ value: String) -> String {
+    /// Shared with the local-model engine so both honor one output contract.
+    static func normalizedField(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty || trimmed.lowercased() == "not specified" || trimmed.lowercased() == "none" || trimmed.lowercased() == "unknown" {
             return ActionItem.notSpecified
@@ -487,7 +489,8 @@ struct SummarizationService {
         return trimmed
     }
 
-    private func normalizedTitle(_ title: String) -> String? {
+    /// Shared with the local-model engine so both honor one output contract.
+    static func normalizedTitle(_ title: String) -> String? {
         let trimmed = title
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”‘’"))
@@ -509,4 +512,11 @@ struct SummarizationService {
         }
         return "Summarization failed: \(error.localizedDescription)"
     }
+}
+
+/// Conformance lives in an extension so the struct doesn't inherit the
+/// protocol's @MainActor isolation — the statics above stay callable from
+/// nonisolated contexts (tests gate on availabilityMessage).
+extension SummarizationService: SummarizationEngine {
+    var availabilityMessage: String? { Self.availabilityMessage }
 }
