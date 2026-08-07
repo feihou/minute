@@ -146,7 +146,7 @@ enum MLXModelStore {
         _ model: MLXSummaryModel,
         onProgress: @escaping @MainActor (Double) -> Void
     ) async throws {
-        _ = try await resolve(
+        let resolved = try await resolve(
             configuration: ModelConfiguration(id: model.repoID),
             from: #hubDownloader(hubClient()),
             useLatest: false,
@@ -160,6 +160,19 @@ enum MLXModelStore {
         // matching file, so a cancelled retry can "succeed" with partial
         // files on disk. Those must never earn the marker below.
         try Task.checkCancellation()
+        // The same fallback fires on a plain network failure too (an offline
+        // retry after an interrupted download), where no cancel is pending —
+        // so also require the resolved snapshot to actually hold weights and
+        // config before certifying it. ponytail: presence check, not a
+        // manifest diff — a partial missing only a tokenizer file slips
+        // through; read model.safetensors.index.json if that ever bites.
+        let snapshot = (try? FileManager.default.contentsOfDirectory(
+            at: resolved.modelDirectory, includingPropertiesForKeys: nil
+        )) ?? []
+        guard snapshot.contains(where: { $0.pathExtension == "safetensors" }),
+              snapshot.contains(where: { $0.lastPathComponent == "config.json" }) else {
+            throw IncompleteSnapshotFailure()
+        }
         // Only a fully resolved snapshot earns the marker isDownloaded
         // needs — and a marker that can't be written (disk full at the very
         // end) must fail the download, or the UI reports success while
@@ -172,6 +185,12 @@ enum MLXModelStore {
     private struct MarkerWriteFailure: LocalizedError {
         var errorDescription: String? {
             "The download finished but couldn't be recorded — the device may be out of storage. Free up space and try again."
+        }
+    }
+
+    private struct IncompleteSnapshotFailure: LocalizedError {
+        var errorDescription: String? {
+            "Some model files are still missing — check your connection and try again."
         }
     }
 }
