@@ -130,20 +130,29 @@ final class WhisperTranscriptionService: TranscriptionEngine {
     private var liveFeed: WhisperLiveFeed?
     private var liveTask: Task<Void, Never>?
 
-    /// Loads the selected model. Never downloads — the user downloads models
-    /// explicitly in Settings, so a big Hugging Face fetch can't start as a
-    /// surprise side effect of an import.
+    /// Checks the model is downloaded — deliberately WITHOUT loading it.
+    /// Loading takes seconds (Core ML compiles on first use), and the live
+    /// path must attach its buffer tap immediately so a meeting's opening
+    /// words aren't lost while the model loads; the decode loop and the file
+    /// path load lazily via loadedWhisperKit() instead. Never downloads —
+    /// the user downloads models explicitly in Settings, so a big Hugging
+    /// Face fetch can't start as a surprise side effect.
     func prepare() async {
-        if whisperKit != nil {
-            availability = .available
-            return
-        }
         guard WhisperModelStore.isDownloaded(variant) else {
             availability = .unavailable(
                 "The Whisper model isn't downloaded yet. Get it in Settings → Transcription Model, or switch back to Apple Speech."
             )
             return
         }
+        availability = .available
+    }
+
+    /// Loads the model on first use and caches it; flips availability and
+    /// returns nil when loading fails. Each engine instance has a single
+    /// consumer (one live loop, or one file job), so plain check-then-load
+    /// caching is race-free here.
+    private func loadedWhisperKit() async -> WhisperKit? {
+        if let whisperKit { return whisperKit }
         do {
             let config = WhisperKitConfig(
                 modelFolder: WhisperModelStore.folder(for: variant).path,
@@ -152,13 +161,15 @@ final class WhisperTranscriptionService: TranscriptionEngine {
                 load: true,
                 download: false
             )
-            whisperKit = try await WhisperKit(config)
-            availability = .available
+            let loaded = try await WhisperKit(config)
+            whisperKit = loaded
+            return loaded
         } catch {
             Self.logger.error("WhisperKit load failed: \(error.localizedDescription)")
             availability = .unavailable(
                 "The Whisper model couldn't be loaded. Re-download it in Settings → Transcription Model, or switch back to Apple Speech."
             )
+            return nil
         }
     }
 
@@ -168,7 +179,7 @@ final class WhisperTranscriptionService: TranscriptionEngine {
     /// lock-guarded sample store, and a decode loop turns the growing tail
     /// into confirmed segments plus a volatile hypothesis.
     func start(inputFormat: AVAudioFormat) async -> (@Sendable (AVAudioPCMBuffer) -> Void)? {
-        guard availability == .available, let whisperKit else { return nil }
+        guard availability == .available else { return nil }
 
         segments = []
         volatileText = ""
@@ -188,7 +199,7 @@ final class WhisperTranscriptionService: TranscriptionEngine {
         // weak: the task must not keep a dropped service (and its loaded
         // model) alive — matching TranscriptionService's resultsTask.
         liveTask = Task { [weak self] in
-            await self?.runLiveLoop(feed: feed, whisperKit: whisperKit)
+            await self?.runLiveLoop(feed: feed)
         }
 
         return { @Sendable buffer in
@@ -231,7 +242,13 @@ final class WhisperTranscriptionService: TranscriptionEngine {
     /// only cheap bookkeeping between awaits touches main. Mirrors WhisperKit's
     /// AudioStreamTranscriber algorithm (decode the unconfirmed tail, confirm
     /// all but the trailing segments) without its microphone ownership.
-    private func runLiveLoop(feed: WhisperLiveFeed, whisperKit: WhisperKit) async {
+    private func runLiveLoop(feed: WhisperLiveFeed) async {
+        // The model loads HERE, not in prepare(), so the feed is already
+        // capturing while Core ML compiles — the backlog decodes on the
+        // first pass and the meeting's opening words aren't lost.
+        guard let whisperKit = await loadedWhisperKit() else { return }
+        guard !feed.isStopped, !Task.isCancelled else { return }
+
         // Absolute sample count (purged + kept) already decoded.
         var decodedSampleCount = 0
         // Recording-clock end of the last appended segment. The monotonic
@@ -247,6 +264,14 @@ final class WhisperTranscriptionService: TranscriptionEngine {
         while !feed.isStopped, !Task.isCancelled {
             let snapshot = feed.snapshot()
             let totalSamples = snapshot.droppedSamples + snapshot.samples.count
+            // Bound the retained tail: through a long silence the voice gate
+            // below skips every decode, so nothing confirms and nothing
+            // purges — an hour of quiet would otherwise hold ~230 MB. Audio
+            // older than the cap has sat unconfirmable for minutes; drop it.
+            if snapshot.samples.count > Self.maximumTailSamples {
+                feed.purge(throughAbsoluteSample: totalSamples - Self.maximumTailSamples)
+                continue
+            }
             let newSeconds = Float(totalSamples - decodedSampleCount) / Float(WhisperKit.sampleRate)
             // Decode only once at least a second of new audio arrived, and
             // only when it contains voice — otherwise idle cheaply.
@@ -274,7 +299,11 @@ final class WhisperTranscriptionService: TranscriptionEngine {
                 // below, so the final pass only re-decodes the shrunken tail
                 // instead of repeating this whole pass's work.
                 guard !Task.isCancelled else { break }
-                if pinnedLanguage == nil {
+                // Pin only once detection has heard enough audio — the very
+                // first 1-second pass is too short to trust, and a wrong pin
+                // would mistranscribe the rest of the meeting.
+                if pinnedLanguage == nil,
+                   snapshot.samples.count >= Self.languagePinMinimumSamples {
                     pinnedLanguage = results.first?.language
                 }
                 let mapped = Self.mapSegments(results, timeBase: timeBase)
@@ -323,6 +352,12 @@ final class WhisperTranscriptionService: TranscriptionEngine {
         }
     }
 
+    /// Language detection needs at least this much audio before its result
+    /// is trusted enough to pin for the rest of the meeting.
+    private static let languagePinMinimumSamples = 5 * WhisperKit.sampleRate
+    /// The most unconfirmed audio the live feed retains (5 minutes ≈ 19 MB).
+    private static let maximumTailSamples = 5 * 60 * WhisperKit.sampleRate
+
     /// detectLanguage must be explicit: it defaults to !usePrefillPrompt,
     /// i.e. false, and then a nil language silently decodes as English.
     private func liveOptions(language: String?) -> DecodingOptions {
@@ -344,7 +379,7 @@ final class WhisperTranscriptionService: TranscriptionEngine {
     // MARK: - File transcription
 
     func transcribe(file: AVAudioFile) async throws -> [TranscriptSegment] {
-        guard availability == .available, let whisperKit else {
+        guard availability == .available, let whisperKit = await loadedWhisperKit() else {
             throw CocoaError(.featureUnsupported)
         }
 
