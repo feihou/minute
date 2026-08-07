@@ -103,8 +103,29 @@ enum WhisperModelStore {
         )
     }
 
+    /// Where WhisperKit streams in-flight files (as *.incomplete) before
+    /// moving each one into folder(for:) on completion. A partial download's
+    /// real bytes — the big half-fetched weight blobs — live HERE, so delete
+    /// and hasLocalData must cover it or Delete strands the actual space.
+    static func downloadCache(for variant: String) -> URL {
+        baseDirectory.appending(
+            path: "models/\(repo)/.cache/huggingface/download/\(variant)",
+            directoryHint: .isDirectory
+        )
+    }
+
     static func delete(_ variant: String) {
         try? FileManager.default.removeItem(at: folder(for: variant))
+        try? FileManager.default.removeItem(at: downloadCache(for: variant))
+    }
+
+    /// Any bytes on disk for this variant — including a cancelled or failed
+    /// partial download, which the user must still be able to delete: a
+    /// disk-full failure can strand hundreds of megabytes that finishing
+    /// the download could never reclaim.
+    static func hasLocalData(_ variant: String) -> Bool {
+        FileManager.default.fileExists(atPath: folder(for: variant).path)
+            || FileManager.default.fileExists(atPath: downloadCache(for: variant).path)
     }
 }
 

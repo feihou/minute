@@ -6,11 +6,14 @@ struct TranscriptionModelView: View {
     @AppStorage(AppSettings.transcriptionEngineKey) private var engineRaw = TranscriptionEngineChoice.appleSpeech.rawValue
     @AppStorage(AppSettings.whisperModelKey) private var selectedVariant = WhisperModelCatalog.defaultModel.variant
 
-    /// variant → fraction complete for in-flight downloads.
-    @State private var downloadProgress: [String: Double] = [:]
-    @State private var downloadErrors: [String: String] = [:]
-    @State private var downloadTasks: [String: Task<Void, Never>] = [:]
+    /// App-scoped, deliberately not view state: a download must survive this
+    /// screen being popped, and a returning visit must see it instead of
+    /// offering a second concurrent Get.
+    private let downloads = WhisperDownloadCenter.shared
     @State private var downloadedVariants: Set<String> = []
+    /// Variants with only partial files on disk (cancelled or failed
+    /// downloads) — still deletable so the stranded space can be reclaimed.
+    @State private var partialVariants: Set<String> = []
     @State private var deletingModel: WhisperModel?
 
     private var engine: TranscriptionEngineChoice {
@@ -27,6 +30,7 @@ struct TranscriptionModelView: View {
         .navigationTitle("Transcription")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { refreshDownloaded() }
+        .onChange(of: downloads.finishedCount) { refreshDownloaded() }
         .confirmationDialog(
             "Delete this model?",
             isPresented: Binding(
@@ -42,7 +46,7 @@ struct TranscriptionModelView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: { model in
-            Text("Frees about \(model.approximateMegabytes) MB. You can download it again anytime.")
+            Text("Frees up to about \(model.approximateMegabytes) MB. You can download it again anytime.")
         }
     }
 
@@ -97,6 +101,7 @@ struct TranscriptionModelView: View {
 
     @ViewBuilder private func modelRow(_ model: WhisperModel) -> some View {
         let isDownloaded = downloadedVariants.contains(model.variant)
+        let isDownloading = downloads.progress[model.variant] != nil
         HStack {
             Button {
                 selectedVariant = model.variant
@@ -107,7 +112,7 @@ struct TranscriptionModelView: View {
                     Text(isDownloaded ? model.detail : "\(model.detail) About \(model.approximateMegabytes) MB.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    if let error = downloadErrors[model.variant] {
+                    if let error = downloads.errors[model.variant] {
                         Text(error)
                             .font(.caption)
                             .foregroundStyle(.red)
@@ -119,11 +124,11 @@ struct TranscriptionModelView: View {
 
             Spacer()
 
-            if let progress = downloadProgress[model.variant] {
+            if let progress = downloads.progress[model.variant] {
                 ProgressView(value: progress)
                     .frame(width: 56)
                 Button {
-                    cancelDownload(model)
+                    downloads.cancel(model)
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
@@ -136,14 +141,16 @@ struct TranscriptionModelView: View {
                 }
             } else {
                 Button("Get") {
-                    download(model)
+                    downloads.download(model)
                 }
                 .buttonStyle(.bordered)
                 .font(.callout.weight(.semibold))
             }
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            if isDownloaded {
+            // Partial downloads are deletable too — stranded megabytes from a
+            // cancelled or disk-full download must be reclaimable.
+            if !isDownloading, isDownloaded || partialVariants.contains(model.variant) {
                 Button(role: .destructive) {
                     deletingModel = model
                 } label: {
@@ -159,38 +166,14 @@ struct TranscriptionModelView: View {
         downloadedVariants = Set(
             WhisperModelCatalog.models.map(\.variant).filter(WhisperModelStore.isDownloaded)
         )
-    }
-
-    private func download(_ model: WhisperModel) {
-        let variant = model.variant
-        downloadErrors[variant] = nil
-        downloadProgress[variant] = 0
-        // ponytail: the download lives in view state — leaving this screen
-        // lets it finish in the background, but force-quitting abandons it.
-        // Partial files are kept, so a retry resumes where it stopped.
-        downloadTasks[variant] = Task {
-            do {
-                try await WhisperModelStore.download(variant) { fraction in
-                    downloadProgress[variant] = fraction
-                }
-                downloadedVariants.insert(variant)
-                // Point the engine at the fresh model unless a downloaded one
-                // is already selected.
-                if !downloadedVariants.contains(selectedVariant) {
-                    selectedVariant = variant
-                }
-            } catch is CancellationError {
-                // User cancelled — partial files stay for a later resume.
-            } catch {
-                downloadErrors[variant] = "The download failed: \(error.localizedDescription)"
-            }
-            downloadProgress[variant] = nil
-            downloadTasks[variant] = nil
-        }
-    }
-
-    private func cancelDownload(_ model: WhisperModel) {
-        downloadTasks[model.variant]?.cancel()
+        partialVariants = Set(
+            WhisperModelCatalog.models.map(\.variant)
+                .filter { !WhisperModelStore.isDownloaded($0) && WhisperModelStore.hasLocalData($0) }
+        )
+        // The download center writes the selection key directly when a
+        // download finishes; KVO reads the dotted key as a key path, so
+        // @AppStorage never hears about that write — re-read it here.
+        selectedVariant = AppSettings.whisperModel
     }
 }
 
