@@ -7,11 +7,14 @@ struct SummaryModelView: View {
     @AppStorage(AppSettings.summarizationEngineKey) private var engineRaw = SummarizationEngineChoice.appleIntelligence.rawValue
     @AppStorage(AppSettings.localSummaryModelKey) private var selectedRepoID = MLXModelCatalog.defaultModel.repoID
 
-    /// repoID → fraction complete for in-flight downloads.
-    @State private var downloadProgress: [String: Double] = [:]
-    @State private var downloadErrors: [String: String] = [:]
-    @State private var downloadTasks: [String: Task<Void, Never>] = [:]
+    /// App-scoped, deliberately not view state: a 1–2.3 GB download must
+    /// survive this screen being popped, and a returning visit must see it
+    /// instead of offering a second concurrent Get.
+    private let downloads = MLXDownloadCenter.shared
     @State private var downloadedModels: Set<String> = []
+    /// Repos with only partial files on disk (cancelled or failed downloads)
+    /// — still deletable so the stranded space can be reclaimed.
+    @State private var partialModels: Set<String> = []
     @State private var deletingModel: MLXSummaryModel?
 
     private var engine: SummarizationEngineChoice {
@@ -28,6 +31,7 @@ struct SummaryModelView: View {
         .navigationTitle("Summaries")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { refreshDownloaded() }
+        .onChange(of: downloads.completedCount) { refreshDownloaded() }
         .confirmationDialog(
             "Delete this model?",
             isPresented: Binding(
@@ -43,7 +47,7 @@ struct SummaryModelView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: { model in
-            Text("Frees about \(model.approximateMegabytes) MB. You can download it again anytime.")
+            Text("Frees up to about \(model.approximateMegabytes) MB. You can download it again anytime.")
         }
     }
 
@@ -99,6 +103,7 @@ struct SummaryModelView: View {
 
     @ViewBuilder private func modelRow(_ model: MLXSummaryModel) -> some View {
         let isDownloaded = downloadedModels.contains(model.repoID)
+        let isDownloading = downloads.progress[model.repoID] != nil
         let isSupported = MLXModelCatalog.deviceSupports(model)
         HStack {
             Button {
@@ -110,7 +115,7 @@ struct SummaryModelView: View {
                     Text(rowDetail(model, isDownloaded: isDownloaded, isSupported: isSupported))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    if let error = downloadErrors[model.repoID] {
+                    if let error = downloads.errors[model.repoID] {
                         Text(error)
                             .font(.caption)
                             .foregroundStyle(.red)
@@ -122,11 +127,11 @@ struct SummaryModelView: View {
 
             Spacer()
 
-            if let progress = downloadProgress[model.repoID] {
+            if let progress = downloads.progress[model.repoID] {
                 ProgressView(value: progress)
                     .frame(width: 56)
                 Button {
-                    downloadTasks[model.repoID]?.cancel()
+                    downloads.cancel(model)
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
@@ -139,14 +144,16 @@ struct SummaryModelView: View {
                 }
             } else if isSupported {
                 Button("Get") {
-                    download(model)
+                    downloads.download(model)
                 }
                 .buttonStyle(.bordered)
                 .font(.callout.weight(.semibold))
             }
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            if isDownloaded {
+            // Partial downloads are deletable too — stranded gigabytes from a
+            // cancelled or disk-full download must be reclaimable.
+            if !isDownloading, isDownloaded || partialModels.contains(model.repoID) {
                 Button(role: .destructive) {
                     deletingModel = model
                 } label: {
@@ -172,33 +179,11 @@ struct SummaryModelView: View {
         downloadedModels = Set(
             MLXModelCatalog.models.filter(MLXModelStore.isDownloaded).map(\.repoID)
         )
-    }
-
-    private func download(_ model: MLXSummaryModel) {
-        let repoID = model.repoID
-        downloadErrors[repoID] = nil
-        downloadProgress[repoID] = 0
-        // ponytail: the download lives in view state — leaving this screen
-        // lets it finish in the background, but force-quitting abandons it.
-        // Partial files are kept, so a retry resumes where it stopped.
-        downloadTasks[repoID] = Task {
-            do {
-                try await MLXModelStore.download(model) { fraction in
-                    downloadProgress[repoID] = fraction
-                }
-                downloadedModels.insert(repoID)
-                if let selected = MLXModelCatalog.model(for: selectedRepoID),
-                   !downloadedModels.contains(selected.repoID) {
-                    selectedRepoID = repoID
-                }
-            } catch is CancellationError {
-                // User cancelled — partial files stay for a later resume.
-            } catch {
-                downloadErrors[repoID] = "The download failed: \(error.localizedDescription)"
-            }
-            downloadProgress[repoID] = nil
-            downloadTasks[repoID] = nil
-        }
+        partialModels = Set(
+            MLXModelCatalog.models
+                .filter { !MLXModelStore.isDownloaded($0) && MLXModelStore.hasLocalData($0) }
+                .map(\.repoID)
+        )
     }
 }
 

@@ -124,6 +124,14 @@ enum MLXModelStore {
         try? FileManager.default.removeItem(at: repoDirectory(for: model))
     }
 
+    /// Any bytes on disk for this repo — including a cancelled or failed
+    /// partial download, which the user must still be able to delete: a
+    /// disk-full failure can strand gigabytes that finishing the download
+    /// could never reclaim.
+    static func hasLocalData(_ model: MLXSummaryModel) -> Bool {
+        FileManager.default.fileExists(atPath: repoDirectory(for: model).path)
+    }
+
     static func hubClient() -> HubClient {
         HubClient(
             host: HubClient.defaultHost,
@@ -375,14 +383,33 @@ final class MLXSummarizationService: SummarizationEngine {
         return try Self.decode(reply)
     }
 
-    /// One merge pass — the local models' context windows dwarf the chunk
-    /// budget, so the Apple engine's condense loop isn't needed here.
+    /// Keeps the merge prompt well inside the local models' context windows
+    /// (~15k tokens of notes against Qwen3's 32k): a normal meeting never
+    /// comes close, but hour-scale imports can out-produce one request.
+    private static let mergeCharBudget = 60_000
+
     private func merge(
         _ notes: [LocalChunkNotes],
         template: SummaryTemplate,
         contextBlock: String,
         container: ModelContainer
     ) async throws -> MeetingSummary {
+        // Condense in groups until the combined notes fit one request —
+        // the same safety net the Apple engine carries.
+        var current = notes
+        while current.count > 1, Self.rendered(current).count > Self.mergeCharBudget {
+            var reduced: [LocalChunkNotes] = []
+            for group in stride(from: 0, to: current.count, by: 4).map({ Array(current[$0..<min($0 + 4, current.count)]) }) {
+                try Task.checkCancellation()
+                if group.count == 1 {
+                    reduced.append(group[0])
+                } else {
+                    reduced.append(try await condense(group, contextBlock: contextBlock, container: container))
+                }
+            }
+            current = reduced
+        }
+
         let schema = template.isStandard ? Self.standardSchema : Self.templatedSchema
         let section = template.isStandard ? "" : "\(sectionBlock(for: template))\n"
         let prompt = """
@@ -398,7 +425,7 @@ final class MLXSummarizationService: SummarizationEngine {
             \(schema)
 
             Notes:
-            \(Self.rendered(notes))
+            \(Self.rendered(current))
             """
         let reply = try await session(container).respond(to: prompt)
         if template.isStandard {
@@ -407,6 +434,26 @@ final class MLXSummarizationService: SummarizationEngine {
         }
         let draft: LocalTemplatedDraft = try Self.decode(reply)
         return draft.meetingSummary(template: template)
+    }
+
+    private func condense(
+        _ notes: [LocalChunkNotes],
+        contextBlock: String,
+        container: ModelContainer
+    ) async throws -> LocalChunkNotes {
+        let prompt = """
+            These are notes from consecutive, overlapping parts of one meeting. \
+            Merge them into one set of notes: combine duplicates keeping the most specific wording, \
+            drop open questions that another part answered, and do not add anything new.
+            \(contextBlock)
+            Return JSON of exactly this shape:
+            \(Self.notesSchema)
+
+            Notes:
+            \(Self.rendered(notes))
+            """
+        let reply = try await session(container).respond(to: prompt)
+        return try Self.decode(reply)
     }
 
     private static func rendered(_ notes: [LocalChunkNotes]) -> String {
