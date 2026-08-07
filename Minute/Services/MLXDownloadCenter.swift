@@ -13,9 +13,11 @@ final class MLXDownloadCenter {
     /// repoID → fraction complete for in-flight downloads.
     private(set) var progress: [String: Double] = [:]
     private(set) var errors: [String: String] = [:]
-    /// Bumped on every successful completion so views can refresh their
-    /// on-disk state without polling.
-    private(set) var completedCount = 0
+    /// Bumped on EVERY terminal outcome — success, cancel, or failure — so
+    /// views refresh their on-disk state without polling. Success-only would
+    /// leave a cancelled partial download's Delete action hidden until the
+    /// screen is reopened.
+    private(set) var finishedCount = 0
 
     private var tasks: [String: Task<Void, Never>] = [:]
 
@@ -30,7 +32,11 @@ final class MLXDownloadCenter {
         tasks[repoID] = Task {
             do {
                 try await MLXModelStore.download(model) { [weak self] fraction in
-                    self?.progress[repoID] = fraction
+                    // A straggler callback can land after cleanup below;
+                    // writing then would resurrect a phantom progress row
+                    // with no task behind it. Only a live task may report.
+                    guard let self, self.tasks[repoID] != nil else { return }
+                    self.progress[repoID] = fraction
                 }
                 // Point the engine at the fresh model when the stored
                 // selection can't work — not downloaded, or removed from the
@@ -40,7 +46,6 @@ final class MLXDownloadCenter {
                 if !storedUsable {
                     UserDefaults.standard.set(repoID, forKey: AppSettings.localSummaryModelKey)
                 }
-                completedCount += 1
             } catch is CancellationError {
                 // User cancelled — partial files stay for a later resume.
             } catch {
@@ -48,6 +53,7 @@ final class MLXDownloadCenter {
             }
             progress[repoID] = nil
             tasks[repoID] = nil
+            finishedCount += 1
         }
     }
 

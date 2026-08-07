@@ -353,10 +353,27 @@ final class MLXSummarizationService: SummarizationEngine {
         let reply = try await session(container).respond(to: prompt)
         if template.isStandard {
             let draft: LocalSummaryDraft = try Self.decode(reply)
-            return draft.meetingSummary()
+            return try Self.validated(draft.meetingSummary())
         }
         let draft: LocalTemplatedDraft = try Self.decode(reply)
-        return draft.meetingSummary(template: template)
+        return try Self.validated(draft.meetingSummary(template: template))
+    }
+
+    /// A structurally empty reply ("{}", or only unrecognized keys) decodes
+    /// "successfully" because every draft field is optional — but saving it
+    /// would silently replace the Generate empty-state with blank notes.
+    private static func validated(_ summary: MeetingSummary) throws -> MeetingSummary {
+        let hasContent = !summary.overview.isEmpty
+            || !summary.keyPoints.isEmpty
+            || !summary.decisions.isEmpty
+            || !summary.actionItems.isEmpty
+            || !summary.openQuestions.isEmpty
+            || (summary.sections ?? []).contains { !$0.items.isEmpty }
+            || summary.speakerPerspectives != nil
+        guard hasContent else {
+            throw SummarizerError.generationFailed(unreadableMessage)
+        }
+        return summary
     }
 
     private func extractNotes(
@@ -383,10 +400,12 @@ final class MLXSummarizationService: SummarizationEngine {
         return try Self.decode(reply)
     }
 
-    /// Keeps the merge prompt well inside the local models' context windows
-    /// (~15k tokens of notes against Qwen3's 32k): a normal meeting never
-    /// comes close, but hour-scale imports can out-produce one request.
-    private static let mergeCharBudget = 60_000
+    /// Keeps the merge prompt inside the local models' context windows even
+    /// at the worst-case ~1 token per character of CJK text (Qwen3's 32k
+    /// window, minus instructions, schema, and output room). English notes
+    /// condense earlier than strictly needed — correctness for the
+    /// multilingual path outranks a saved condense pass.
+    private static let mergeCharBudget = 20_000
 
     private func merge(
         _ notes: [LocalChunkNotes],
@@ -430,10 +449,10 @@ final class MLXSummarizationService: SummarizationEngine {
         let reply = try await session(container).respond(to: prompt)
         if template.isStandard {
             let draft: LocalSummaryDraft = try Self.decode(reply)
-            return draft.meetingSummary()
+            return try Self.validated(draft.meetingSummary())
         }
         let draft: LocalTemplatedDraft = try Self.decode(reply)
-        return draft.meetingSummary(template: template)
+        return try Self.validated(draft.meetingSummary(template: template))
     }
 
     private func condense(

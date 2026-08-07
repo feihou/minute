@@ -31,7 +31,7 @@ struct SummaryModelView: View {
         .navigationTitle("Summaries")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { refreshDownloaded() }
-        .onChange(of: downloads.completedCount) { refreshDownloaded() }
+        .onChange(of: downloads.finishedCount) { refreshDownloaded() }
         .confirmationDialog(
             "Delete this model?",
             isPresented: Binding(
