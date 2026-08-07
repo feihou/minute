@@ -8,6 +8,8 @@ enum AppSettings {
     static let liveTranscriptionKey = "recording.liveTranscription"
     static let transcriptionEngineKey = "transcription.engine"
     static let whisperModelKey = "transcription.whisperModel"
+    static let summarizationEngineKey = "summary.engine"
+    static let localSummaryModelKey = "summary.localModel"
     static let autoSummarizeKey = "recording.autoSummarize"
     static let summaryTemplateKey = "summary.template"
     static let summaryContextKey = "summary.context"
@@ -66,6 +68,18 @@ enum AppSettings {
         return value.isEmpty ? WhisperModelCatalog.defaultModel.variant : value
     }
 
+    /// The engine that writes meeting notes. Apple Intelligence is the
+    /// default; the local model is opt-in and needs a download first.
+    static var summarizationEngine: SummarizationEngineChoice {
+        SummarizationEngineChoice(rawValue: UserDefaults.standard.string(forKey: summarizationEngineKey) ?? "") ?? .appleIntelligence
+    }
+
+    /// The local summary model (Hugging Face repo ID) selected in Settings.
+    static var localSummaryModel: String {
+        let value = UserDefaults.standard.string(forKey: localSummaryModelKey) ?? ""
+        return value.isEmpty ? MLXModelCatalog.defaultModel.repoID : value
+    }
+
     /// Whether a summary is generated automatically after a recording is saved.
     static var autoSummarizeEnabled: Bool {
         UserDefaults.standard.bool(forKey: autoSummarizeKey)
@@ -115,6 +129,28 @@ enum TranscriptionEngineChoice: String, CaseIterable, Identifiable {
         switch self {
         case .appleSpeech: "Built into iOS. Transcribes live while you record, in this iPhone's language."
         case .whisper: "Open model by OpenAI. Transcribes live, auto-detects the spoken language, and uses more battery."
+        }
+    }
+}
+
+/// Which model writes meeting notes.
+enum SummarizationEngineChoice: String, CaseIterable, Identifiable {
+    case appleIntelligence = "apple"
+    case localModel = "local"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .appleIntelligence: "Apple Intelligence"
+        case .localModel: "Local Model"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .appleIntelligence: "Built into iOS. No download, but needs Apple Intelligence turned on."
+        case .localModel: "Open model you download once. Works without Apple Intelligence and uses more battery."
         }
     }
 }

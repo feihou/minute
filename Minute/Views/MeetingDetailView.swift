@@ -184,7 +184,7 @@ struct MeetingDetailView: View {
         }
         .task {
             guard autoGenerateSummary, meeting.summary == nil, meeting.hasTranscript,
-                  SummarizationService.availabilityMessage == nil else { return }
+                  SummarizationEngines.availabilityMessage == nil else { return }
             generateSummary()
         }
         .onDisappear {
@@ -328,7 +328,7 @@ struct MeetingDetailView: View {
                 if !meeting.hasTranscript {
                     Text("No transcript was captured for this meeting, so a summary can't be generated.")
                         .foregroundStyle(.secondary)
-                } else if let unavailable = SummarizationService.availabilityMessage {
+                } else if let unavailable = SummarizationEngines.availabilityMessage {
                     Text(unavailable)
                         .foregroundStyle(.secondary)
                 } else {

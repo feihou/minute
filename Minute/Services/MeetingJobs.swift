@@ -82,7 +82,7 @@ final class MeetingJobs {
         let id = meeting.id
         let transcript = meeting.timestampedTranscriptText
         return start(.summary, for: meeting) { [self] in
-            let summary = try await SummarizationService(language: language)
+            let summary = try await SummarizationEngines.current(language: language)
                 .summarize(transcript: transcript, template: template, context: context) { status in
                     self.statuses[id] = status
                 }

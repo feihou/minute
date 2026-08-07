@@ -8,7 +8,7 @@ Minute is open source under the MIT license. You can verify everything in this p
 
 ## What Minute is
 
-Minute records meeting audio with your iPhone's microphone, produces a live transcript on-device — with Apple's speech recognition (SpeechTranscriber, iOS 26) or, optionally, a Whisper model (WhisperKit) you download in Settings — optionally identifies speakers using FluidAudio's on-device model, and generates structured summaries — overview, key points, decisions, action items, open questions, and, when speakers have been identified, per-speaker perspectives — using Apple's on-device Apple Intelligence model (FoundationModels). Audio analysis, transcription, speaker identification, and summary generation happen on your iPhone.
+Minute records meeting audio with your iPhone's microphone, produces a live transcript on-device — with Apple's speech recognition (SpeechTranscriber, iOS 26) or, optionally, a Whisper model (WhisperKit) you download in Settings — optionally identifies speakers using FluidAudio's on-device model, and generates structured summaries — overview, key points, decisions, action items, open questions, and, when speakers have been identified, per-speaker perspectives — using Apple's on-device Apple Intelligence model (FoundationModels) or, optionally, a local open model (via MLX) you download in Settings. Audio analysis, transcription, speaker identification, and summary generation happen on your iPhone.
 
 ## Data the app handles
 
@@ -41,11 +41,11 @@ To identify different speakers in a meeting (diarization), Minute uses the open-
 
 Hugging Face controls whether and how it retains that routine connection metadata. Minute does not receive those logs and cannot use them to identify or profile you. Review Hugging Face's current policy before using speaker identification or downloading a Whisper model if this connection metadata is a concern.
 
-Separately, if you switch the transcription engine to **Whisper** in Settings, Minute downloads the Whisper model you choose (about 150–630 MB depending on the model, via the open-source WhisperKit library) from Hugging Face when you tap Get. The model is cached on your device, and transcription with it runs entirely on your iPhone. The same transmission facts apply as for the speaker model: a standard HTTPS file download with routine connection metadata, and nothing from your meetings.
+Separately, if you switch the transcription engine to **Whisper** or the summary engine to a **local model** in Settings, Minute downloads the model you choose (about 150 MB–2.3 GB depending on the model, via the open-source WhisperKit and MLX libraries) from Hugging Face when you tap Get. The model is cached on your device, and transcription or summarization with it runs entirely on your iPhone. The same transmission facts apply as for the speaker model: a standard HTTPS file download with routine connection metadata, and nothing from your meetings.
 
 **What is never transmitted:** your recordings, transcripts, summaries, settings, or any other content from the app. The requests contain no account information or identifiers created by Minute — the app has none. They are file downloads, nothing more.
 
-These model fetches — the speaker model, and any Whisper models you choose to download — are Minute's only requests to non-Apple endpoints. When you enable **iCloud Drive Folder**, Minute also asks Apple's iCloud APIs to mirror meeting notes and audio to your own account when the option is enabled and when the app enters the background. Separately, iOS may download Apple's on-device speech-recognition assets when transcription is prepared, and iOS manages any device backup you enable. These Apple-service paths are described next; none sends meeting content to the developer or a model provider.
+These model fetches — the speaker model, and any Whisper or summary models you choose to download — are Minute's only requests to non-Apple endpoints. When you enable **iCloud Drive Folder**, Minute also asks Apple's iCloud APIs to mirror meeting notes and audio to your own account when the option is enabled and when the app enters the background. Separately, iOS may download Apple's on-device speech-recognition assets when transcription is prepared, and iOS manages any device backup you enable. These Apple-service paths are described next; none sends meeting content to the developer or a model provider.
 
 ## Optional iCloud features (off by default)
 
