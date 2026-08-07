@@ -155,8 +155,19 @@ enum MLXModelStore {
                 Task { @MainActor in onProgress(fraction) }
             }
         )
-        // Only a fully resolved snapshot earns the marker isDownloaded needs.
-        FileManager.default.createFile(atPath: completionMarker(for: model).path, contents: nil)
+        // Only a fully resolved snapshot earns the marker isDownloaded
+        // needs — and a marker that can't be written (disk full at the very
+        // end) must fail the download, or the UI reports success while
+        // isDownloaded keeps rejecting the model forever.
+        guard FileManager.default.createFile(atPath: completionMarker(for: model).path, contents: nil) else {
+            throw MarkerWriteFailure()
+        }
+    }
+
+    private struct MarkerWriteFailure: LocalizedError {
+        var errorDescription: String? {
+            "The download finished but couldn't be recorded — the device may be out of storage. Free up space and try again."
+        }
     }
 }
 
