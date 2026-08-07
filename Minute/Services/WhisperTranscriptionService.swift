@@ -253,7 +253,11 @@ final class WhisperTranscriptionService: TranscriptionEngine {
             feed.stop()
             return
         }
-        guard !feed.isStopped, !Task.isCancelled else { return }
+        // Cancellation bails; a merely-stopped feed does NOT — a recording
+        // finished while the model was still loading must fall through to
+        // the final pass below, or everything the feed buffered is discarded
+        // and a short meeting saves without a transcript.
+        guard !Task.isCancelled else { return }
 
         // Absolute sample count (purged + kept) already decoded.
         var decodedSampleCount = 0
