@@ -46,10 +46,13 @@ final class MLXDownloadCenter {
                 if !storedUsable {
                     UserDefaults.standard.set(repoID, forKey: AppSettings.localSummaryModelKey)
                 }
-            } catch is CancellationError {
-                // User cancelled — partial files stay for a later resume.
             } catch {
-                errors[repoID] = "The download failed: \(error.localizedDescription)"
+                // URLSession surfaces a user cancel as URLError(.cancelled),
+                // not CancellationError — the task's own flag is the reliable
+                // signal. Cancelled partial files stay for a later resume.
+                if !Task.isCancelled {
+                    errors[repoID] = "The download failed: \(error.localizedDescription)"
+                }
             }
             progress[repoID] = nil
             tasks[repoID] = nil

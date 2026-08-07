@@ -176,6 +176,10 @@ struct SummaryModelView: View {
     // MARK: - Actions
 
     private func refreshDownloaded() {
+        // The download center's auto-select writes to a dotted UserDefaults
+        // key, which @AppStorage's KVO parses as a key path and never sees —
+        // re-read it here, where every downloads.finishedCount bump lands.
+        selectedRepoID = AppSettings.localSummaryModel
         downloadedModels = Set(
             MLXModelCatalog.models.filter(MLXModelStore.isDownloaded).map(\.repoID)
         )
