@@ -246,7 +246,13 @@ final class WhisperTranscriptionService: TranscriptionEngine {
         // The model loads HERE, not in prepare(), so the feed is already
         // capturing while Core ML compiles — the backlog decodes on the
         // first pass and the meeting's opening words aren't lost.
-        guard let whisperKit = await loadedWhisperKit() else { return }
+        guard let whisperKit = await loadedWhisperKit() else {
+            // Retire the feed: its only consumer is gone, and the recorder's
+            // handler would otherwise keep piling audio into it for the rest
+            // of the recording (~230 MB/hour) for nothing.
+            feed.stop()
+            return
+        }
         guard !feed.isStopped, !Task.isCancelled else { return }
 
         // Absolute sample count (purged + kept) already decoded.
@@ -301,9 +307,11 @@ final class WhisperTranscriptionService: TranscriptionEngine {
                 guard !Task.isCancelled else { break }
                 // Pin only once detection has heard enough audio — the very
                 // first 1-second pass is too short to trust, and a wrong pin
-                // would mistranscribe the rest of the meeting.
+                // would mistranscribe the rest of the meeting. Measured
+                // cumulatively (totalSamples): the retained tail shrinks with
+                // every purge and might never span the threshold itself.
                 if pinnedLanguage == nil,
-                   snapshot.samples.count >= Self.languagePinMinimumSamples {
+                   totalSamples >= Self.languagePinMinimumSamples {
                     pinnedLanguage = results.first?.language
                 }
                 let mapped = Self.mapSegments(results, timeBase: timeBase)
@@ -312,10 +320,8 @@ final class WhisperTranscriptionService: TranscriptionEngine {
                     lastConfirmedEnd = lastConfirmed.end
                     segments.append(contentsOf: split.confirmed)
                     // Purge audio the loop will never decode again, keeping
-                    // memory and per-pass copy cost bounded to the tail.
-                    // ponytail: an unconfirmable stretch re-decodes its whole
-                    // tail each pass; whisper's ~30s window breaks bound that
-                    // tail in practice, so no explicit cap.
+                    // memory and per-pass copy cost bounded to the tail; the
+                    // cap above bounds the voiceless stretches the gate skips.
                     let cutoff = Int((lastConfirmed.end - timestampOffset) * TimeInterval(WhisperKit.sampleRate))
                     feed.purge(throughAbsoluteSample: cutoff)
                     volatileText = split.unconfirmed.map(\.text).joined(separator: " ")
@@ -465,6 +471,11 @@ final class WhisperLiveFeed: @unchecked Sendable {
         guard !chunk.isEmpty else { return }
         lock.lock()
         defer { lock.unlock() }
+        // A stopped feed DROPS audio: after the decode loop retires (model
+        // failed to load, session finished), the recorder's handler may still
+        // call in — retaining those samples would grow memory with nobody
+        // ever consuming them.
+        guard !stopped else { return }
         // ponytail: the VAD gate assumes one energy entry ≈ 100 ms; tap
         // chunks are ~85 ms after resampling, close enough that the gate's
         // lookback window is only approximately calibrated.
