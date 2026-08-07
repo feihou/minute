@@ -61,8 +61,11 @@ struct SettingsView: View {
                 }
             }
             // task(id:) so returning from the engine/model picker refreshes
-            // the capability row without reopening Settings.
-            .task(id: "\(transcriptionEngineRaw)|\(whisperModelRaw)") { await refreshTranscriptionStatus() }
+            // the capability row without reopening Settings. finishedCount:
+            // a download can finish (and auto-select) after the picker is
+            // popped, and @AppStorage never observes the center's direct
+            // write to the dotted key — re-check on every terminal outcome.
+            .task(id: transcriptionStatusKey) { await refreshTranscriptionStatus() }
             .task { usage = MeetingStore.recordingsUsage() }
             .confirmationDialog(
                 "Delete all meetings?",
@@ -430,6 +433,10 @@ struct SettingsView: View {
         }
         usage = MeetingStore.recordingsUsage()
         deleteAllFailed = !allSucceeded
+    }
+
+    private var transcriptionStatusKey: String {
+        "\(transcriptionEngineRaw)|\(whisperModelRaw)|\(WhisperDownloadCenter.shared.finishedCount)"
     }
 
     private func refreshTranscriptionStatus() async {
