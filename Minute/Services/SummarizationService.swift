@@ -339,6 +339,14 @@ struct SummarizationService {
         return normalized(try await session.respond(to: prompt, generating: TemplatedDraft.self, options: options).content, template: template)
     }
 
+    /// What splitting a chunk produced: the notes that succeeded, plus how
+    /// many pieces were dropped and the last error that dropped one.
+    private struct SplitNotes {
+        var notes: [ChunkNotes] = []
+        var skippedPieces = 0
+        var lastError: LanguageModelSession.GenerationError?
+    }
+
     /// Extracts notes from one chunk, splitting it in half and retrying when
     /// it overflows the context window — an oversized chunk re-runs alone
     /// instead of sending the whole meeting back through the budget-halving
@@ -350,27 +358,25 @@ struct SummarizationService {
         part: Int,
         of total: Int,
         contextBlock: String?
-    ) async throws -> (notes: [ChunkNotes], skippedPieces: Int, lastError: LanguageModelSession.GenerationError?) {
+    ) async throws -> SplitNotes {
         var pending = [chunk]
-        var notes: [ChunkNotes] = []
-        var skippedPieces = 0
-        var lastError: LanguageModelSession.GenerationError?
+        var result = SplitNotes()
         while let piece = pending.first {
             try Task.checkCancellation()
             do {
-                notes.append(try await extractNotes(from: piece, part: part, of: total, contextBlock: contextBlock))
+                result.notes.append(try await extractNotes(from: piece, part: part, of: total, contextBlock: contextBlock))
                 pending.removeFirst()
             } catch let error as LanguageModelSession.GenerationError {
                 if case .exceededContextWindowSize = error, piece.count > 750 {
                     pending.replaceSubrange(0...0, with: TranscriptChunker.chunks(from: piece, maxChars: piece.count / 2))
                 } else {
-                    skippedPieces += 1
-                    lastError = error
+                    result.skippedPieces += 1
+                    result.lastError = error
                     pending.removeFirst()
                 }
             }
         }
-        return (notes, skippedPieces, lastError)
+        return result
     }
 
     private func extractNotes(from chunk: String, part: Int, of total: Int, contextBlock: String?) async throws -> ChunkNotes {
