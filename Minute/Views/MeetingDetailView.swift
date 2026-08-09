@@ -183,9 +183,15 @@ struct MeetingDetailView: View {
             Text("Used on this speaker's transcript lines and in newly generated summaries.")
         }
         .task {
-            guard autoGenerateSummary, meeting.summary == nil, meeting.hasTranscript,
+            guard meeting.summary == nil, meeting.hasTranscript,
                   SummarizationEngines.availabilityMessage == nil else { return }
-            generateSummary()
+            if autoGenerateSummary {
+                generateSummary()
+            } else {
+                // The user will probably tap Generate; start loading the
+                // model now so the tap doesn't pay the model-load wait too.
+                SummarizationEngines.prewarm(language: AppSettings.summaryLanguage)
+            }
         }
         .onDisappear {
             player.stop()

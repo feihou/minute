@@ -26,6 +26,15 @@ enum SummarizationEngines {
         }
     }
 
+    /// Warms the selected engine ahead of a likely summarize, so the first
+    /// request doesn't also pay the model-load wait. Only Apple Intelligence
+    /// supports it; the MLX engine loads its weights lazily.
+    static func prewarm(language: String?) {
+        if case .appleIntelligence = AppSettings.summarizationEngine {
+            SummarizationService.prewarm(language: language)
+        }
+    }
+
     /// Availability of the SELECTED engine — the gate every auto-summarize
     /// and capability check reads. Nil means ready.
     static var availabilityMessage: String? {

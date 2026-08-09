@@ -124,9 +124,15 @@ enum SummarizerError: LocalizedError {
 /// model. Long transcripts are chunked, noted per chunk, then merged — nothing
 /// ever leaves the device.
 struct SummarizationService {
+    /// Summarizing the user's own recording is a content transformation, so
+    /// sessions use the relaxed guardrails Apple ships for exactly that — the
+    /// default ones routinely refuse ordinary meetings that touch health,
+    /// money, or conflict.
+    static let model = SystemLanguageModel(guardrails: .permissiveContentTransformations)
+
     /// Nil when the model is ready; otherwise a user-facing explanation.
     static var availabilityMessage: String? {
-        switch SystemLanguageModel.default.availability {
+        switch model.availability {
         case .available:
             return nil
         case .unavailable(.deviceNotEligible):
@@ -170,6 +176,18 @@ struct SummarizationService {
 
     private var instructions: String { Self.groundingRules(language: language) }
 
+    private func makeSession() -> LanguageModelSession {
+        LanguageModelSession(model: Self.model, instructions: instructions)
+    }
+
+    /// Loads the model into memory ahead of the first request, so tapping
+    /// Generate doesn't also pay the model-load wait. Safe to call whenever a
+    /// summary looks likely; no-op when the model is unavailable.
+    static func prewarm(language: String?) {
+        guard availabilityMessage == nil else { return }
+        LanguageModelSession(model: model, instructions: groundingRules(language: language)).prewarm()
+    }
+
     private let options = GenerationOptions(temperature: 0.3)
 
     /// Renders the user's background context as a fenced prompt block, or nil
@@ -186,6 +204,32 @@ struct SummarizationService {
             """
     }
 
+    /// Transcript tokens each chunk request may carry — the 4,096-token
+    /// window minus instructions, the output schema, and response headroom.
+    static let transcriptTokensPerChunk = 2_000
+
+    /// Chunk size derived from the transcript's measured token density,
+    /// instead of the CJK-safe character heuristic: roughly 40% fewer
+    /// requests for Latin scripts, and no wasted overflow lap for dense
+    /// ones. Nil when the runtime can't measure; the heuristic then stays
+    /// in charge.
+    static func measuredChunkBudget(for transcript: String) async -> Int? {
+        guard #available(iOS 26.4, *) else { return nil }
+        guard let tokens = try? await model.tokenCount(for: transcript), tokens > 0 else { return nil }
+        return chunkBudget(transcriptChars: transcript.count, transcriptTokens: tokens)
+    }
+
+    /// ponytail: one linear chars-per-token estimate over the whole
+    /// transcript; per-chunk token counting if mixed-script meetings ever
+    /// overflow in practice.
+    static func chunkBudget(transcriptChars: Int, transcriptTokens: Int) -> Int {
+        // Int(Double.infinity) traps; a nonsense count falls back instead.
+        guard transcriptTokens > 0 else { return TranscriptChunker.defaultMaxChars }
+        let charsPerToken = Double(transcriptChars) / Double(transcriptTokens)
+        let budget = Int(Double(transcriptTokensPerChunk) * charsPerToken)
+        return min(max(budget, 1_500), 12_000)
+    }
+
     func summarize(
         transcript: String,
         template: SummaryTemplate = .standard,
@@ -196,10 +240,11 @@ struct SummarizationService {
             throw SummarizerError.unavailable(message)
         }
         // Characters-per-token varies wildly by language (CJK is ~1:1), so the
-        // chunk budget adapts: halve on context overflow down to a floor that
-        // is safely inside the 4,096-token window for any script.
+        // chunk budget starts from the transcript's measured token density
+        // where the OS can measure it, and still halves on context overflow
+        // down to a floor that is safely inside the 4,096-token window.
         let contextBlock = Self.contextBlock(from: context)
-        var maxChars = TranscriptChunker.defaultMaxChars
+        var maxChars = await Self.measuredChunkBudget(for: transcript) ?? TranscriptChunker.defaultMaxChars
         while true {
             do {
                 return try await summarize(transcript: transcript, template: template, contextBlock: contextBlock, maxChars: maxChars, onProgress: onProgress)
@@ -232,15 +277,11 @@ struct SummarizationService {
             for (index, chunk) in chunks.enumerated() {
                 try Task.checkCancellation()
                 await onProgress?("Reading part \(index + 1) of \(chunks.count)…")
-                do {
-                    notes.append(try await extractNotes(from: chunk, part: index + 1, of: chunks.count, contextBlock: contextBlock))
-                } catch let error as LanguageModelSession.GenerationError {
-                    // Context overflow must reach the budget-halving retry;
-                    // any other failure skips just this chunk so one bad
-                    // stretch doesn't sink the whole meeting.
-                    if case .exceededContextWindowSize = error { throw error }
+                let result = try await notesSplittingOnOverflow(from: chunk, part: index + 1, of: chunks.count, contextBlock: contextBlock)
+                notes.append(contentsOf: result.notes)
+                skipped += result.skippedPieces
+                if let error = result.lastError {
                     lastSkippedError = error
-                    skipped += 1
                 }
             }
             if notes.isEmpty {
@@ -251,7 +292,17 @@ struct SummarizationService {
             }
             try Task.checkCancellation()
             await onProgress?("Combining notes…")
-            var summary = try await merge(notes, template: template, contextBlock: contextBlock, maxChars: maxChars)
+            var summary: MeetingSummary
+            do {
+                summary = try await merge(notes, template: template, contextBlock: contextBlock, maxChars: maxChars)
+            } catch let error as LanguageModelSession.GenerationError {
+                // Every part already succeeded, so a refusal at the finish
+                // line degrades the summary (no overview, title, or template
+                // sections) instead of destroying it. Overflow still goes
+                // back to the budget-halving retry.
+                if case .exceededContextWindowSize = error { throw error }
+                summary = mechanicalSummary(from: notes)
+            }
             // A partially summarized meeting must say so instead of posing
             // as complete.
             if skipped > 0 {
@@ -272,7 +323,7 @@ struct SummarizationService {
     }
 
     private func summarizeWhole(_ transcript: String, template: SummaryTemplate, contextBlock: String?) async throws -> MeetingSummary {
-        let session = LanguageModelSession(instructions: instructions)
+        let session = makeSession()
         let context = contextBlock.map { "\n\($0)\n" } ?? ""
         let section = template.isStandard ? "" : "\(sectionBlock(for: template))\n"
         let prompt = """
@@ -288,9 +339,43 @@ struct SummarizationService {
         return normalized(try await session.respond(to: prompt, generating: TemplatedDraft.self, options: options).content, template: template)
     }
 
+    /// Extracts notes from one chunk, splitting it in half and retrying when
+    /// it overflows the context window — an oversized chunk re-runs alone
+    /// instead of sending the whole meeting back through the budget-halving
+    /// restart with every finished part discarded. A piece that fails for
+    /// any other reason is dropped alone, keeping its siblings' finished
+    /// notes; only cancellation escapes.
+    private func notesSplittingOnOverflow(
+        from chunk: String,
+        part: Int,
+        of total: Int,
+        contextBlock: String?
+    ) async throws -> (notes: [ChunkNotes], skippedPieces: Int, lastError: LanguageModelSession.GenerationError?) {
+        var pending = [chunk]
+        var notes: [ChunkNotes] = []
+        var skippedPieces = 0
+        var lastError: LanguageModelSession.GenerationError?
+        while let piece = pending.first {
+            try Task.checkCancellation()
+            do {
+                notes.append(try await extractNotes(from: piece, part: part, of: total, contextBlock: contextBlock))
+                pending.removeFirst()
+            } catch let error as LanguageModelSession.GenerationError {
+                if case .exceededContextWindowSize = error, piece.count > 750 {
+                    pending.replaceSubrange(0...0, with: TranscriptChunker.chunks(from: piece, maxChars: piece.count / 2))
+                } else {
+                    skippedPieces += 1
+                    lastError = error
+                    pending.removeFirst()
+                }
+            }
+        }
+        return (notes, skippedPieces, lastError)
+    }
+
     private func extractNotes(from chunk: String, part: Int, of total: Int, contextBlock: String?) async throws -> ChunkNotes {
         // A fresh session per chunk keeps each request inside the context window.
-        let session = LanguageModelSession(instructions: instructions)
+        let session = makeSession()
         let context = contextBlock.map { "\n\($0)\n" } ?? ""
         let prompt = """
             Extract structured notes from part \(part) of \(total) of a meeting transcript. \
@@ -314,13 +399,20 @@ struct SummarizationService {
                 if group.count == 1 {
                     reduced.append(group[0])
                 } else {
-                    reduced.append(try await condense(group, contextBlock: contextBlock))
+                    do {
+                        reduced.append(try await condense(group, contextBlock: contextBlock))
+                    } catch let error as LanguageModelSession.GenerationError {
+                        // A refused condense collapses the group in code —
+                        // duplicates still fold, only the rephrasing is lost.
+                        if case .exceededContextWindowSize = error { throw error }
+                        reduced.append(Self.mechanicallyCombined(group))
+                    }
                 }
             }
             current = reduced
         }
 
-        let session = LanguageModelSession(instructions: instructions)
+        let session = makeSession()
         let context = contextBlock.map { "\n\($0)\n" } ?? ""
         // Templated notes carry the requested sections instead of an
         // open-questions list, so that rule only applies to the standard layout.
@@ -346,7 +438,7 @@ struct SummarizationService {
     }
 
     private func condense(_ notes: [ChunkNotes], contextBlock: String?) async throws -> ChunkNotes {
-        let session = LanguageModelSession(instructions: instructions)
+        let session = makeSession()
         // Every other pass gets the user's background context; this one used to
         // be the exception, so the longest meetings — the only ones that reach
         // the condense loop at all — were the ones that lost the correct
@@ -361,6 +453,64 @@ struct SummarizationService {
             \(rendered(notes))
             """
         return try await session.respond(to: prompt, generating: ChunkNotes.self, options: options).content
+    }
+
+    /// Folds chunk notes together in code — concatenate, dedupe, group
+    /// speakers — for when the model refuses a merge it is already too late
+    /// to retry. Loses the rephrasing, keeps every fact.
+    static func mechanicallyCombined(_ notes: [ChunkNotes]) -> ChunkNotes {
+        var actionItems: [DraftActionItem] = []
+        for item in notes.flatMap(\.actionItems) {
+            let task = item.task.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !task.isEmpty else { continue }
+            if let index = actionItems.firstIndex(where: { $0.task.caseInsensitiveCompare(task) == .orderedSame }) {
+                // Overlapping parts repeat tasks; keep the copy that names an
+                // owner or deadline.
+                if normalizedField(actionItems[index].owner) == ActionItem.notSpecified {
+                    actionItems[index].owner = item.owner
+                }
+                if normalizedField(actionItems[index].deadline) == ActionItem.notSpecified {
+                    actionItems[index].deadline = item.deadline
+                }
+            } else {
+                actionItems.append(DraftActionItem(task: task, owner: item.owner, deadline: item.deadline))
+            }
+        }
+
+        var perspectives: [DraftSpeakerPerspective] = []
+        for perspective in notes.flatMap(\.speakerPerspectives) {
+            let speaker = perspective.speaker.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !speaker.isEmpty else { continue }
+            if let index = perspectives.firstIndex(where: { $0.speaker.caseInsensitiveCompare(speaker) == .orderedSame }) {
+                perspectives[index].points = cleaned(perspectives[index].points + perspective.points)
+            } else {
+                perspectives.append(DraftSpeakerPerspective(speaker: speaker, points: cleaned(perspective.points)))
+            }
+        }
+
+        return ChunkNotes(
+            keyPoints: cleaned(notes.flatMap(\.keyPoints)),
+            decisions: cleaned(notes.flatMap(\.decisions)),
+            actionItems: actionItems,
+            openQuestions: cleaned(notes.flatMap(\.openQuestions)),
+            speakerPerspectives: perspectives
+        )
+    }
+
+    /// The no-model fallback summary: combined notes with an empty overview
+    /// and no suggested title — the detail view hides both when empty.
+    private func mechanicalSummary(from notes: [ChunkNotes]) -> MeetingSummary {
+        let combined = Self.mechanicallyCombined(notes)
+        return MeetingSummary(
+            overview: "",
+            keyPoints: combined.keyPoints,
+            decisions: combined.decisions,
+            actionItems: normalizedActionItems(combined.actionItems),
+            openQuestions: combined.openQuestions,
+            generatedAt: .now,
+            suggestedTitle: nil,
+            speakerPerspectives: normalizedPerspectives(combined.speakerPerspectives)
+        )
     }
 
     private func rendered(_ notes: [ChunkNotes]) -> String {
