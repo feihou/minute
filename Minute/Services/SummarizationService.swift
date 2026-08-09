@@ -296,12 +296,17 @@ struct SummarizationService {
             do {
                 summary = try await merge(notes, template: template, contextBlock: contextBlock, maxChars: maxChars)
             } catch let error as LanguageModelSession.GenerationError {
-                // Every part already succeeded, so a refusal at the finish
-                // line degrades the summary (no overview, title, or template
-                // sections) instead of destroying it. Overflow still goes
-                // back to the budget-halving retry.
-                if case .exceededContextWindowSize = error { throw error }
-                summary = mechanicalSummary(from: notes)
+                // Every part already succeeded, so a model refusal at the
+                // finish line degrades the summary (no overview, title, or
+                // template sections) instead of destroying it. Anything
+                // else — overflow, assets, rate limits — is retryable and
+                // keeps its user-facing error.
+                switch error {
+                case .guardrailViolation, .refusal:
+                    summary = mechanicalSummary(from: notes)
+                default:
+                    throw error
+                }
             }
             // A partially summarized meeting must say so instead of posing
             // as complete.
@@ -409,13 +414,26 @@ struct SummarizationService {
                         reduced.append(try await condense(group, contextBlock: contextBlock))
                     } catch let error as LanguageModelSession.GenerationError {
                         // A refused condense collapses the group in code —
-                        // duplicates still fold, only the rephrasing is lost.
-                        if case .exceededContextWindowSize = error { throw error }
-                        reduced.append(Self.mechanicallyCombined(group))
+                        // duplicates still fold, only the rephrasing is
+                        // lost. Retryable failures keep their error.
+                        switch error {
+                        case .guardrailViolation, .refusal:
+                            reduced.append(Self.mechanicallyCombined(group))
+                        default:
+                            throw error
+                        }
                     }
                 }
             }
             current = reduced
+        }
+
+        // Mechanical condenses shrink the note count but not necessarily the
+        // rendered size. A final prompt that no longer fits would overflow
+        // and send the whole meeting back through the halving restart, so
+        // fall back to the code-level merge instead.
+        if rendered(current).count > maxChars {
+            return mechanicalSummary(from: current)
         }
 
         let session = makeSession()
@@ -469,7 +487,13 @@ struct SummarizationService {
         for item in notes.flatMap(\.actionItems) {
             let task = item.task.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !task.isEmpty else { continue }
-            if let index = actionItems.firstIndex(where: { $0.task.caseInsensitiveCompare(task) == .orderedSame }) {
+            // Same wording with a conflicting specified owner or deadline is
+            // two commitments, not overlap — keep both.
+            if let index = actionItems.firstIndex(where: {
+                $0.task.caseInsensitiveCompare(task) == .orderedSame
+                    && !fieldsConflict($0.owner, item.owner)
+                    && !fieldsConflict($0.deadline, item.deadline)
+            }) {
                 // Overlapping parts repeat tasks; keep the copy that names an
                 // owner or deadline.
                 if normalizedField(actionItems[index].owner) == ActionItem.notSpecified {
@@ -501,6 +525,15 @@ struct SummarizationService {
             openQuestions: cleaned(notes.flatMap(\.openQuestions)),
             speakerPerspectives: perspectives
         )
+    }
+
+    /// True when both values are specified and disagree — e.g. the same task
+    /// wording owned by two different people.
+    private static func fieldsConflict(_ first: String, _ second: String) -> Bool {
+        let lhs = normalizedField(first)
+        let rhs = normalizedField(second)
+        return lhs != ActionItem.notSpecified && rhs != ActionItem.notSpecified
+            && lhs.caseInsensitiveCompare(rhs) != .orderedSame
     }
 
     /// The no-model fallback summary: combined notes with an empty overview
@@ -656,7 +689,7 @@ struct SummarizationService {
     private func friendlyMessage(for error: Error) -> String {
         if let generationError = error as? LanguageModelSession.GenerationError {
             switch generationError {
-            case .guardrailViolation:
+            case .guardrailViolation, .refusal:
                 return "The on-device model declined to summarize this content."
             case .exceededContextWindowSize:
                 return "This meeting is too long to summarize in one pass. Please try again."

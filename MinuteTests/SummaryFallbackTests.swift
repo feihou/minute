@@ -42,6 +42,17 @@ struct SummaryFallbackTests {
         #expect(combined.actionItems[0].deadline == "Thursday")
     }
 
+    @Test func combineKeepsSameTaskUnderDifferentOwners() {
+        let combined = SummarizationService.mechanicallyCombined([
+            notes(actionItems: [DraftActionItem(task: "Submit the report", owner: "Alice", deadline: "Not specified")]),
+            notes(actionItems: [DraftActionItem(task: "submit the report", owner: "Bob", deadline: "Friday")]),
+        ])
+        // Two people committing to the same wording is two commitments.
+        #expect(combined.actionItems.count == 2)
+        #expect(combined.actionItems[0].owner == "Alice")
+        #expect(combined.actionItems[1].owner == "Bob")
+    }
+
     @Test func combineGroupsSpeakerPerspectives() {
         let combined = SummarizationService.mechanicallyCombined([
             notes(perspectives: [DraftSpeakerPerspective(speaker: "Alice", points: ["Prefers option A"])]),
