@@ -16,6 +16,15 @@ struct KnowledgeTextTests {
         #expect(KnowledgeText.tokenOverlap("", "anything") == 0.0)
     }
 
+    @Test func tokenOverlapFallsBackToBigramsForUnspacedText() {
+        // Paraphrase pair sharing most characters: must land clearly above
+        // the near-duplicate band's floor, not collapse to 0-or-1.
+        let similar = KnowledgeText.tokenOverlap("张伟负责Atlas项目的重新设计工作", "张伟负责Atlas项目的重新设计")
+        #expect(similar > 0.6 && similar < 1.0)
+        // Unrelated clauses: clearly below the contradiction band.
+        #expect(KnowledgeText.tokenOverlap("张伟负责Atlas项目", "会议下周二举行预算审查") < 0.4)
+    }
+
     @Test func containsIgnoresCasePunctuationAndWhitespaceRuns() {
         let transcript = "[00:12] Sarah: I'll own the Atlas redesign,\nstarting next week."
         #expect(KnowledgeText.contains(transcript: transcript, quote: "own the atlas redesign starting"))

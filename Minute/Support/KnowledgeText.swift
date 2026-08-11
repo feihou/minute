@@ -13,12 +13,32 @@ enum KnowledgeText {
         tokens(text).sorted().joined(separator: " ")
     }
 
-    /// Jaccard similarity of normalized token sets, 0...1.
+    /// Jaccard similarity of normalized tokens, 0...1. Unspaced scripts
+    /// (CJK) yield one giant token, so when either side has fewer than
+    /// `wordTokenFloor` word tokens the comparison falls back to character
+    /// bigrams — deterministic and script-agnostic, keeping the fuzzy band
+    /// useful for languages without inter-word spaces.
     static func tokenOverlap(_ a: String, _ b: String) -> Double {
-        let ta = Set(tokens(a))
-        let tb = Set(tokens(b))
+        let ta = tokens(a)
+        let tb = tokens(b)
         guard !ta.isEmpty, !tb.isEmpty else { return 0 }
-        return Double(ta.intersection(tb).count) / Double(ta.union(tb).count)
+        if min(ta.count, tb.count) < wordTokenFloor {
+            return jaccard(Set(bigrams(ta.joined(separator: " "))), Set(bigrams(tb.joined(separator: " "))))
+        }
+        return jaccard(Set(ta), Set(tb))
+    }
+
+    private static let wordTokenFloor = 3
+
+    private static func bigrams(_ text: String) -> [String] {
+        let chars = Array(text)
+        guard chars.count > 1 else { return [text] }
+        return zip(chars, chars.dropFirst()).map { String([$0, $1]) }
+    }
+
+    private static func jaccard<T: Hashable>(_ a: Set<T>, _ b: Set<T>) -> Double {
+        guard !a.isEmpty, !b.isEmpty else { return 0 }
+        return Double(a.intersection(b).count) / Double(a.union(b).count)
     }
 
     /// Whether `quote` appears in `transcript`, ignoring case, diacritics,
