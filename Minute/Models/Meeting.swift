@@ -19,6 +19,9 @@ final class Meeting {
     /// "Speaker N". Nil until speakers are identified (and for meetings
     /// stored before this field existed).
     var speakerNames: [String]?
+    /// When knowledge extraction last processed this meeting; nil = pending.
+    /// The catch-up loop's cursor (spec §5).
+    var knowledgeExtractedAt: Date?
 
     init(
         id: UUID = UUID(),
