@@ -143,4 +143,40 @@ struct KnowledgeCatchUpTests {
         // (interrupted by pause) + 1 full retry of A + 1 full run of B.
         #expect(calls == 3)  // the unstamped remainder was picked up
     }
+
+    @Test func unavailableModelLeavesQueueUntouchedForALaterNudge() async throws {
+        let context = try makeContext()
+        context.insert(meetingWithTranscript("A", createdAt: .now))
+        try context.save()
+
+        var calls = 0
+        var message: String? = "Apple Intelligence isn't ready."
+        let catchUp = KnowledgeCatchUp(
+            availabilityMessage: { message },
+            extract: { _, _ in calls += 1; return [] }
+        )
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 0)
+
+        // The model becoming ready must not require an app relaunch.
+        message = nil
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 1)
+    }
+
+    @Test func pendingCountStaysAccurateWhenQueueIsFullySkipListed() async throws {
+        let context = try makeContext()
+        context.insert(meetingWithTranscript("Failing", createdAt: .now))
+        try context.save()
+
+        struct Boom: Error {}
+        let catchUp = KnowledgeCatchUp { _, _ in throw Boom() }
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+
+        // Unstamped work still exists — the count must say so, not lie "done".
+        #expect(catchUp.pendingCount == 1)
+    }
 }

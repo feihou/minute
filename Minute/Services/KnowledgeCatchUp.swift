@@ -14,6 +14,7 @@ final class KnowledgeCatchUp {
     /// Unstamped meetings remaining, for the m2 "catching up" row.
     private(set) var pendingCount = 0
 
+    private let availabilityMessage: @MainActor () -> String?
     private let extract: Extractor
     private var running: Task<Void, Never>?
     /// Meetings that failed or were empty this session — skipped, not
@@ -21,9 +22,13 @@ final class KnowledgeCatchUp {
     /// head-of-line-block the queue. Cleared naturally at next launch.
     private var skippedThisSession: Set<UUID> = []
 
-    init(extract: @escaping Extractor = { transcript, names in
-        try await KnowledgeExtractionService().extract(transcript: transcript, knownEntityNames: names)
-    }) {
+    init(
+        availabilityMessage: @escaping @MainActor () -> String? = { KnowledgeExtractionService.availabilityMessage },
+        extract: @escaping Extractor = { transcript, names in
+            try await KnowledgeExtractionService().extract(transcript: transcript, knownEntityNames: names)
+        }
+    ) {
+        self.availabilityMessage = availabilityMessage
         self.extract = extract
     }
 
@@ -47,16 +52,22 @@ final class KnowledgeCatchUp {
     }
 
     private func run(context: ModelContext) async {
+        // Not a per-meeting failure: when the model isn't ready, leave the
+        // queue untouched and wait for a later nudge (mirrors the thermal
+        // guard's return-without-consuming semantics).
+        guard availabilityMessage() == nil else { return }
+
         while !Task.isCancelled {
             // Sustained ANE work on a warm phone throttles everything; wait
             // for the next nudge instead (spec §5).
             let thermal = ProcessInfo.processInfo.thermalState
             guard thermal == .nominal || thermal == .fair else { return }
 
-            guard let meeting = nextPending(context: context) else {
-                pendingCount = 0
-                return
-            }
+            // pendingCount is owned by nextPending, which sets it from the
+            // unfiltered fetch on every call — it only reaches 0 when the
+            // fetch itself is empty, not merely when everything left is
+            // skip-listed.
+            guard let meeting = nextPending(context: context) else { return }
             guard meeting.hasTranscript else {
                 // Mid-transcription or genuinely silent: leave unstamped so a
                 // transcript arriving later gets extracted; skip this session
