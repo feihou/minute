@@ -7,7 +7,8 @@ struct MinuteApp: App {
     /// Lives at app level so summaries, re-transcriptions, and speaker
     /// identification keep running while the user navigates anywhere else in
     /// the app — and so their mutual-exclusion guard survives navigation.
-    @State private var meetingJobs = MeetingJobs()
+    @State private var meetingJobs: MeetingJobs
+    @State private var knowledgeCatchUp: KnowledgeCatchUp
     @State private var backgroundMirror: BackgroundMirrorTask?
     private let container: ModelContainer
     private let storeIsEphemeral: Bool
@@ -45,6 +46,12 @@ struct MinuteApp: App {
         #if DEBUG
         DemoSeed.seedIfRequested(container: container)
         #endif
+        let jobs = MeetingJobs()
+        let catchUp = KnowledgeCatchUp()
+        let mainContext = container.mainContext
+        jobs.onContentChanged = { catchUp.nudge(context: mainContext) }
+        _meetingJobs = State(initialValue: jobs)
+        _knowledgeCatchUp = State(initialValue: catchUp)
     }
 
     var body: some Scene {
@@ -58,6 +65,12 @@ struct MinuteApp: App {
         .onChange(of: scenePhase) {
             backgroundMirror?.cancel()
             backgroundMirror = nil
+            if scenePhase == .active {
+                knowledgeCatchUp.nudge(context: container.mainContext)
+            } else {
+                // Foreground-only: FM rate-limits background apps anyway.
+                knowledgeCatchUp.pause()
+            }
             if scenePhase == .background {
                 backgroundMirror = ICloudDriveBackup.syncIfEnabled(context: container.mainContext)
             }
