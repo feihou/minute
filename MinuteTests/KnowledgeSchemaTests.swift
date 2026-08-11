@@ -5,11 +5,25 @@ import Testing
 
 @MainActor
 struct KnowledgeSchemaTests {
+    /// Containers with the relationship-bearing knowledge schema are retained
+    /// for the process lifetime: ModelContainer teardown is not actor-isolated,
+    /// and a container deiniting in the background while another test runs
+    /// crashes the test host inside SwiftData.framework (signal trap; see
+    /// .superpowers/sdd/task-1-report.md). Tests still get a fresh, isolated
+    /// container each — they just never tear it down mid-run.
+    private static var retainedContainers: [ModelContainer] = []
+
+    @discardableResult
+    private static func retain(_ container: ModelContainer) -> ModelContainer {
+        retainedContainers.append(container)
+        return container
+    }
+
     private func makeContainer() throws -> ModelContainer {
-        try ModelContainer(
+        try Self.retain(ModelContainer(
             for: Meeting.self, KnowledgeEntity.self, KnowledgeFact.self,
             configurations: MeetingStore.modelConfiguration(inMemory: true)
-        )
+        ))
     }
 
     @Test func entityCascadeDeletesItsFacts() throws {
@@ -54,17 +68,17 @@ struct KnowledgeSchemaTests {
             .appendingPathComponent("migrate-\(UUID().uuidString).store")
         defer { try? FileManager.default.removeItem(at: url) }
 
-        let old = try ModelContainer(
+        let old = try Self.retain(ModelContainer(
             for: Meeting.self,
             configurations: ModelConfiguration(url: url, cloudKitDatabase: .none)
-        )
+        ))
         old.mainContext.insert(Meeting(title: "Pre-upgrade"))
         try old.mainContext.save()
 
-        let new = try ModelContainer(
+        let new = try Self.retain(ModelContainer(
             for: Meeting.self, KnowledgeEntity.self, KnowledgeFact.self,
             configurations: ModelConfiguration(url: url, cloudKitDatabase: .none)
-        )
+        ))
         let meetings = try new.mainContext.fetch(FetchDescriptor<Meeting>())
         #expect(meetings.count == 1)
         #expect(meetings[0].knowledgeExtractedAt == nil)
