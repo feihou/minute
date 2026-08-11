@@ -189,4 +189,30 @@ struct KnowledgeIngestTests {
         let texts = facts.map(\.originalText).sorted()
         #expect(texts == ["Sarah approved fact", "Sarah fresh suggestion"])
     }
+
+    @Test func reapplyWithSameTextReplacesStaleSuggestionInsteadOfDroppingIt() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "m")
+        context.insert(meeting)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        context.insert(KnowledgeFact(
+            text: "Sarah leads Atlas", originalText: "Sarah leads Atlas",
+            status: .suggested, sourceMeetingID: meeting.id, capturedAt: .now, entity: entity
+        ))
+        try context.save()
+
+        // Re-extraction reproducing the same text must replace, never vanish.
+        let result = try KnowledgeIngest.apply(
+            [candidate("Sarah", "Sarah leads Atlas", quote: nil)],
+            from: meeting, context: context
+        )
+
+        #expect(result.suggested == 1)
+        #expect(result.duplicatesDropped == 0)
+        let facts = try context.fetch(FetchDescriptor<KnowledgeFact>())
+        #expect(facts.count == 1)
+        #expect(facts[0].originalText == "Sarah leads Atlas")
+        #expect(facts[0].status == .suggested)
+    }
 }

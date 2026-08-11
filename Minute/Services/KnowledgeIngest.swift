@@ -36,6 +36,12 @@ enum KnowledgeIngest {
         let stale = try context.fetch(FetchDescriptor<KnowledgeFact>(
             predicate: #Predicate { $0.sourceMeetingID == meetingID && $0.statusRaw == "suggested" }
         ))
+        // context.delete doesn't save immediately, so deleted-but-unsaved
+        // facts stay visible in entity.facts until try context.save() below.
+        // Dedup/contradiction scans over entity.facts must skip these IDs or
+        // a replacement fact with matching text "duplicates" the very fact
+        // it's replacing, and the meeting ends up with zero facts.
+        let staleIDs = Set(stale.map(\.id))
         stale.forEach(context.delete)
 
         for candidate in candidates {
@@ -52,6 +58,7 @@ enum KnowledgeIngest {
             let candidateNormalized = KnowledgeText.normalized(candidate.fact)
             var crossMeetingNearDuplicate = false
             let isDuplicate = entity.facts.contains { existing in
+                if staleIDs.contains(existing.id) { return false }
                 if existing.status == .rejected {
                     return existing.fingerprint == candidateFingerprint
                 }
@@ -71,7 +78,10 @@ enum KnowledgeIngest {
             }
 
             let contradictsApproved = entity.facts.contains { existing in
-                (existing.status == .approved || existing.status == .autoCaptured)
+                // Stale facts are always `.suggested`, so this can't trigger
+                // today — filtered anyway to keep the invariant explicit.
+                !staleIDs.contains(existing.id)
+                    && (existing.status == .approved || existing.status == .autoCaptured)
                     && KnowledgeText.tokenOverlap(existing.originalText, candidate.fact) >= contradictionThreshold
             }
 
