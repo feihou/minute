@@ -73,7 +73,7 @@ queryable and searchable.
 }
 ```
 
-`Meeting` gains one field: `knowledgeExtractedAt: Date?` — the backfill cursor
+`Meeting` gains one field: `knowledgeExtractedAt: Date?` — the extraction cursor
 stamp (§5).
 
 Rules:
@@ -115,7 +115,7 @@ A new job in `MeetingJobs`, running after summarization succeeds.
   "possible duplicate of X?" review card is enqueued; never a silent fork. The user's
   own name / self-speaker label hard-maps to the Me singleton in resolution code.
 - **Idempotent re-runs** (retry-next-launch, re-transcribe/re-summarize flows,
-  backfill re-runs): re-extraction of a meeting replaces that meeting's still-`suggested`
+  catch-up re-runs): re-extraction of a meeting replaces that meeting's still-`suggested`
   facts wholesale. Dedup keys on `(entity, sourceMeetingID)` with low-threshold text
   similarity within that scope (same-meeting near-dupes are re-extraction paraphrases);
   cross-meeting near-dupes are never auto-dropped — they surface as "possible duplicate"
@@ -128,7 +128,7 @@ A new job in `MeetingJobs`, running after summarization succeeds.
   A17 Pro+). Devices without it see the Brain tab in a "requires Apple Intelligence"
   state. MLX-based extraction is future work.
 - User deletion of an approved fact converts it to a rejected tombstone (fingerprint),
-  never a hard delete — otherwise the next backfill resurrects it.
+  never a hard delete — otherwise the next catch-up pass resurrects it.
 
 ## 3. Trust model — editor, not gatekeeper
 
@@ -173,27 +173,33 @@ Approval-gating every fact collapses into approve-all theater at real volume
 - Export renders superseded facts under a "History" subsection, not interleaved as
   current truth.
 
-## 5. Backfill and cold start
+## 5. Catch-up extraction and onboarding
 
-- **Foreground-only, newest-first, resumable cursor**: each meeting is stamped
-  (`knowledgeExtractedAt`) after processing; the job runs serially only while the scene
-  is active and `ProcessInfo.thermalState <= .fair`; `.rateLimited` and backgrounding
-  are pause-and-resume, not failure. One save per meeting through a background
-  ModelContext/ModelActor; only persistent IDs cross to the main actor.
-- **No gated review wall.** The Brain tab fills in live with a progress row ("your
-  Brain fills in as you use Minute"). Newest-first means it is useful within the first
-  minute.
-- **Onboarding is one bounded pass (~10 taps):** open with the Me page reveal —
-  "here's what Minute picked up about you" — then confirm/merge the top ~5 people and
-  projects (an entity-resolution pass; one merge decision retires dozens of downstream
-  fact errors). Everything else stays browsable as draft and is confirmed lazily
+The app launches with no installed base, so there is no "backfill moment" — but the
+pipeline still needs a catch-up loop for ordinary reasons: guardrail skips, rate
+limits, the app killed mid-job, meetings recorded before extraction was available,
+bulk audio imports, and future extractor-version upgrades. One mechanism covers all
+of these:
+
+- **Stamped cursor:** each meeting is stamped (`knowledgeExtractedAt`) after
+  processing; a serial, newest-first loop processes unstamped meetings only while the
+  scene is active and `ProcessInfo.thermalState <= .fair`. `.rateLimited` and
+  backgrounding are pause-and-resume, not failure. One save per meeting through a
+  background ModelContext/ModelActor; only persistent IDs cross to the main actor.
+- **It is plumbing, not a feature:** no dedicated progress treatment beyond a small
+  "catching up on N meetings" row that appears only when there is actual pending work.
+- **Onboarding decouples from catch-up:** the Me-page reveal ("here's what Minute
+  picked up about you") + confirm/merge of the top ~5 people and projects triggers on
+  a corpus milestone — once roughly 15–20 facts exist — whenever that happens
+  (an entity-resolution pass; one merge decision retires dozens of downstream fact
+  errors). Everything else stays browsable as draft and is confirmed lazily
   (approve-while-reading affordance on entity pages, per-meeting confirmation for new
-  meetings).
+  meetings). No gated review wall, ever.
 
 ## 6. Brain tab and entity pages
 
 - New top-level tab. Sections: **Me, People, Projects, Topics**, plus the "Recently
-  learned" stream and the backfill progress row.
+  learned" stream and the catch-up row (§5, shown only when work is pending).
 - Entity page: **synthesis paragraph on top** (the system saying something *about* the
   entity), dated facts with source-meeting chips underneath (deep links via existing
   `MeetingDeepLinkState`; chips tolerate deleted meetings). Facts are the receipts under
@@ -256,8 +262,8 @@ Approval-gating every fact collapses into approve-all theater at real volume
 - Guardrail refusal skips the meeting visibly without blocking the queue.
 - KB shares the store's existing ephemeral in-memory fallback; the migration test (§1)
   protects meetings from KB schema bugs.
-- Backfill obeys thermal/foreground constraints (§5); a stuck cursor self-heals by
-  re-checking stamps.
+- Catch-up extraction obeys thermal/foreground constraints (§5); a stuck cursor
+  self-heals by re-checking stamps.
 
 ## 10. Testing
 
@@ -265,7 +271,7 @@ Approval-gating every fact collapses into approve-all theater at real volume
   re-extraction, tombstone fingerprint matching after user edits, merge-then-re-extract,
   supersession transitions, export filename sanitization golden files.
 - **Integration:** extraction job over seeded transcripts (the simulator lacks
-  SpeechTranscriber but has FoundationModels); backfill cursor resume after simulated
+  SpeechTranscriber but has FoundationModels); catch-up cursor resume after simulated
   interruption; migration test from current-schema store copy.
 - **UI:** review-card flows (approve / replace / reassign-entity / both reject verbs),
   merge picker, Me-page onboarding pass.
@@ -273,8 +279,8 @@ Approval-gating every fact collapses into approve-all theater at real volume
 
 ## 11. Build order
 
-1. **Models + extraction + backfill** — schema, extraction job, resolution, dedup,
-   cursor. (Testable headless before any UI.)
+1. **Models + extraction + catch-up loop** — schema, extraction job, resolution,
+   dedup, cursor. (Testable headless before any UI.)
 2. **Brain tab + review + pre-meeting brief** — entity pages, synthesis, review cards,
    onboarding pass, "Recently learned", forget/merge.
 3. **Export** — snapshot vault writer on `NotesExporter`.
