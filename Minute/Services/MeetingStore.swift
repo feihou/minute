@@ -106,7 +106,10 @@ enum MeetingStore {
     @MainActor
     static func previewContainer() -> ModelContainer {
         do {
-            return try ModelContainer(for: Meeting.self, configurations: modelConfiguration(inMemory: true))
+            return try ModelContainer(
+                for: Meeting.self, KnowledgeEntity.self, KnowledgeFact.self,
+                configurations: modelConfiguration(inMemory: true)
+            )
         } catch {
             fatalError("Unable to create the in-memory preview container: \(error)")
         }

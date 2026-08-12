@@ -7,20 +7,21 @@ struct MinuteApp: App {
     /// Lives at app level so summaries, re-transcriptions, and speaker
     /// identification keep running while the user navigates anywhere else in
     /// the app — and so their mutual-exclusion guard survives navigation.
-    @State private var meetingJobs = MeetingJobs()
+    @State private var meetingJobs: MeetingJobs
+    @State private var knowledgeCatchUp: KnowledgeCatchUp
     @State private var backgroundMirror: BackgroundMirrorTask?
     private let container: ModelContainer
     private let storeIsEphemeral: Bool
 
     init() {
         if let persistent = try? ModelContainer(
-            for: Meeting.self,
+            for: Meeting.self, KnowledgeEntity.self, KnowledgeFact.self,
             configurations: MeetingStore.modelConfiguration()
         ) {
             container = persistent
             storeIsEphemeral = false
         } else if let inMemory = try? ModelContainer(
-            for: Meeting.self,
+            for: Meeting.self, KnowledgeEntity.self, KnowledgeFact.self,
             configurations: MeetingStore.modelConfiguration(inMemory: true)
         ) {
             // ponytail: corrupt store falls back to a session-only container so
@@ -28,7 +29,7 @@ struct MinuteApp: App {
             container = inMemory
             storeIsEphemeral = true
         } else {
-            fatalError("Unable to create a SwiftData container for Meeting")
+            fatalError("Unable to create a SwiftData container")
         }
         // In fallback mode, route new audio to a session-only directory; wipe
         // whatever a previous fallback session left there — no meeting can
@@ -45,6 +46,12 @@ struct MinuteApp: App {
         #if DEBUG
         DemoSeed.seedIfRequested(container: container)
         #endif
+        let jobs = MeetingJobs()
+        let catchUp = KnowledgeCatchUp()
+        let mainContext = container.mainContext
+        jobs.onContentChanged = { catchUp.nudge(context: mainContext) }
+        _meetingJobs = State(initialValue: jobs)
+        _knowledgeCatchUp = State(initialValue: catchUp)
     }
 
     var body: some Scene {
@@ -58,6 +65,12 @@ struct MinuteApp: App {
         .onChange(of: scenePhase) {
             backgroundMirror?.cancel()
             backgroundMirror = nil
+            if scenePhase == .active {
+                knowledgeCatchUp.nudge(context: container.mainContext)
+            } else {
+                // Foreground-only: FM rate-limits background apps anyway.
+                knowledgeCatchUp.pause()
+            }
             if scenePhase == .background {
                 backgroundMirror = ICloudDriveBackup.syncIfEnabled(context: container.mainContext)
             }

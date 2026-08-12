@@ -44,6 +44,11 @@ final class MeetingJobs {
     private var statuses: [UUID: String] = [:]
     private var failures: [UUID: Failure] = [:]
 
+    /// Fired on the main actor after any job finishes successfully — the
+    /// knowledge catch-up loop's nudge. Optional so tests and previews can
+    /// leave it unset.
+    var onContentChanged: (@MainActor () -> Void)?
+
     /// True while any job holds this meeting — the guard every entry point and
     /// every menu item shares.
     func isBusy(_ meeting: Meeting) -> Bool {
@@ -126,12 +131,7 @@ final class MeetingJobs {
                     message: "Re-transcription produced no text, so the existing transcript was kept." + hint
                 )
             }
-            meeting.segments = segments
-            // Speaker indices point into the OLD segmentation. Keeping the
-            // names would re-attach them to whoever now happens to land on
-            // those indices — the confirmation dialog already promises the
-            // labels are cleared.
-            meeting.speakerNames = nil
+            MeetingJobs.applyNewTranscript(segments, to: meeting)
             try? meeting.modelContext?.save()
         }
     }
@@ -173,6 +173,7 @@ final class MeetingJobs {
         let task = Task { @MainActor [self] in
             do {
                 try await work()
+                onContentChanged?()
             } catch is CancellationError {
                 // The user tapped Stop — nothing to report.
             } catch {
@@ -186,6 +187,16 @@ final class MeetingJobs {
         }
         running[id] = Running(kind: kind, task: task)
         return task
+    }
+
+    /// Applies a fresh transcript: replaces segments, clears speaker names
+    /// (indices point into the old segmentation — the confirmation dialog
+    /// already promises the labels are cleared), and resets the knowledge
+    /// extraction cursor so the changed transcript is re-extracted.
+    static func applyNewTranscript(_ segments: [TranscriptSegment], to meeting: Meeting) {
+        meeting.segments = segments
+        meeting.speakerNames = nil
+        meeting.knowledgeExtractedAt = nil
     }
 
     /// Adopts the model's title only while the meeting still carries the
