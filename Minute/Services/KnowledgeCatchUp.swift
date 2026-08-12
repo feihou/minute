@@ -1,4 +1,5 @@
 import Foundation
+import FoundationModels
 import SwiftData
 
 /// The knowledge layer's catch-up loop (spec §5): extract facts from any
@@ -76,17 +77,32 @@ final class KnowledgeCatchUp {
                 continue
             }
             do {
+                let transcript = meeting.timestampedTranscriptText
                 let names = knownEntityNames(context: context)
-                let candidates = try await extract(meeting.timestampedTranscriptText, names)
+                let candidates = try await extract(transcript, names)
                 guard !meeting.isDeleted else { continue }
+                // A re-transcription may have replaced the segments while the
+                // model was reading the old text; facts from a stale transcript
+                // must not be ingested or stamped over. The meeting stays
+                // unstamped and un-skipped, so this same loop picks it up again
+                // with the fresh transcript.
+                guard meeting.timestampedTranscriptText == transcript else { continue }
                 try KnowledgeIngest.apply(candidates, from: meeting, context: context)
                 meeting.knowledgeExtractedAt = .now
                 try context.save()
             } catch is CancellationError {
                 return
+            } catch let error as LanguageModelSession.GenerationError {
+                // Rate limiting is the device saying "not now", not a verdict
+                // on this meeting: stop without skip-listing (spec §5
+                // pause-and-resume) — the next nudge retries from here.
+                if case .rateLimited = error { return }
+                // Permanent (refusal, etc.) failures skip for this session
+                // and retry at next launch.
+                skippedThisSession.insert(meeting.id)
             } catch {
-                // Transient (rate limit) and permanent (refusal) failures
-                // both skip for this session and retry at next launch.
+                // Non-FoundationModels failures skip for this session and
+                // retry at next launch.
                 skippedThisSession.insert(meeting.id)
             }
         }

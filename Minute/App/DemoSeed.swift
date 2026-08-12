@@ -272,7 +272,10 @@ enum DemoSeed {
             speakerNames: ["Lena", "Marcus"]
         )
 
-        return [roadmap, designSync, oneOnOne, customerCall, allHands]
+        let seeded = [roadmap, designSync, oneOnOne, customerCall, allHands]
+        // Pre-stamped so screenshot/demo runs don't fire real FM knowledge extractions.
+        for meeting in seeded { meeting.knowledgeExtractedAt = .now }
+        return seeded
     }
 }
 #endif

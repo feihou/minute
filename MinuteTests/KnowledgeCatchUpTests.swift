@@ -1,4 +1,5 @@
 import Foundation
+import FoundationModels
 import SwiftData
 import Testing
 @testable import Minute
@@ -178,5 +179,59 @@ struct KnowledgeCatchUpTests {
 
         // Unstamped work still exists — the count must say so, not lie "done".
         #expect(catchUp.pendingCount == 1)
+    }
+
+    @Test func transcriptReplacedMidExtractionIsReextractedNotStampedStale() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("Original", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        var calls = 0
+        let catchUp = KnowledgeCatchUp { transcript, _ in
+            calls += 1
+            if calls == 1 {
+                // A re-transcription lands while the model is mid-read.
+                meeting.segments = [TranscriptSegment(text: "Replaced transcript line", start: 0, end: 1)]
+                meeting.knowledgeExtractedAt = nil
+                return [KnowledgeCandidate(entityName: "Stale", entityKind: .topic, fact: "from old transcript", validatedQuote: nil)]
+            }
+            #expect(transcript.contains("Replaced"))
+            return [KnowledgeCandidate(entityName: "Fresh", entityKind: .topic, fact: "from new transcript", validatedQuote: nil)]
+        }
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+
+        #expect(calls == 2)
+        #expect(meeting.knowledgeExtractedAt != nil)
+        let entities = try context.fetch(FetchDescriptor<KnowledgeEntity>())
+        #expect(entities.map(\.name).sorted() == ["Fresh"])  // stale facts never ingested
+    }
+
+    @Test func rateLimitedPausesWithoutPoisoningTheQueue() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("A", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        var calls = 0
+        let catchUp = KnowledgeCatchUp { _, _ in
+            calls += 1
+            if calls == 1 {
+                throw LanguageModelSession.GenerationError.rateLimited(.init(debugDescription: "test"))
+            }
+            return []
+        }
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 1)
+        #expect(catchUp.pendingCount == 1)  // still pending, not skip-listed
+        #expect(meeting.knowledgeExtractedAt == nil)
+
+        // A later nudge retries the same meeting rather than treating it as skip-listed.
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 2)
+        #expect(meeting.knowledgeExtractedAt != nil)
     }
 }
