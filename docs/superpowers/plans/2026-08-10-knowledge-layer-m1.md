@@ -1501,3 +1501,45 @@ Brain tab UI, review cards, synthesis generation, pre-meeting brief, merge UI,
 "forget" purge, Me-name setting + self-resolution, export, chat, DemoSeed
 Brain seeding, near-miss "possible duplicate" review cards. The models and
 statuses above already carry everything m2 needs.
+
+---
+
+## Post-merge addendum (2026-08-11): follow-ups and m2 notes
+
+Milestone 1 merged to main (e90037b) after six task-scoped reviews and a
+whole-branch review (verdict: ready to merge; 194 tests green).
+
+**Follow-up tickets (small, none block m2 — batch as one hygiene task):**
+1. Trim `draft.entityKind` before rawValue lookup in
+   `KnowledgeExtractionService.candidate` (whitespace-padded kind silently
+   becomes `.topic`).
+2. Unit test for the `.me` → `.topic` collapse in `candidate(from:transcript:)`
+   (privacy gate: the model must never write to Me).
+3. Test the `isDeleted`+`continue` path in `KnowledgeCatchUp.run` (extractor
+   closure that deletes the meeting mid-extract).
+4. MeetingJobs-level test that `onContentChanged` fires once on success and
+   never on throw/cancel (only automatic extraction trigger after a job).
+5. Test same-batch duplicate dropping in `KnowledgeIngest.apply` (two identical
+   candidates in one call — relies on SwiftData inverse updates pre-save).
+6. Repoint `KnowledgeSchemaTests`' doc-comment citation of
+   `.superpowers/sdd/task-1-report.md` to commit df59a7e (artifact won't
+   outlive the branch).
+7. `hintNames` never matches CJK entity names (token-boundary matching on
+   unspaced scripts) — add a substring path; resolution is unaffected, only
+   prompt spelling-reuse hints.
+
+**Carry into the m2 plan:**
+- The rejection flow must clear `text`/`originalText`/`sourceQuote` and set
+  `fingerprint` (spec §1 — the model layer supports it; no code path exists yet,
+  correctly out of m1 scope).
+- Merge must collapse `redirectTo` chains (resolution follows ONE hop; a
+  merge chain A→B→C would land facts on the merged-away B).
+- The "N meetings skipped" row needs user-facing mapping of
+  `extract()`'s raw `LanguageModelSession.GenerationError` (m1 rethrows raw —
+  unlike the summarizer's friendly-message path).
+- Seed Brain content explicitly in DemoSeed for m2 screenshots (m1 stamps
+  seeded meetings so no background extraction fires).
+- Known text-matching ceilings, accepted: multi-clause CJK similarity uses
+  clause-level tokens above `wordTokenFloor`; salt read is unsynchronized
+  (unreachable off MainActor today); `KnowledgeText.contains` matches
+  non-token-aligned substrings (padding fix noted in final review).
