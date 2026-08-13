@@ -66,7 +66,7 @@ struct BrainView: View {
 
     private var brainList: some View {
         List {
-            if catchUp.pendingCount > 0 {
+            if catchUp.isWorking {
                 Section {
                     HStack(spacing: 12) {
                         ProgressView()
@@ -74,6 +74,15 @@ struct BrainView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
+                }
+            } else if catchUp.pendingCount > 0 {
+                // Pending but idle (skip-listed failures, model not ready):
+                // say so without pretending anything is running.
+                Section {
+                    Label("\(catchUp.pendingCount) meeting\(catchUp.pendingCount == 1 ? "" : "s") still to read — Minute catches up while it's open.",
+                          systemImage: "clock")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
             }
             let recent = KnowledgeBrief.recentlyLearned(from: entities)
@@ -161,6 +170,18 @@ struct BrainView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 36)
+
+                // A first-run user's earliest visit likely lands mid-extraction —
+                // show that the brain is being built right now.
+                if catchUp.isWorking {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                        Text("Reading your \(catchUp.pendingCount) meeting\(catchUp.pendingCount == 1 ? "" : "s") now…")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 28)
+                }
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 60)
@@ -172,6 +193,14 @@ struct BrainView: View {
 /// something ABOUT the entity), dated facts with source-meeting chips
 /// underneath — the receipts under the story (spec §6). Read-only in m2a.
 struct EntityDetailView: View {
+    /// Re-fires the synthesis refresh when facts arrive OR when ingest
+    /// invalidates the marker without changing the count (a same-count
+    /// re-extraction while this page is open).
+    private struct SynthesisTaskID: Equatable {
+        let factCount: Int
+        let marker: Int?
+    }
+
     @Environment(\.modelContext) private var context
     @Bindable var entity: KnowledgeEntity
     @Query(sort: \Meeting.createdAt, order: .reverse) private var meetings: [Meeting]
@@ -189,7 +218,7 @@ struct EntityDetailView: View {
         .navigationTitle(entity.name)
         .navigationBarTitleDisplayMode(.inline)
         // Re-run when facts arrive while the page is open (catch-up loop).
-        .task(id: entity.visibleFacts.count) {
+        .task(id: SynthesisTaskID(factCount: entity.visibleFacts.count, marker: entity.synthesizedFactCount)) {
             synthesisRefreshFailed = false
             synthesisRefreshFailed = await !KnowledgeSynthesisService.refreshIfStale(entity, context: context)
         }

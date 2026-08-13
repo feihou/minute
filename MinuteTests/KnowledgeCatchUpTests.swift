@@ -113,6 +113,29 @@ struct KnowledgeCatchUpTests {
         #expect(calls == 1)
     }
 
+    @Test func isWorkingIsTrueOnlyWhileTheLoopRuns() async throws {
+        let context = try makeContext()
+        context.insert(meetingWithTranscript("Only", createdAt: .now))
+        try context.save()
+
+        var observedDuringRun = false
+        var catchUpRef: KnowledgeCatchUp?
+        let catchUp = KnowledgeCatchUp { _, _ in
+            observedDuringRun = catchUpRef?.isWorking ?? false
+            return []
+        }
+        catchUpRef = catchUp
+        #expect(!catchUp.isWorking)
+
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+
+        // The Brain tab's spinner keys on this: true mid-run, false after —
+        // even when pendingCount would still be nonzero (skip-listed work).
+        #expect(observedDuringRun)
+        #expect(!catchUp.isWorking)
+    }
+
     @Test func pauseStopsTheLoopAndNudgeResumes() async throws {
         let context = try makeContext()
         context.insert(meetingWithTranscript("A", createdAt: .now))

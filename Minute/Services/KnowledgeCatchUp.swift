@@ -15,6 +15,11 @@ final class KnowledgeCatchUp {
     /// Unstamped meetings remaining, for the m2 "catching up" row.
     private(set) var pendingCount = 0
 
+    /// True only while the loop is actively processing. The Brain tab's live
+    /// catch-up row keys on this, not on pendingCount — pending work can sit
+    /// skip-listed while the loop is idle, and a spinner would be a lie.
+    private(set) var isWorking = false
+
     private let availabilityMessage: @MainActor () -> String?
     private let extract: Extractor
     private var running: Task<Void, Never>?
@@ -37,7 +42,9 @@ final class KnowledgeCatchUp {
     func nudge(context: ModelContext) {
         guard running == nil else { return }
         running = Task { [self] in
+            isWorking = true
             await run(context: context)
+            isWorking = false
             running = nil
         }
     }
