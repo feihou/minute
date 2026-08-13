@@ -20,6 +20,11 @@ final class KnowledgeEntity {
     var createdAt: Date
     /// Set when merged away; resolution follows this to the winner (m2).
     var redirectTo: UUID?
+    /// Visible-fact count synthesis was last generated from; the narrative
+    /// is stale when the live count differs. Nil = never synthesized.
+    /// ponytail: count-based staleness misses same-count text edits; m2b's
+    /// review actions clear this field to force a refresh.
+    var synthesizedFactCount: Int?
     @Relationship(deleteRule: .cascade, inverse: \KnowledgeFact.entity)
     var facts: [KnowledgeFact]
 
@@ -45,5 +50,15 @@ final class KnowledgeEntity {
         self.createdAt = createdAt
         self.redirectTo = redirectTo
         self.facts = []
+    }
+}
+
+extension KnowledgeEntity {
+    /// Facts shown on entity pages and fed to synthesis: everything except
+    /// tombstones and superseded history, newest meeting first.
+    var visibleFacts: [KnowledgeFact] {
+        facts
+            .filter { $0.status == .autoCaptured || $0.status == .approved || $0.status == .suggested }
+            .sorted { $0.capturedAt > $1.capturedAt }
     }
 }

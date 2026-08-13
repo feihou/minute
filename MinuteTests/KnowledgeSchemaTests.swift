@@ -83,4 +83,38 @@ struct KnowledgeSchemaTests {
         #expect(meetings.count == 1)
         #expect(meetings[0].knowledgeExtractedAt == nil)
     }
+
+    @Test func visibleFactsExcludeTombstonesAndHistorySortedNewestFirst() throws {
+        let context = try makeContainer().mainContext
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        let old = KnowledgeFact(text: "old", originalText: "old", status: .approved,
+                                sourceMeetingID: UUID(), capturedAt: .now.addingTimeInterval(-3600), entity: entity)
+        let new = KnowledgeFact(text: "new", originalText: "new", status: .autoCaptured,
+                                sourceMeetingID: UUID(), capturedAt: .now, entity: entity)
+        let draft = KnowledgeFact(text: "draft", originalText: "draft", status: .suggested,
+                                  sourceMeetingID: UUID(), capturedAt: .now.addingTimeInterval(-60), entity: entity)
+        let gone = KnowledgeFact(text: "", originalText: "", status: .rejected,
+                                 sourceMeetingID: UUID(), capturedAt: .now, entity: entity)
+        let past = KnowledgeFact(text: "past", originalText: "past", status: .superseded,
+                                 sourceMeetingID: UUID(), capturedAt: .now, entity: entity)
+        for fact in [old, new, draft, gone, past] { context.insert(fact) }
+        try context.save()
+
+        #expect(entity.visibleFacts.map(\.text) == ["new", "draft", "old"])
+    }
+
+    @Test func factCreatedAtDefaultsNowAndToleratesNilFromM1Rows() throws {
+        let context = try makeContainer().mainContext
+        let entity = KnowledgeEntity(name: "Atlas", kind: .project)
+        context.insert(entity)
+        let fresh = KnowledgeFact(text: "f", originalText: "f", status: .approved,
+                                  sourceMeetingID: UUID(), capturedAt: .now, entity: entity)
+        context.insert(fresh)
+        #expect(fresh.createdAt != nil)
+        fresh.createdAt = nil   // an m1-era row after migration
+        try context.save()
+        #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).count == 1)
+        #expect(entity.synthesizedFactCount == nil)
+    }
 }
