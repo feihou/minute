@@ -66,4 +66,24 @@ struct KnowledgeBriefTests {
         #expect(recent.first?.text == "legacy")            // newest by fallback capturedAt
         #expect(!recent.map(\.text).contains("draft"))     // suggested excluded
     }
+
+    @Test func briefExcludesFactsFromTheMeetingBeingViewed() throws {
+        let context = try makeContext()
+        let meetingID = UUID()
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        context.insert(KnowledgeFact(
+            text: "from this meeting", originalText: "from this meeting", status: .autoCaptured,
+            sourceMeetingID: meetingID, capturedAt: .now, entity: entity
+        ))
+        context.insert(KnowledgeFact(
+            text: "from before", originalText: "from before", status: .autoCaptured,
+            sourceMeetingID: UUID(), capturedAt: .now.addingTimeInterval(-3600), entity: entity
+        ))
+        try context.save()
+
+        let facts = KnowledgeBrief.briefFacts(for: entity, excludingMeetingID: meetingID)
+
+        #expect(facts.map(\.text) == ["from before"])
+    }
 }

@@ -8,6 +8,13 @@ enum KnowledgeBrief {
     /// Facts shown per matched participant in the brief.
     static let factsPerEntity = 3
 
+    /// The facts worth showing before a meeting: what the brain knew from
+    /// OTHER meetings. Facts extracted from this same meeting are excluded —
+    /// "what you know" must not echo the recording that produced it.
+    static func briefFacts(for entity: KnowledgeEntity, excludingMeetingID meetingID: UUID) -> [KnowledgeFact] {
+        Array(entity.visibleFacts.filter { $0.sourceMeetingID != meetingID }.prefix(factsPerEntity))
+    }
+
     /// People whose name or alias matches one of this meeting's speaker
     /// names (normalized: case, diacritics, token order). "Speaker N"
     /// placeholders never match because no entity carries that name.

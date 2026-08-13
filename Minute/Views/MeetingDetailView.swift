@@ -40,6 +40,16 @@ struct MeetingDetailView: View {
         KnowledgeBrief.matchedEntities(speakerNames: meeting.speakerNames, entities: knowledgeEntities)
     }
 
+    /// Brief entities paired with the facts worth showing for them — facts
+    /// from other meetings only. Entities left with nothing to show (every
+    /// fact came from this meeting) are dropped rather than rendered empty.
+    private var briefContent: [(entity: KnowledgeEntity, facts: [KnowledgeFact])] {
+        briefEntities.compactMap { entity in
+            let facts = KnowledgeBrief.briefFacts(for: entity, excludingMeetingID: meeting.id)
+            return facts.isEmpty ? nil : (entity, facts)
+        }
+    }
+
     /// True while any job holds this meeting; every menu item that rewrites the
     /// meeting is gated on it.
     private var isBusy: Bool { jobs.isBusy(meeting) }
@@ -56,13 +66,13 @@ struct MeetingDetailView: View {
         List {
             headerSection
 
-            if !briefEntities.isEmpty {
+            if !briefContent.isEmpty {
                 Section {
-                    ForEach(briefEntities) { entity in
+                    ForEach(briefContent, id: \.entity.id) { item in
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(entity.name)
+                            Text(item.entity.name)
                                 .font(.subheadline.weight(.semibold))
-                            ForEach(entity.visibleFacts.prefix(KnowledgeBrief.factsPerEntity)) { fact in
+                            ForEach(item.facts) { fact in
                                 Label {
                                     Text(fact.text)
                                         .font(.footnote)
