@@ -33,6 +33,12 @@ struct MeetingDetailView: View {
     @State private var renameText = ""
     @State private var selectedTab: Tab = .summary
     @AppStorage(AppSettings.summaryTemplateKey) private var summaryTemplateID = SummaryTemplate.standard.id
+    @Query private var knowledgeEntities: [KnowledgeEntity]
+
+    /// Participants this brain already knows — the pre-meeting brief.
+    private var briefEntities: [KnowledgeEntity] {
+        KnowledgeBrief.matchedEntities(speakerNames: meeting.speakerNames, entities: knowledgeEntities)
+    }
 
     /// True while any job holds this meeting; every menu item that rewrites the
     /// meeting is gated on it.
@@ -49,6 +55,30 @@ struct MeetingDetailView: View {
     var body: some View {
         List {
             headerSection
+
+            if !briefEntities.isEmpty {
+                Section {
+                    ForEach(briefEntities) { entity in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(entity.name)
+                                .font(.subheadline.weight(.semibold))
+                            ForEach(entity.visibleFacts.prefix(KnowledgeBrief.factsPerEntity)) { fact in
+                                Label {
+                                    Text(fact.text)
+                                        .font(.footnote)
+                                } icon: {
+                                    Image(systemName: "circle.fill")
+                                        .font(.system(size: 5))
+                                        .foregroundStyle(Color.accentColor)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                } header: {
+                    Label("What You Know", systemImage: "brain.head.profile")
+                }
+            }
 
             Section {
                 Picker("Section", selection: $selectedTab) {

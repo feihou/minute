@@ -64,6 +64,27 @@ struct BrainView: View {
                     }
                 }
             }
+            let recent = KnowledgeBrief.recentlyLearned(from: entities)
+            if !recent.isEmpty {
+                Section {
+                    ForEach(recent) { fact in
+                        if let entity = fact.entity {
+                            NavigationLink(value: entity) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(fact.text)
+                                        .font(.subheadline)
+                                        .lineLimit(2)
+                                    Text(entity.name)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    Label("Recently Learned", systemImage: "sparkles")
+                }
+            }
             if let me = sections.me {
                 Section("You") { entityRow(me) }
             }
