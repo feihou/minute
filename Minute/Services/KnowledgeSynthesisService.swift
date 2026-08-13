@@ -54,26 +54,39 @@ struct KnowledgeSynthesisService {
     /// View-facing: regenerate when stale, swallowing failures — synthesis
     /// is decoration on top of the facts, never an error state. Guardrail
     /// refusals and rate limits simply keep the previous narrative.
+    ///
+    /// Returns whether the narrative is now fresh (success, the empty-facts
+    /// clear, or it wasn't stale to begin with) — `false` means an attempt
+    /// could not complete (model unavailable, or a caught error), so the
+    /// caller knows not to keep showing a "generating" state for nothing.
     @MainActor
-    static func refreshIfStale(_ entity: KnowledgeEntity, context: ModelContext) async {
-        guard isStale(entity) else { return }
+    @discardableResult
+    static func refreshIfStale(
+        _ entity: KnowledgeEntity, context: ModelContext,
+        synthesize: ((String, EntityKind, [String]) async throws -> String)? = nil
+    ) async -> Bool {
+        guard isStale(entity) else { return true }
         let visible = entity.visibleFacts
         guard !visible.isEmpty else {
             entity.synthesis = nil
             entity.synthesizedFactCount = 0
             try? context.save()
-            return
+            return true
         }
-        guard availabilityMessage == nil else { return }
+        guard availabilityMessage == nil else { return false }
+        let synthesize = synthesize ?? { name, kind, facts in
+            try await KnowledgeSynthesisService().synthesize(name: name, kind: kind, facts: facts)
+        }
         do {
-            let narrative = try await KnowledgeSynthesisService()
-                .synthesize(name: entity.name, kind: entity.kind, facts: visible.map(\.text))
-            guard !entity.isDeleted else { return }
+            let narrative = try await synthesize(entity.name, entity.kind, visible.map(\.text))
+            guard !entity.isDeleted else { return true }
             entity.synthesis = narrative.isEmpty ? nil : narrative
             entity.synthesizedFactCount = visible.count
             try? context.save()
+            return true
         } catch {
             // Keep whatever narrative exists; the page still shows the facts.
+            return false
         }
     }
 }

@@ -163,6 +163,7 @@ struct EntityDetailView: View {
     @Environment(\.modelContext) private var context
     @Bindable var entity: KnowledgeEntity
     @Query(sort: \Meeting.createdAt, order: .reverse) private var meetings: [Meeting]
+    @State private var synthesisRefreshFailed = false
 
     private var meetingsByID: [UUID: Meeting] {
         Dictionary(uniqueKeysWithValues: meetings.map { ($0.id, $0) })
@@ -177,7 +178,8 @@ struct EntityDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         // Re-run when facts arrive while the page is open (catch-up loop).
         .task(id: entity.visibleFacts.count) {
-            await KnowledgeSynthesisService.refreshIfStale(entity, context: context)
+            synthesisRefreshFailed = false
+            synthesisRefreshFailed = await !KnowledgeSynthesisService.refreshIfStale(entity, context: context)
         }
     }
 
@@ -189,7 +191,8 @@ struct EntityDetailView: View {
             } header: {
                 Label(entity.kind == .me ? "About You" : "What Minute Knows", systemImage: "sparkles")
             }
-        } else if KnowledgeSynthesisService.isStale(entity), KnowledgeSynthesisService.availabilityMessage == nil {
+        } else if KnowledgeSynthesisService.isStale(entity), KnowledgeSynthesisService.availabilityMessage == nil,
+            !synthesisRefreshFailed {
             Section {
                 HStack(spacing: 12) {
                     ProgressView()

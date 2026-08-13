@@ -49,9 +49,43 @@ struct KnowledgeSynthesisServiceTests {
         context.insert(entity)
         try context.save()
 
-        await KnowledgeSynthesisService.refreshIfStale(entity, context: context)
+        let fresh = await KnowledgeSynthesisService.refreshIfStale(entity, context: context)
 
+        #expect(fresh == true)
         #expect(entity.synthesis == nil)
         #expect(entity.synthesizedFactCount == 0)
+    }
+
+    @Test func failedSynthesisReportsFalseAndKeepsPriorState() async throws {
+        let context = try makeContext()
+        let entity = entityWithFacts(2, context: context)
+        entity.synthesis = "previous narrative"
+        entity.synthesizedFactCount = 1   // stale
+        try context.save()
+
+        struct Boom: Error {}
+        let fresh = await KnowledgeSynthesisService.refreshIfStale(entity, context: context) { _, _, _ in
+            throw Boom()
+        }
+
+        #expect(fresh == false)
+        #expect(entity.synthesis == "previous narrative")
+        #expect(entity.synthesizedFactCount == 1)
+    }
+
+    @Test func upToDateEntityReportsTrueWithoutCallingTheModel() async throws {
+        let context = try makeContext()
+        let entity = entityWithFacts(2, context: context)
+        entity.synthesizedFactCount = 2
+        try context.save()
+
+        var calls = 0
+        let fresh = await KnowledgeSynthesisService.refreshIfStale(entity, context: context) { _, _, _ in
+            calls += 1
+            return "should not be called"
+        }
+
+        #expect(fresh == true)
+        #expect(calls == 0)
     }
 }

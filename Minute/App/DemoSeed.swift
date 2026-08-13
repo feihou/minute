@@ -30,8 +30,8 @@ enum DemoSeed {
     /// screenshots never trigger a real FM extraction or synthesis pass.
     ///
     /// Note: local helpers below are named `makeFact`/`makeEntity` (not
-    /// `fact`/`entity`) to avoid shadowing/ambiguity with the `entity:`
-    /// parameter label used throughout — see task-6-brief.md's naming note.
+    /// `fact`/`entity`) — the make- prefix keeps these local helpers visually
+    /// distinct from the model types and parameter labels they build.
     private static func seedKnowledge(context: ModelContext, meetings: [Meeting]) {
         let now = Date.now
         let hero = heroMeetingID
@@ -61,7 +61,7 @@ enum DemoSeed {
         let priya = makeEntity("Priya", .person, synthesis: "Your product lead for onboarding. She shipped the redesigned flow with 2.4 and is taking the lead on the Japan launch checklist.")
         makeFact("Leads the onboarding redesign; completion up 18% in beta", .autoCaptured, hero, daysAgo: 0.1,
                  quote: "The new onboarding flow is testing really well", entity: priya)
-        makeFact("Taking the lead on the Japan launch checklist", .approved, hero, daysAgo: 1.3, entity: priya)
+        makeFact("Taking the lead on the Japan launch checklist", .approved, designSyncID, daysAgo: 1.3, entity: priya)
 
         let diego = makeEntity("Diego", .person, synthesis: "Your engineer on offline mode. He scoped sync at two weeks and lands the storage layer first to de-risk the freeze.")
         makeFact("Scoped offline sync at ~2 weeks with last-write-wins for v1", .autoCaptured, hero, daysAgo: 0.1, entity: diego)
