@@ -116,17 +116,6 @@ struct MeetingListView: View {
                 }
             }
         }
-        .safeAreaInset(edge: .bottom) {
-            if storeIsEphemeral {
-                Label("Storage is unavailable — meetings from this session won't be kept after the app closes.",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .font(.footnote)
-                    .padding(10)
-                    .frame(maxWidth: .infinity)
-                    .glassEffect(.regular.tint(.yellow.opacity(0.35)), in: .rect(cornerRadius: 16))
-                    .padding(.horizontal)
-            }
-        }
         .task {
             // Clean up audio left behind by a crash mid-recording — but never
             // while running on the fallback store, where meetings that

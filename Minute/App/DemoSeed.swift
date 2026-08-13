@@ -17,8 +17,81 @@ enum DemoSeed {
         if let existing = try? context.fetch(FetchDescriptor<Meeting>()) {
             for meeting in existing { context.delete(meeting) }
         }
-        for meeting in demoMeetings() { context.insert(meeting) }
+        if let existingEntities = try? context.fetch(FetchDescriptor<KnowledgeEntity>()) {
+            for entity in existingEntities { context.delete(entity) }
+        }
+        let meetings = demoMeetings()
+        for meeting in meetings { context.insert(meeting) }
+        seedKnowledge(context: context, meetings: meetings)
         try? context.save()
+    }
+
+    /// Populates the Brain with pre-synthesized entities and facts so
+    /// screenshots never trigger a real FM extraction or synthesis pass.
+    ///
+    /// Note: local helpers below are named `makeFact`/`makeEntity` (not
+    /// `fact`/`entity`) — the make- prefix keeps these local helpers visually
+    /// distinct from the model types and parameter labels they build.
+    private static func seedKnowledge(context: ModelContext, meetings: [Meeting]) {
+        let now = Date.now
+        let hero = heroMeetingID
+        let designSyncID = meetings.first { $0.title.hasPrefix("Design Sync") }?.id ?? hero
+        let customerCallID = meetings.first { $0.title.hasPrefix("Customer Call") }?.id ?? hero
+
+        func makeFact(
+            _ text: String, _ status: FactStatus, _ meetingID: UUID, daysAgo: Double,
+            quote: String? = nil, entity: KnowledgeEntity
+        ) {
+            context.insert(KnowledgeFact(
+                text: text, originalText: text, status: status, sourceMeetingID: meetingID,
+                sourceQuote: quote, capturedAt: now.addingTimeInterval(-daysAgo * 86_400), entity: entity,
+                createdAt: now.addingTimeInterval(-daysAgo * 86_400 + 3_600)
+            ))
+        }
+        func makeEntity(_ name: String, _ kind: EntityKind, aliases: [String] = [], synthesis: String) -> KnowledgeEntity {
+            let entity = KnowledgeEntity(name: name, kind: kind, aliases: aliases, synthesis: synthesis)
+            context.insert(entity)
+            return entity
+        }
+
+        let me = makeEntity("Sam", .me, synthesis: "You run the weekly product sync and own the Q3 scope. You committed SSO for Q3 and moved the analytics dashboard to Q4.")
+        makeFact("Committed SSO for Q3, moving the analytics dashboard to Q4", .approved, hero, daysAgo: 0.1, entity: me)
+        makeFact("Owns the decision on Japan-launch localization timing", .suggested, hero, daysAgo: 0.1, entity: me)
+
+        let priya = makeEntity("Priya", .person, synthesis: "Your product lead for onboarding. She shipped the redesigned flow with 2.4 and is taking the lead on the Japan launch checklist.")
+        makeFact("Leads the onboarding redesign; completion up 18% in beta", .autoCaptured, hero, daysAgo: 0.1,
+                 quote: "The new onboarding flow is testing really well", entity: priya)
+        makeFact("Taking the lead on the Japan launch checklist", .approved, designSyncID, daysAgo: 1.3, entity: priya)
+
+        let diego = makeEntity("Diego", .person, synthesis: "Your engineer on offline mode. He scoped sync at two weeks and lands the storage layer first to de-risk the freeze.")
+        makeFact("Scoped offline sync at ~2 weeks with last-write-wins for v1", .autoCaptured, hero, daysAgo: 0.1, entity: diego)
+        makeFact("Landing the offline storage layer for review by Friday", .autoCaptured, hero, daysAgo: 0.1, entity: diego)
+
+        let mei = makeEntity("Mei", .person, synthesis: "Your enterprise lead. She's unblocking three waiting accounts with SSO and owns the Northwind relationship.")
+        makeFact("Three enterprise accounts are waiting on SSO", .autoCaptured, hero, daysAgo: 0.1, entity: mei)
+        makeFact("Owns the Northwind Logistics relationship", .autoCaptured, customerCallID, daysAgo: 3.2, entity: mei)
+
+        let sso = makeEntity("SSO", .project, synthesis: "Committed for Q3 in place of the analytics dashboard. It's the hard procurement requirement for Northwind and two other accounts.")
+        makeFact("Committed for Q3; analytics dashboard moved to Q4 to make room", .approved, hero, daysAgo: 0.1, entity: sso)
+        makeFact("Hard procurement requirement for Northwind", .autoCaptured, customerCallID, daysAgo: 3.2, entity: sso)
+
+        let onboarding = makeEntity("Onboarding Redesign", .project, synthesis: "Shipping with release 2.4, old flow behind a flag for one release. Beta completion is up 18% and permission-step drop-off is gone.")
+        makeFact("Ships with 2.4; old flow stays behind a flag for one release", .approved, hero, daysAgo: 0.1, entity: onboarding)
+        makeFact("Permission-screen copy rewritten in plain language", .autoCaptured, designSyncID, daysAgo: 1.2, entity: onboarding)
+
+        let japan = makeEntity("Japan Launch", .topic, synthesis: "Localization timing is the open question — English-first or localized onboarding. Priya owns the checklist.")
+        makeFact("Open question: localize onboarding or ship English-first", .suggested, hero, daysAgo: 0.1, entity: japan)
+
+        // Pre-filled narratives must read as fresh, or the entity page fires
+        // a real FM synthesis during screenshots. Synthesis speaks settled
+        // facts only, so the seed mirrors that: draft-only entities carry no
+        // narrative, exactly as production would render them.
+        for entity in [me, priya, diego, mei, sso, onboarding, japan] {
+            entity.synthesizedFactCount = entity.settledFacts.count
+            if entity.settledFacts.isEmpty {
+                entity.synthesis = nil
+            }
+        }
     }
 
     private static func demoMeetings() -> [Meeting] {

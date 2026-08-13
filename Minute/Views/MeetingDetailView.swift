@@ -33,6 +33,22 @@ struct MeetingDetailView: View {
     @State private var renameText = ""
     @State private var selectedTab: Tab = .summary
     @AppStorage(AppSettings.summaryTemplateKey) private var summaryTemplateID = SummaryTemplate.standard.id
+    @Query private var knowledgeEntities: [KnowledgeEntity]
+
+    /// Participants this brain already knows — the pre-meeting brief.
+    private var briefEntities: [KnowledgeEntity] {
+        KnowledgeBrief.matchedEntities(speakerNames: meeting.speakerNames, entities: knowledgeEntities)
+    }
+
+    /// Brief entities paired with the facts worth showing for them — facts
+    /// from other meetings only. Entities left with nothing to show (every
+    /// fact came from this meeting) are dropped rather than rendered empty.
+    private var briefContent: [(entity: KnowledgeEntity, facts: [KnowledgeFact])] {
+        briefEntities.compactMap { entity in
+            let facts = KnowledgeBrief.briefFacts(for: entity, excludingMeetingID: meeting.id)
+            return facts.isEmpty ? nil : (entity, facts)
+        }
+    }
 
     /// True while any job holds this meeting; every menu item that rewrites the
     /// meeting is gated on it.
@@ -49,6 +65,30 @@ struct MeetingDetailView: View {
     var body: some View {
         List {
             headerSection
+
+            if !briefContent.isEmpty {
+                Section {
+                    ForEach(briefContent, id: \.entity.id) { item in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(item.entity.name)
+                                .font(.subheadline.weight(.semibold))
+                            ForEach(item.facts) { fact in
+                                Label {
+                                    Text(fact.text)
+                                        .font(.footnote)
+                                } icon: {
+                                    Image(systemName: "circle.fill")
+                                        .font(.system(size: 5))
+                                        .foregroundStyle(Color.accentColor)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                } header: {
+                    Label("What You Know", systemImage: "brain.head.profile")
+                }
+            }
 
             Section {
                 Picker("Section", selection: $selectedTab) {

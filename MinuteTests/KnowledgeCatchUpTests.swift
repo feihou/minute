@@ -27,6 +27,13 @@ struct KnowledgeCatchUpTests {
         )).mainContext
     }
 
+    /// CI simulators have no Apple Intelligence; every loop test injects an
+    /// always-available model so the availability gate never no-ops them.
+    /// Tests OF the gate construct KnowledgeCatchUp directly instead.
+    private func makeCatchUp(_ extract: @escaping KnowledgeCatchUp.Extractor) -> KnowledgeCatchUp {
+        KnowledgeCatchUp(availabilityMessage: { nil }, extract: extract)
+    }
+
     private func meetingWithTranscript(_ title: String, createdAt: Date) -> Meeting {
         Meeting(
             title: title, createdAt: createdAt,
@@ -43,7 +50,7 @@ struct KnowledgeCatchUpTests {
         try context.save()
 
         var order: [String] = []
-        let catchUp = KnowledgeCatchUp { transcript, _ in
+        let catchUp = makeCatchUp {transcript, _ in
             order.append(transcript.contains("New") ? "New" : "Old")
             return [KnowledgeCandidate(entityName: "Sarah", entityKind: .person, fact: "Sarah spoke", validatedQuote: nil)]
         }
@@ -64,7 +71,7 @@ struct KnowledgeCatchUpTests {
         try context.save()
 
         struct Boom: Error {}
-        let catchUp = KnowledgeCatchUp { transcript, _ in
+        let catchUp = makeCatchUp {transcript, _ in
             if transcript.contains("Failing") { throw Boom() }
             return []
         }
@@ -87,7 +94,7 @@ struct KnowledgeCatchUpTests {
         try context.save()
 
         var calls = 0
-        let catchUp = KnowledgeCatchUp { _, _ in calls += 1; return [] }
+        let catchUp = makeCatchUp {_, _ in calls += 1; return [] }
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
 
@@ -101,7 +108,7 @@ struct KnowledgeCatchUpTests {
         try context.save()
 
         var calls = 0
-        let catchUp = KnowledgeCatchUp { _, _ in
+        let catchUp = makeCatchUp {_, _ in
             calls += 1
             try await Task.sleep(for: .milliseconds(50))
             return []
@@ -113,6 +120,48 @@ struct KnowledgeCatchUpTests {
         #expect(calls == 1)
     }
 
+    @Test func unavailableModelStillCountsPendingWork() async throws {
+        let context = try makeContext()
+        context.insert(meetingWithTranscript("Unread", createdAt: .now))
+        try context.save()
+
+        var calls = 0
+        let catchUp = KnowledgeCatchUp(
+            availabilityMessage: { "Apple Intelligence isn't ready." },
+            extract: { _, _ in calls += 1; return [] }
+        )
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+
+        // The guard bails before any processing, but the Brain tab must
+        // still learn that unread work exists.
+        #expect(calls == 0)
+        #expect(catchUp.pendingCount == 1)
+    }
+
+    @Test func isWorkingIsTrueOnlyWhileTheLoopRuns() async throws {
+        let context = try makeContext()
+        context.insert(meetingWithTranscript("Only", createdAt: .now))
+        try context.save()
+
+        var observedDuringRun = false
+        var catchUpRef: KnowledgeCatchUp?
+        let catchUp = makeCatchUp {_, _ in
+            observedDuringRun = catchUpRef?.isWorking ?? false
+            return []
+        }
+        catchUpRef = catchUp
+        #expect(!catchUp.isWorking)
+
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+
+        // The Brain tab's spinner keys on this: true mid-run, false after —
+        // even when pendingCount would still be nonzero (skip-listed work).
+        #expect(observedDuringRun)
+        #expect(!catchUp.isWorking)
+    }
+
     @Test func pauseStopsTheLoopAndNudgeResumes() async throws {
         let context = try makeContext()
         context.insert(meetingWithTranscript("A", createdAt: .now))
@@ -120,21 +169,25 @@ struct KnowledgeCatchUpTests {
         try context.save()
 
         var calls = 0
-        let catchUp = KnowledgeCatchUp { _, _ in
+        // Event-driven, not timed: fixed pre-pause sleeps flaked on slow CI
+        // runners no matter how wide the window. The first extract call
+        // signals the test, then parks until pause() cancels it —
+        // deterministic on any host speed.
+        let (firstCallStarted, startedContinuation) = AsyncStream.makeStream(of: Void.self)
+        let catchUp = makeCatchUp { _, _ in
             calls += 1
-            try await Task.sleep(for: .milliseconds(1000))
+            if calls == 1 {
+                startedContinuation.yield(())
+                try await Task.sleep(for: .seconds(60))
+            }
             return []
         }
         catchUp.nudge(context: context)
-        // Long enough that the loop's Task is reliably scheduled and past
-        // its first `calls += 1` even under full-suite parallel contention,
-        // short enough to still land well before the 1000ms extractor sleep
-        // completes (keeps the 1:5 ratio from the original 20ms:100ms).
-        try await Task.sleep(for: .milliseconds(200))
+        var started = firstCallStarted.makeAsyncIterator()
+        _ = await started.next()   // the first extract call is definitely in flight
         catchUp.pause()
         await catchUp.waitUntilIdle()
-        let callsAfterPause = calls
-        #expect(callsAfterPause <= 1)
+        #expect(calls == 1)
 
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
@@ -173,7 +226,7 @@ struct KnowledgeCatchUpTests {
         try context.save()
 
         struct Boom: Error {}
-        let catchUp = KnowledgeCatchUp { _, _ in throw Boom() }
+        let catchUp = makeCatchUp {_, _ in throw Boom() }
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
 
@@ -188,7 +241,7 @@ struct KnowledgeCatchUpTests {
         try context.save()
 
         var calls = 0
-        let catchUp = KnowledgeCatchUp { transcript, _ in
+        let catchUp = makeCatchUp {transcript, _ in
             calls += 1
             if calls == 1 {
                 // A re-transcription lands while the model is mid-read.
@@ -215,7 +268,7 @@ struct KnowledgeCatchUpTests {
         try context.save()
 
         var calls = 0
-        let catchUp = KnowledgeCatchUp { _, _ in
+        let catchUp = makeCatchUp {_, _ in
             calls += 1
             if calls == 1 {
                 throw LanguageModelSession.GenerationError.rateLimited(.init(debugDescription: "test"))

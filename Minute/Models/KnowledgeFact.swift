@@ -34,6 +34,10 @@ final class KnowledgeFact {
     /// Salted hash of (normalized originalText, entity ID). Set on rejection
     /// when the text fields are cleared — all a tombstone retains.
     var fingerprint: String?
+    /// When this fact row was created — insertion time, unlike `capturedAt`
+    /// (the meeting's date). Nil for rows written before this field existed.
+    /// Recently-learned ordering (and m2b's review auto-archive) read this.
+    var createdAt: Date?
     var entity: KnowledgeEntity?
 
     var status: FactStatus {
@@ -49,7 +53,8 @@ final class KnowledgeFact {
         sourceMeetingID: UUID,
         sourceQuote: String? = nil,
         capturedAt: Date,
-        entity: KnowledgeEntity?
+        entity: KnowledgeEntity?,
+        createdAt: Date = .now
     ) {
         self.id = id
         self.text = text
@@ -59,5 +64,6 @@ final class KnowledgeFact {
         self.sourceQuote = sourceQuote
         self.capturedAt = capturedAt
         self.entity = entity
+        self.createdAt = createdAt
     }
 }

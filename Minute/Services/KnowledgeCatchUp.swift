@@ -15,6 +15,11 @@ final class KnowledgeCatchUp {
     /// Unstamped meetings remaining, for the m2 "catching up" row.
     private(set) var pendingCount = 0
 
+    /// True only while the loop is actively processing. The Brain tab's live
+    /// catch-up row keys on this, not on pendingCount — pending work can sit
+    /// skip-listed while the loop is idle, and a spinner would be a lie.
+    private(set) var isWorking = false
+
     private let availabilityMessage: @MainActor () -> String?
     private let extract: Extractor
     private var running: Task<Void, Never>?
@@ -37,7 +42,9 @@ final class KnowledgeCatchUp {
     func nudge(context: ModelContext) {
         guard running == nil else { return }
         running = Task { [self] in
+            isWorking = true
             await run(context: context)
+            isWorking = false
             running = nil
         }
     }
@@ -53,6 +60,9 @@ final class KnowledgeCatchUp {
     }
 
     private func run(context: ModelContext) async {
+        // Count before any guard can bail: even when the model isn't ready
+        // or the device is warm, the Brain tab must know unread work exists.
+        refreshPendingCount(context: context)
         // Not a per-meeting failure: when the model isn't ready, leave the
         // queue untouched and wait for a later nudge (mirrors the thermal
         // guard's return-without-consuming semantics).
@@ -116,6 +126,13 @@ final class KnowledgeCatchUp {
         let pending = (try? context.fetch(descriptor)) ?? []
         pendingCount = pending.count
         return pending.first { !skippedThisSession.contains($0.id) }
+    }
+
+    private func refreshPendingCount(context: ModelContext) {
+        let descriptor = FetchDescriptor<Meeting>(
+            predicate: #Predicate { $0.knowledgeExtractedAt == nil }
+        )
+        pendingCount = (try? context.fetchCount(descriptor)) ?? pendingCount
     }
 
     private func knownEntityNames(context: ModelContext) -> [String] {

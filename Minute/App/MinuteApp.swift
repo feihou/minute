@@ -3,7 +3,12 @@ import SwiftUI
 
 @main
 struct MinuteApp: App {
+    private enum AppTab: Hashable {
+        case meetings, brain
+    }
+
     @Environment(\.scenePhase) private var scenePhase
+    @State private var selectedTab: AppTab = .meetings
     /// Lives at app level so summaries, re-transcriptions, and speaker
     /// identification keep running while the user navigates anywhere else in
     /// the app — and so their mutual-exclusion guard survives navigation.
@@ -56,8 +61,39 @@ struct MinuteApp: App {
 
     var body: some Scene {
         WindowGroup {
-            MeetingListView(storeIsEphemeral: storeIsEphemeral)
-                .environment(meetingJobs)
+            TabView(selection: $selectedTab) {
+                Tab("Meetings", systemImage: "mic.fill", value: AppTab.meetings) {
+                    MeetingListView(storeIsEphemeral: storeIsEphemeral)
+                }
+                Tab("Brain", systemImage: "brain.head.profile", value: AppTab.brain) {
+                    BrainView()
+                }
+            }
+            .environment(meetingJobs)
+            .environment(knowledgeCatchUp)
+            // App-wide, not per-tab: knowledge lives in the same fallback
+            // store as meetings, so the warning must be visible from the
+            // Brain tab too.
+            .safeAreaInset(edge: .bottom) {
+                if storeIsEphemeral {
+                    Label("Storage is unavailable — anything from this session won't be kept after the app closes.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .padding(10)
+                        .frame(maxWidth: .infinity)
+                        .glassEffect(.regular.tint(.yellow.opacity(0.35)), in: .rect(cornerRadius: 16))
+                        .padding(.horizontal)
+                }
+            }
+            // Deep links (widget, Shortcuts) are meeting-scoped: land on the
+            // Meetings tab. MeetingListView keeps its own onOpenURL handler —
+            // it loads with the initial tab, so the handler stays registered
+            // even while Brain is frontmost; this one only flips the tab.
+            .onOpenURL { url in
+                if MinuteDeepLink(url: url) != nil {
+                    selectedTab = .meetings
+                }
+            }
         }
         .modelContainer(container)
         // Leaving the app is the one moment meeting data is settled and
