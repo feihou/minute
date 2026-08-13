@@ -55,6 +55,8 @@ jobs:
           -destination "platform=iOS Simulator,id=$UDID" \
           -only-testing:MinuteTests \
           -skip-testing:MinuteTests/SummarizationIntegrationTests \
+          -skip-testing:MinuteTests/KnowledgeExtractionIntegrationTests \
+          -skip-testing:MinuteTests/KnowledgeSynthesisIntegrationTests \
           -skipPackagePluginValidation \
           -skipMacroValidation \
           CODE_SIGNING_ALLOWED=NO

@@ -169,22 +169,25 @@ struct KnowledgeCatchUpTests {
         try context.save()
 
         var calls = 0
-        let catchUp = makeCatchUp {_, _ in
+        // Event-driven, not timed: fixed pre-pause sleeps flaked on slow CI
+        // runners no matter how wide the window. The first extract call
+        // signals the test, then parks until pause() cancels it —
+        // deterministic on any host speed.
+        let (firstCallStarted, startedContinuation) = AsyncStream.makeStream(of: Void.self)
+        let catchUp = makeCatchUp { _, _ in
             calls += 1
-            try await Task.sleep(for: .milliseconds(2000))
+            if calls == 1 {
+                startedContinuation.yield(())
+                try await Task.sleep(for: .seconds(60))
+            }
             return []
         }
         catchUp.nudge(context: context)
-        // Long enough that the loop's Task is reliably scheduled and past
-        // its first `calls += 1` even under full-suite parallel contention
-        // AND a busy host (a live simulator session flaked the 200ms
-        // variant), short enough to still land well before the 2000ms
-        // extractor sleep completes (keeps the 1:5 ratio).
-        try await Task.sleep(for: .milliseconds(400))
+        var started = firstCallStarted.makeAsyncIterator()
+        _ = await started.next()   // the first extract call is definitely in flight
         catchUp.pause()
         await catchUp.waitUntilIdle()
-        let callsAfterPause = calls
-        #expect(callsAfterPause <= 1)
+        #expect(calls == 1)
 
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
