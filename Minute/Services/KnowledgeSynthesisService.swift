@@ -66,7 +66,13 @@ struct KnowledgeSynthesisService {
         synthesize: ((String, EntityKind, [String]) async throws -> String)? = nil
     ) async -> Bool {
         guard isStale(entity) else { return true }
-        guard availabilityMessage == nil || entity.settledFacts.isEmpty else { return false }
+        // FM availability gates only the REAL model: an injected test
+        // synthesizer carries its own behavior, and the empty clear below
+        // needs no model at all. (CI simulators have no Apple Intelligence —
+        // a blanket gate here silently no-ops every injected-closure test.)
+        if synthesize == nil, availabilityMessage != nil, !entity.settledFacts.isEmpty {
+            return false
+        }
         let synthesize = synthesize ?? { name, kind, facts in
             try await KnowledgeSynthesisService().synthesize(name: name, kind: kind, facts: facts)
         }
