@@ -86,4 +86,29 @@ struct KnowledgeBriefTests {
 
         #expect(facts.map(\.text) == ["from before"])
     }
+
+    @Test func briefShowsOnlySettledFactsNeverDrafts() throws {
+        let context = try makeContext()
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        context.insert(KnowledgeFact(
+            text: "settled", originalText: "settled", status: .approved,
+            sourceMeetingID: UUID(), capturedAt: .now, entity: entity
+        ))
+        context.insert(KnowledgeFact(
+            text: "auto", originalText: "auto", status: .autoCaptured,
+            sourceMeetingID: UUID(), capturedAt: .now.addingTimeInterval(-60), entity: entity
+        ))
+        context.insert(KnowledgeFact(
+            text: "draft", originalText: "draft", status: .suggested,
+            sourceMeetingID: UUID(), capturedAt: .now.addingTimeInterval(-30), entity: entity
+        ))
+        try context.save()
+
+        // The entity page badges drafts; this compact surface can't, so
+        // drafts are excluded rather than shown as established knowledge.
+        let facts = KnowledgeBrief.briefFacts(for: entity, excludingMeetingID: UUID())
+
+        #expect(facts.map(\.text) == ["settled", "auto"])
+    }
 }

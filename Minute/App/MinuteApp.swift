@@ -71,6 +71,20 @@ struct MinuteApp: App {
             }
             .environment(meetingJobs)
             .environment(knowledgeCatchUp)
+            // App-wide, not per-tab: knowledge lives in the same fallback
+            // store as meetings, so the warning must be visible from the
+            // Brain tab too.
+            .safeAreaInset(edge: .bottom) {
+                if storeIsEphemeral {
+                    Label("Storage is unavailable — anything from this session won't be kept after the app closes.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .padding(10)
+                        .frame(maxWidth: .infinity)
+                        .glassEffect(.regular.tint(.yellow.opacity(0.35)), in: .rect(cornerRadius: 16))
+                        .padding(.horizontal)
+                }
+            }
             // Deep links (widget, Shortcuts) are meeting-scoped: land on the
             // Meetings tab. MeetingListView keeps its own onOpenURL handler —
             // it loads with the initial tab, so the handler stays registered

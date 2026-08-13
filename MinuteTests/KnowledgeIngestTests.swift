@@ -215,4 +215,24 @@ struct KnowledgeIngestTests {
         #expect(facts[0].originalText == "Sarah leads Atlas")
         #expect(facts[0].status == .suggested)
     }
+
+    @Test func ingestInvalidatesSynthesisOnlyForTouchedEntities() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "m")
+        context.insert(meeting)
+        let sarah = KnowledgeEntity(name: "Sarah", kind: .person)
+        let bystander = KnowledgeEntity(name: "Atlas", kind: .project)
+        context.insert(sarah)
+        context.insert(bystander)
+        sarah.synthesizedFactCount = 0
+        bystander.synthesizedFactCount = 0
+        try context.save()
+
+        try KnowledgeIngest.apply([candidate("Sarah", "Sarah leads Atlas")], from: meeting, context: context)
+
+        // A changed fact set can keep the same count, so ingest must clear
+        // the marker itself — but only for entities it actually touched.
+        #expect(sarah.synthesizedFactCount == nil)
+        #expect(bystander.synthesizedFactCount == 0)
+    }
 }

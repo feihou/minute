@@ -105,7 +105,7 @@ struct BrainView: View {
             entitySection("Topics", systemImage: "tag", entities: sections.topics)
             Section {
             } footer: {
-                Label("On-device only — never leaves your iPhone.", systemImage: "lock.fill")
+                Label("Built on this iPhone — stays here unless you opt into iCloud backup.", systemImage: "lock.fill")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -156,7 +156,7 @@ struct BrainView: View {
                 Text("Minute is building your second brain")
                     .font(.title2.bold())
                     .padding(.bottom, 6)
-                Text("As you record meetings, on-device intelligence remembers the people, projects, and decisions that matter — and it all stays on this iPhone.")
+                Text("As you record meetings, on-device intelligence remembers the people, projects, and decisions that matter. It stays on this iPhone unless you opt into iCloud backup.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

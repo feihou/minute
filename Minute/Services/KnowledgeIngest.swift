@@ -42,7 +42,14 @@ enum KnowledgeIngest {
         // a replacement fact with matching text "duplicates" the very fact
         // it's replacing, and the meeting ends up with zero facts.
         let staleIDs = Set(stale.map(\.id))
-        stale.forEach(context.delete)
+        // Entities whose fact set changes here get their synthesis marker
+        // cleared below: a re-extraction can swap facts one-for-one, so
+        // count-based staleness alone would miss the content change.
+        var touched: [UUID: KnowledgeEntity] = [:]
+        for fact in stale {
+            if let entity = fact.entity { touched[entity.id] = entity }
+            context.delete(fact)
+        }
 
         for candidate in candidates {
             let resolved = resolve(candidate, in: &known, context: context)
@@ -106,6 +113,10 @@ enum KnowledgeIngest {
                 capturedAt: meeting.createdAt,
                 entity: entity
             ))
+            touched[entity.id] = entity
+        }
+        for entity in touched.values {
+            entity.synthesizedFactCount = nil
         }
         try context.save()
         return result
