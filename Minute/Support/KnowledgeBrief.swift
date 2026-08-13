@@ -15,8 +15,8 @@ enum KnowledgeBrief {
     /// surface can't (spec §3: drafts are visible AS drafts or not at all).
     static func briefFacts(for entity: KnowledgeEntity, excludingMeetingID meetingID: UUID) -> [KnowledgeFact] {
         Array(
-            entity.visibleFacts
-                .filter { $0.sourceMeetingID != meetingID && $0.status != .suggested }
+            entity.settledFacts
+                .filter { $0.sourceMeetingID != meetingID }
                 .prefix(factsPerEntity)
         )
     }

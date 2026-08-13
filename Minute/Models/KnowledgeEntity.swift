@@ -54,11 +54,19 @@ final class KnowledgeEntity {
 }
 
 extension KnowledgeEntity {
-    /// Facts shown on entity pages and fed to synthesis: everything except
-    /// tombstones and superseded history, newest meeting first.
+    /// Facts shown on entity pages: everything except tombstones and
+    /// superseded history, newest meeting first. Includes drafts — pages
+    /// badge them individually.
     var visibleFacts: [KnowledgeFact] {
         facts
             .filter { $0.status == .autoCaptured || $0.status == .approved || $0.status == .suggested }
             .sorted { $0.capturedAt > $1.capturedAt }
+    }
+
+    /// The reviewed-or-auto-captured subset of `visibleFacts` — what
+    /// unbadged surfaces (the synthesis narrative, the pre-meeting brief)
+    /// may treat as established knowledge. Drafts never speak there.
+    var settledFacts: [KnowledgeFact] {
+        visibleFacts.filter { $0.status != .suggested }
     }
 }

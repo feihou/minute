@@ -19,7 +19,7 @@ struct KnowledgeSynthesisService {
     static let factCap = 20
 
     static func isStale(_ entity: KnowledgeEntity) -> Bool {
-        entity.synthesizedFactCount != entity.visibleFacts.count
+        entity.synthesizedFactCount != entity.settledFacts.count
     }
 
     private static let instructions = """
@@ -66,7 +66,7 @@ struct KnowledgeSynthesisService {
         synthesize: ((String, EntityKind, [String]) async throws -> String)? = nil
     ) async -> Bool {
         guard isStale(entity) else { return true }
-        guard availabilityMessage == nil || entity.visibleFacts.isEmpty else { return false }
+        guard availabilityMessage == nil || entity.settledFacts.isEmpty else { return false }
         let synthesize = synthesize ?? { name, kind, facts in
             try await KnowledgeSynthesisService().synthesize(name: name, kind: kind, facts: facts)
         }
@@ -77,22 +77,25 @@ struct KnowledgeSynthesisService {
         // after the await, retry on the fresh set; bounded so a churning
         // ingest can't pin the model.
         for _ in 0..<3 {
-            let visible = entity.visibleFacts
-            guard !visible.isEmpty else {
+            // Settled facts only: drafts are badged individually on the
+            // page, so the narrative must never present them as knowledge.
+            let settled = entity.settledFacts
+            guard !settled.isEmpty else {
                 // Clearing needs no model, so it stays reachable when the
-                // model is unavailable.
+                // model is unavailable — and a draft-only entity shows its
+                // badged facts with no narrative rather than narrated drafts.
                 entity.synthesis = nil
                 entity.synthesizedFactCount = 0
                 try? context.save()
                 return true
             }
-            let snapshotIDs = Set(visible.map(\.id))
+            let snapshotIDs = Set(settled.map(\.id))
             do {
-                let narrative = try await synthesize(entity.name, entity.kind, visible.map(\.text))
+                let narrative = try await synthesize(entity.name, entity.kind, settled.map(\.text))
                 guard !entity.isDeleted else { return true }
-                guard Set(entity.visibleFacts.map(\.id)) == snapshotIDs else { continue }
+                guard Set(entity.settledFacts.map(\.id)) == snapshotIDs else { continue }
                 entity.synthesis = narrative.isEmpty ? nil : narrative
-                entity.synthesizedFactCount = visible.count
+                entity.synthesizedFactCount = settled.count
                 try? context.save()
                 return true
             } catch {

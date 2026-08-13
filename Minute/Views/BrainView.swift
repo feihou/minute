@@ -218,7 +218,7 @@ struct EntityDetailView: View {
         .navigationTitle(entity.name)
         .navigationBarTitleDisplayMode(.inline)
         // Re-run when facts arrive while the page is open (catch-up loop).
-        .task(id: SynthesisTaskID(factCount: entity.visibleFacts.count, marker: entity.synthesizedFactCount)) {
+        .task(id: SynthesisTaskID(factCount: entity.settledFacts.count, marker: entity.synthesizedFactCount)) {
             synthesisRefreshFailed = false
             synthesisRefreshFailed = await !KnowledgeSynthesisService.refreshIfStale(entity, context: context)
         }

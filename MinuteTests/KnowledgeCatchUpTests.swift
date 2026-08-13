@@ -113,6 +113,25 @@ struct KnowledgeCatchUpTests {
         #expect(calls == 1)
     }
 
+    @Test func unavailableModelStillCountsPendingWork() async throws {
+        let context = try makeContext()
+        context.insert(meetingWithTranscript("Unread", createdAt: .now))
+        try context.save()
+
+        var calls = 0
+        let catchUp = KnowledgeCatchUp(
+            availabilityMessage: { "Apple Intelligence isn't ready." },
+            extract: { _, _ in calls += 1; return [] }
+        )
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+
+        // The guard bails before any processing, but the Brain tab must
+        // still learn that unread work exists.
+        #expect(calls == 0)
+        #expect(catchUp.pendingCount == 1)
+    }
+
     @Test func isWorkingIsTrueOnlyWhileTheLoopRuns() async throws {
         let context = try makeContext()
         context.insert(meetingWithTranscript("Only", createdAt: .now))

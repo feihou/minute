@@ -56,12 +56,37 @@ struct KnowledgeSynthesisServiceTests {
         #expect(entity.synthesizedFactCount == 0)
     }
 
+    @Test func draftOnlyEntityGetsNoNarrative() async throws {
+        let context = try makeContext()
+        let entity = KnowledgeEntity(name: "New Person", kind: .person)
+        entity.synthesis = "stale prose"
+        context.insert(entity)
+        context.insert(KnowledgeFact(
+            text: "unreviewed", originalText: "unreviewed", status: .suggested,
+            sourceMeetingID: UUID(), capturedAt: .now, entity: entity
+        ))
+        try context.save()
+
+        var calls = 0
+        let fresh = await KnowledgeSynthesisService.refreshIfStale(entity, context: context) { _, _, _ in
+            calls += 1
+            return "never"
+        }
+
+        // Drafts are badged individually on the page — they must never be
+        // narrated as established knowledge, so a draft-only entity clears.
+        #expect(fresh == true)
+        #expect(calls == 0)
+        #expect(entity.synthesis == nil)
+        #expect(entity.synthesizedFactCount == 0)
+    }
+
     @Test func factsReplacedMidSynthesisAreResynthesizedNotStampedStale() async throws {
         let context = try makeContext()
         let entity = KnowledgeEntity(name: "Sarah", kind: .person)
         context.insert(entity)
         let original = KnowledgeFact(
-            text: "old fact", originalText: "old fact", status: .suggested,
+            text: "old fact", originalText: "old fact", status: .autoCaptured,
             sourceMeetingID: UUID(), capturedAt: .now, entity: entity
         )
         context.insert(original)
@@ -76,7 +101,7 @@ struct KnowledgeSynthesisServiceTests {
                 // starts — this continuation must notice, not commit.
                 context.delete(original)
                 context.insert(KnowledgeFact(
-                    text: "new fact", originalText: "new fact", status: .suggested,
+                    text: "new fact", originalText: "new fact", status: .autoCaptured,
                     sourceMeetingID: UUID(), capturedAt: .now, entity: entity
                 ))
                 try? context.save()

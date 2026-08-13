@@ -60,6 +60,9 @@ final class KnowledgeCatchUp {
     }
 
     private func run(context: ModelContext) async {
+        // Count before any guard can bail: even when the model isn't ready
+        // or the device is warm, the Brain tab must know unread work exists.
+        refreshPendingCount(context: context)
         // Not a per-meeting failure: when the model isn't ready, leave the
         // queue untouched and wait for a later nudge (mirrors the thermal
         // guard's return-without-consuming semantics).
@@ -123,6 +126,13 @@ final class KnowledgeCatchUp {
         let pending = (try? context.fetch(descriptor)) ?? []
         pendingCount = pending.count
         return pending.first { !skippedThisSession.contains($0.id) }
+    }
+
+    private func refreshPendingCount(context: ModelContext) {
+        let descriptor = FetchDescriptor<Meeting>(
+            predicate: #Predicate { $0.knowledgeExtractedAt == nil }
+        )
+        pendingCount = (try? context.fetchCount(descriptor)) ?? pendingCount
     }
 
     private func knownEntityNames(context: ModelContext) -> [String] {

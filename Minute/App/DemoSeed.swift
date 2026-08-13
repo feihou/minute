@@ -83,9 +83,14 @@ enum DemoSeed {
         makeFact("Open question: localize onboarding or ship English-first", .suggested, hero, daysAgo: 0.1, entity: japan)
 
         // Pre-filled narratives must read as fresh, or the entity page fires
-        // a real FM synthesis during screenshots.
+        // a real FM synthesis during screenshots. Synthesis speaks settled
+        // facts only, so the seed mirrors that: draft-only entities carry no
+        // narrative, exactly as production would render them.
         for entity in [me, priya, diego, mei, sso, onboarding, japan] {
-            entity.synthesizedFactCount = entity.visibleFacts.count
+            entity.synthesizedFactCount = entity.settledFacts.count
+            if entity.settledFacts.isEmpty {
+                entity.synthesis = nil
+            }
         }
     }
 

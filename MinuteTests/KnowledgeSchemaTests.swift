@@ -102,6 +102,8 @@ struct KnowledgeSchemaTests {
         try context.save()
 
         #expect(entity.visibleFacts.map(\.text) == ["new", "draft", "old"])
+        // Settled = visible minus drafts — what unbadged surfaces may speak.
+        #expect(entity.settledFacts.map(\.text) == ["new", "old"])
     }
 
     @Test func factCreatedAtDefaultsNowAndToleratesNilFromM1Rows() throws {
