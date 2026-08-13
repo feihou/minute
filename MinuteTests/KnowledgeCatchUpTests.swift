@@ -122,15 +122,16 @@ struct KnowledgeCatchUpTests {
         var calls = 0
         let catchUp = KnowledgeCatchUp { _, _ in
             calls += 1
-            try await Task.sleep(for: .milliseconds(1000))
+            try await Task.sleep(for: .milliseconds(2000))
             return []
         }
         catchUp.nudge(context: context)
         // Long enough that the loop's Task is reliably scheduled and past
-        // its first `calls += 1` even under full-suite parallel contention,
-        // short enough to still land well before the 1000ms extractor sleep
-        // completes (keeps the 1:5 ratio from the original 20ms:100ms).
-        try await Task.sleep(for: .milliseconds(200))
+        // its first `calls += 1` even under full-suite parallel contention
+        // AND a busy host (a live simulator session flaked the 200ms
+        // variant), short enough to still land well before the 2000ms
+        // extractor sleep completes (keeps the 1:5 ratio).
+        try await Task.sleep(for: .milliseconds(400))
         catchUp.pause()
         await catchUp.waitUntilIdle()
         let callsAfterPause = calls
