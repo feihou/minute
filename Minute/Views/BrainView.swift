@@ -135,19 +135,108 @@ struct BrainView: View {
     }
 }
 
-/// Minimal entity page so the Brain tab navigates end-to-end; Task 4
-/// replaces this body with synthesis, source chips, and draft styling.
+/// One entity's page: the synthesis narrative on top (the system saying
+/// something ABOUT the entity), dated facts with source-meeting chips
+/// underneath — the receipts under the story (spec §6). Read-only in m2a.
 struct EntityDetailView: View {
+    @Environment(\.modelContext) private var context
     @Bindable var entity: KnowledgeEntity
+    @Query(sort: \Meeting.createdAt, order: .reverse) private var meetings: [Meeting]
+
+    private var meetingsByID: [UUID: Meeting] {
+        Dictionary(uniqueKeysWithValues: meetings.map { ($0.id, $0) })
+    }
 
     var body: some View {
         List {
-            ForEach(entity.visibleFacts) { fact in
-                Text(fact.text)
-            }
+            synthesisSection
+            factsSection
         }
         .navigationTitle(entity.name)
         .navigationBarTitleDisplayMode(.inline)
+        // Re-run when facts arrive while the page is open (catch-up loop).
+        .task(id: entity.visibleFacts.count) {
+            await KnowledgeSynthesisService.refreshIfStale(entity, context: context)
+        }
+    }
+
+    @ViewBuilder private var synthesisSection: some View {
+        if let synthesis = entity.synthesis, !synthesis.isEmpty {
+            Section {
+                Text(synthesis)
+                    .font(.callout)
+            } header: {
+                Label(entity.kind == .me ? "About You" : "What Minute Knows", systemImage: "sparkles")
+            }
+        } else if KnowledgeSynthesisService.isStale(entity), KnowledgeSynthesisService.availabilityMessage == nil {
+            Section {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text("Writing the summary on device…")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var factsSection: some View {
+        Section {
+            ForEach(entity.visibleFacts) { fact in
+                factRow(fact)
+            }
+        } header: {
+            Label("Facts", systemImage: "list.bullet")
+        } footer: {
+            Text("Learned from your meetings, entirely on this iPhone. Tap a source to open the meeting.")
+        }
+    }
+
+    private func factRow(_ fact: KnowledgeFact) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 8) {
+                Text(fact.text)
+                Spacer(minLength: 0)
+                if fact.status == .suggested {
+                    badge("Draft", tint: .orange)
+                } else if fact.status == .autoCaptured {
+                    badge("Auto", tint: .accentColor)
+                }
+            }
+            HStack(spacing: 6) {
+                chip("calendar", fact.capturedAt.formatted(date: .abbreviated, time: .omitted))
+                if let meeting = meetingsByID[fact.sourceMeetingID] {
+                    NavigationLink {
+                        MeetingDetailView(meeting: meeting)
+                    } label: {
+                        chip("mic", meeting.title)
+                    }
+                    .buttonStyle(.plain)
+                }
+                // A deleted source meeting simply shows no chip — the fact
+                // survives its source (spec §6: chips tolerate deletion).
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func badge(_ text: String, tint: Color) -> some View {
+        Text(text)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(tint.opacity(0.12), in: Capsule())
+    }
+
+    private func chip(_ systemImage: String, _ text: String) -> some View {
+        Label(text, systemImage: systemImage)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color(.secondarySystemFill).opacity(0.6), in: Capsule())
     }
 }
 
