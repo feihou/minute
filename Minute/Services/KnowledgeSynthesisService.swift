@@ -66,27 +66,40 @@ struct KnowledgeSynthesisService {
         synthesize: ((String, EntityKind, [String]) async throws -> String)? = nil
     ) async -> Bool {
         guard isStale(entity) else { return true }
-        let visible = entity.visibleFacts
-        guard !visible.isEmpty else {
-            entity.synthesis = nil
-            entity.synthesizedFactCount = 0
-            try? context.save()
-            return true
-        }
-        guard availabilityMessage == nil else { return false }
+        guard availabilityMessage == nil || entity.visibleFacts.isEmpty else { return false }
         let synthesize = synthesize ?? { name, kind, facts in
             try await KnowledgeSynthesisService().synthesize(name: name, kind: kind, facts: facts)
         }
-        do {
-            let narrative = try await synthesize(entity.name, entity.kind, visible.map(\.text))
-            guard !entity.isDeleted else { return true }
-            entity.synthesis = narrative.isEmpty ? nil : narrative
-            entity.synthesizedFactCount = visible.count
-            try? context.save()
-            return true
-        } catch {
-            // Keep whatever narrative exists; the page still shows the facts.
-            return false
+        // Ingest can replace facts while the model is writing — a same-count
+        // re-extraction flips the staleness marker nil-to-nil, so no new
+        // view task starts, and committing here would stamp a narrative of
+        // vanished facts as fresh. Snapshot the fact identity, re-check
+        // after the await, retry on the fresh set; bounded so a churning
+        // ingest can't pin the model.
+        for _ in 0..<3 {
+            let visible = entity.visibleFacts
+            guard !visible.isEmpty else {
+                // Clearing needs no model, so it stays reachable when the
+                // model is unavailable.
+                entity.synthesis = nil
+                entity.synthesizedFactCount = 0
+                try? context.save()
+                return true
+            }
+            let snapshotIDs = Set(visible.map(\.id))
+            do {
+                let narrative = try await synthesize(entity.name, entity.kind, visible.map(\.text))
+                guard !entity.isDeleted else { return true }
+                guard Set(entity.visibleFacts.map(\.id)) == snapshotIDs else { continue }
+                entity.synthesis = narrative.isEmpty ? nil : narrative
+                entity.synthesizedFactCount = visible.count
+                try? context.save()
+                return true
+            } catch {
+                // Keep whatever narrative exists; the page still shows the facts.
+                return false
+            }
         }
+        return false
     }
 }

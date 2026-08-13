@@ -56,6 +56,40 @@ struct KnowledgeSynthesisServiceTests {
         #expect(entity.synthesizedFactCount == 0)
     }
 
+    @Test func factsReplacedMidSynthesisAreResynthesizedNotStampedStale() async throws {
+        let context = try makeContext()
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        let original = KnowledgeFact(
+            text: "old fact", originalText: "old fact", status: .suggested,
+            sourceMeetingID: UUID(), capturedAt: .now, entity: entity
+        )
+        context.insert(original)
+        try context.save()
+
+        var calls = 0
+        let fresh = await KnowledgeSynthesisService.refreshIfStale(entity, context: context) { _, _, facts in
+            calls += 1
+            if calls == 1 {
+                // A same-count re-extraction lands while the model is
+                // writing: marker stays nil-to-nil, so no new view task
+                // starts — this continuation must notice, not commit.
+                context.delete(original)
+                context.insert(KnowledgeFact(
+                    text: "new fact", originalText: "new fact", status: .suggested,
+                    sourceMeetingID: UUID(), capturedAt: .now, entity: entity
+                ))
+                try? context.save()
+            }
+            return "narrative from \(facts.joined())"
+        }
+
+        #expect(fresh == true)
+        #expect(calls == 2)
+        #expect(entity.synthesis == "narrative from new fact")
+        #expect(entity.synthesizedFactCount == 1)
+    }
+
     @Test func failedSynthesisReportsFalseAndKeepsPriorState() async throws {
         let context = try makeContext()
         let entity = entityWithFacts(2, context: context)
