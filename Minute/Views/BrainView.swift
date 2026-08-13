@@ -3,15 +3,27 @@ import SwiftUI
 
 /// Pure grouping for the Brain tab — testable without a view.
 enum BrainSections {
-    static func grouped(
-        _ entities: [KnowledgeEntity]
-    ) -> (me: KnowledgeEntity?, people: [KnowledgeEntity], projects: [KnowledgeEntity], topics: [KnowledgeEntity]) {
+    /// The tab's grouped entities. A named type instead of a wide tuple
+    /// (SwiftLint large_tuple).
+    struct Groups {
+        var me: KnowledgeEntity?
+        var people: [KnowledgeEntity]
+        var projects: [KnowledgeEntity]
+        var topics: [KnowledgeEntity]
+    }
+
+    static func grouped(_ entities: [KnowledgeEntity]) -> Groups {
         let live = entities.filter { $0.redirectTo == nil }
         func section(_ kind: EntityKind) -> [KnowledgeEntity] {
             live.filter { $0.kind == kind && !$0.visibleFacts.isEmpty }
                 .sorted { ($0.visibleFacts.first?.capturedAt ?? .distantPast) > ($1.visibleFacts.first?.capturedAt ?? .distantPast) }
         }
-        return (live.first { $0.kind == .me }, section(.person), section(.project), section(.topic))
+        return Groups(
+            me: live.first { $0.kind == .me },
+            people: section(.person),
+            projects: section(.project),
+            topics: section(.topic)
+        )
     }
 }
 
@@ -22,7 +34,7 @@ struct BrainView: View {
     @Environment(KnowledgeCatchUp.self) private var catchUp
     @Query private var entities: [KnowledgeEntity]
 
-    private var sections: (me: KnowledgeEntity?, people: [KnowledgeEntity], projects: [KnowledgeEntity], topics: [KnowledgeEntity]) {
+    private var sections: BrainSections.Groups {
         BrainSections.grouped(entities)
     }
 
