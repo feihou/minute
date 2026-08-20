@@ -218,13 +218,14 @@ enum MeetingStore {
         if let audioFileName {
             deleteAudioFile(named: audioFileName)
         }
-        // Facts extracted into the Brain are keyed by meeting UUID rather than
-        // by a SwiftData relationship, so nothing cascades to them — remove
-        // them explicitly, or a deleted meeting keeps speaking through its
-        // facts. Deliberately after the meeting delete commits: a failure here
-        // must not resurrect the meeting, and the launch sweep in
+        // A fact's sources are a codable list rather than a SwiftData
+        // relationship, so nothing cascades to them — drop this meeting's
+        // support explicitly, or a deleted meeting keeps speaking through the
+        // facts it produced. Deliberately after the meeting delete commits: a
+        // failure here must not resurrect the meeting, and the launch pass in
         // MeetingListView catches whatever a failed save leaves behind.
-        KnowledgeStore.purgeFacts(fromMeeting: meetingID, context: context)
+        _ = meetingID
+        KnowledgeStore.reconcile(context: context)
         return true
     }
 

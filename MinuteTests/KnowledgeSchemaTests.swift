@@ -119,4 +119,42 @@ struct KnowledgeSchemaTests {
         #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).count == 1)
         #expect(entity.synthesizedFactCount == nil)
     }
+    @Test func factsWrittenBeforeSourcesGetThemBuiltFromTheOldColumns() throws {
+        let context = try makeContainer().mainContext
+        let source = Meeting(title: "Source", createdAt: .now.addingTimeInterval(-7200))
+        let restater = Meeting(title: "Restater")
+        context.insert(source)
+        context.insert(restater)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        // Exactly how a row looks after the lightweight migration: the old
+        // columns carry the data and `sources` is empty.
+        let fact = KnowledgeFact(
+            text: "Sarah leads Atlas", originalText: "Sarah leads Atlas",
+            status: .autoCaptured, sources: [], entity: entity
+        )
+        fact.legacySourceMeetingID = source.id
+        fact.legacySourceQuote = "I'm leading Atlas"
+        fact.legacyCapturedAt = source.createdAt
+        fact.legacyCorroboratedByMeetingIDs = [restater.id]
+        context.insert(fact)
+        try context.save()
+
+        #expect(KnowledgeMigration.backfillSources(context: context))
+
+        #expect(fact.sourceMeetingIDs == [source.id, restater.id])
+        // The primary keeps its validated quote.
+        #expect(fact.sources.first?.quote == "I'm leading Atlas")
+        // A corroborator never had a date of its own; its meeting's real date
+        // is used rather than inheriting the primary's.
+        #expect(fact.sources.last?.capturedAt == restater.createdAt)
+        #expect(fact.sources.last?.quote == nil)
+        // capturedAt is derived, so it follows the newest statement.
+        #expect(fact.capturedAt == restater.createdAt)
+
+        // Idempotent: a second pass leaves a fact that already has sources alone.
+        #expect(KnowledgeMigration.backfillSources(context: context))
+        #expect(fact.sources.count == 2)
+    }
+
 }

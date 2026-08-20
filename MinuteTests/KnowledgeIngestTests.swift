@@ -43,7 +43,7 @@ struct KnowledgeIngestTests {
         #expect(entities[0].name == "Sarah")
         #expect(entities[0].facts.count == 1)
         #expect(entities[0].facts[0].status == .suggested)
-        #expect(entities[0].facts[0].sourceMeetingID == meeting.id)
+        #expect(entities[0].facts[0].sourceMeetingIDs == [meeting.id])
     }
 
     @Test func twoCandidatesForOneNewNameShareOneEntity() throws {
@@ -260,7 +260,7 @@ struct KnowledgeIngestTests {
         // But the second meeting is about to be stamped as extracted and will
         // never be read again, so this row has to remember that it says this
         // too. Otherwise deleting the first meeting silently loses the fact.
-        #expect(existing.corroboratedByMeetingIDs == [secondMeeting.id])
+        #expect(existing.sourceMeetingIDs == [firstMeeting.id, secondMeeting.id])
         #expect(existing.sourceMeetingIDs == [firstMeeting.id, secondMeeting.id])
     }
 
@@ -283,8 +283,8 @@ struct KnowledgeIngestTests {
         )
 
         #expect(result.duplicatesDropped == 1)
-        // A meeting cannot corroborate itself.
-        #expect(existing.corroboratedByMeetingIDs == nil)
+        // A meeting cannot corroborate itself — it stays a single source.
+        #expect(existing.sourceMeetingIDs == [meeting.id])
     }
 
     @Test func aTombstonedClaimRecordsNoCorroboration() throws {
@@ -306,7 +306,7 @@ struct KnowledgeIngestTests {
         #expect(result.duplicatesDropped == 1)
         // A tombstone exists to keep a rejected claim out, not to hold sources —
         // corroborating it would give the rejection a reason to be kept alive.
-        #expect(tombstone.corroboratedByMeetingIDs == nil)
+        #expect(tombstone.sourceMeetingIDs.count == 1)
     }
 
     @Test func reExtractionKeepsAFactAnotherMeetingStillStates() throws {
@@ -323,7 +323,7 @@ struct KnowledgeIngestTests {
             text: "Sarah leads the Atlas redesign", originalText: "Sarah leads the Atlas redesign",
             status: .suggested, sourceMeetingID: first.id, capturedAt: first.createdAt, entity: entity
         )
-        existing.addCorroboration(second.id)
+        existing.addSource(FactSource(meetingID: second.id, quote: nil, capturedAt: second.createdAt))
         context.insert(existing)
         try context.save()
 
@@ -340,7 +340,7 @@ struct KnowledgeIngestTests {
         #expect(texts.contains("Sarah leads the Atlas redesign"))
         let carried = try #require(try context.fetch(FetchDescriptor<KnowledgeFact>())
             .first { $0.originalText == "Sarah leads the Atlas redesign" })
-        #expect(carried.sourceMeetingID == second.id)
+        #expect(carried.newestSource?.meetingID == second.id)
     }
 
     @Test func reExtractionRevokesACorroborationTheMeetingNoLongerMakes() throws {
@@ -355,7 +355,7 @@ struct KnowledgeIngestTests {
             text: "Sarah leads the Atlas redesign", originalText: "Sarah leads the Atlas redesign",
             status: .autoCaptured, sourceMeetingID: first.id, capturedAt: first.createdAt, entity: entity
         )
-        fact.addCorroboration(second.id)
+        fact.addSource(FactSource(meetingID: second.id, quote: nil, capturedAt: second.createdAt))
         context.insert(fact)
         try context.save()
 
@@ -367,7 +367,7 @@ struct KnowledgeIngestTests {
         )
 
         // It no longer vouches for the old claim...
-        #expect(fact.corroboratedByMeetingIDs == nil)
+        #expect(fact.sourceMeetingIDs == [first.id])
         // ...so deleting the meeting that does state it takes the fact with it,
         // rather than attributing it to a transcript that no longer supports it.
         #expect(MeetingStore.delete(first, context: context))
@@ -387,7 +387,7 @@ struct KnowledgeIngestTests {
             text: "Sarah leads the Atlas redesign", originalText: "Sarah leads the Atlas redesign",
             status: .autoCaptured, sourceMeetingID: first.id, capturedAt: first.createdAt, entity: entity
         )
-        fact.addCorroboration(second.id)
+        fact.addSource(FactSource(meetingID: second.id, quote: nil, capturedAt: second.createdAt))
         context.insert(fact)
         try context.save()
 
@@ -398,7 +398,7 @@ struct KnowledgeIngestTests {
         )
 
         // Cleared and re-added in the same run, so the evidence stands.
-        #expect(fact.corroboratedByMeetingIDs == [second.id])
+        #expect(fact.sourceMeetingIDs == [first.id, second.id])
     }
 
     @Test func aParaphraseAfterACorroborationInTheSameRunIsStillAWithinMeetingRepeat() throws {
@@ -458,7 +458,7 @@ struct KnowledgeIngestTests {
         #expect(result.duplicatesDropped == 1)
         // But the second meeting did not say what the first said, so it must
         // not end up owning the first meeting's claim when that meeting goes.
-        #expect(existing.corroboratedByMeetingIDs == nil)
+        #expect(existing.sourceMeetingIDs == [first.id])
     }
 
     @Test func anUngroundedRestatementIsDroppedButNotTreatedAsCorroboration() throws {
@@ -486,7 +486,7 @@ struct KnowledgeIngestTests {
         #expect(result.duplicatesDropped == 1)
         // Corroboration would let this meeting inherit an auto-captured fact on
         // evidence too weak to have captured it in the first place.
-        #expect(existing.corroboratedByMeetingIDs == nil)
+        #expect(existing.sourceMeetingIDs == [first.id])
     }
 
 }

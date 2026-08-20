@@ -51,6 +51,10 @@ struct MinuteApp: App {
         #if DEBUG
         DemoSeed.seedIfRequested(container: container)
         #endif
+        // Before anything reads a fact: rows written before `sources` existed
+        // carry their support in the old columns, and every read downstream
+        // looks only at `sources`. Idempotent, so this is a no-op thereafter.
+        KnowledgeMigration.backfillSources(context: container.mainContext)
         let jobs = MeetingJobs()
         let catchUp = KnowledgeCatchUp()
         let mainContext = container.mainContext

@@ -352,7 +352,7 @@ struct EntityDetailView: View {
             // as two more pills.
             HStack(spacing: 6) {
                 Text(fact.capturedAt.formatted(date: .abbreviated, time: .omitted))
-                if let meeting = meetingsByID[fact.sourceMeetingID] {
+                if let source = fact.newestSource, let meeting = meetingsByID[source.meetingID] {
                     Text("·")
                     NavigationLink {
                         MeetingDetailView(meeting: meeting)

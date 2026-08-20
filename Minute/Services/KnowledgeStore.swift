@@ -4,60 +4,41 @@ import SwiftData
 
 /// Removes the knowledge a meeting produced when that meeting goes away.
 ///
-/// `KnowledgeFact.sourceMeetingID` is a plain UUID rather than a SwiftData
-/// relationship — entity pages are built to tolerate a deleted source meeting —
-/// so no delete rule cascades here and the cleanup has to be explicit.
+/// A fact's sources are a codable list rather than a SwiftData relationship —
+/// entity pages are built to tolerate a deleted source meeting — so no delete
+/// rule cascades here and the cleanup has to be explicit.
 ///
-/// "Produced" means facts no surviving meeting still supports. A fact another
-/// meeting restated word for word is re-pointed at that meeting instead of
-/// being deleted, because dedup collapsed both statements into this one row.
+/// "Produced" means facts no surviving meeting still supports. Deleting a
+/// meeting drops its entry from every fact's source list; a fact other meetings
+/// also state simply keeps theirs, and its date and quote follow on their own
+/// because both are derived.
 enum KnowledgeStore {
     private static let logger = Logger(subsystem: "com.minuteapp.Minute", category: "KnowledgeStore")
 
-    /// Removes every fact extracted from `meetingID`, then tidies the entities
-    /// left behind. Returns false when the store could not be saved; the launch
-    /// sweep is the backstop for that case.
+    /// Brings the knowledge base back in line with the meetings that exist.
+    ///
+    /// Call after deleting a meeting, and once at launch — the launch pass also
+    /// covers meetings deleted by a build that predates this and any earlier
+    /// call whose save failed. Returns false when the store could not be read
+    /// or saved, in which case nothing was changed.
+    ///
+    /// Deliberately takes no meeting: with sources a uniform list, reconciling
+    /// after one deletion and reconciling the whole library are the same work,
+    /// and a parameter would only invite the two to drift apart.
     @discardableResult
-    static func purgeFacts(fromMeeting meetingID: UUID, context: ModelContext) -> Bool {
-        let descriptor = FetchDescriptor<KnowledgeFact>(
-            predicate: #Predicate { $0.sourceMeetingID == meetingID }
-        )
-        guard let facts = try? context.fetch(descriptor) else {
-            logger.error("Could not fetch the facts belonging to a deleted meeting")
-            return false
-        }
-        return remove(facts, context: context)
+    static func reconcile(context: ModelContext) -> Bool {
+        reconcileStore(context: context)
     }
 
-    /// Removes facts whose source meeting no longer exists. Covers two cases a
-    /// per-delete purge cannot: meetings deleted by a build that predates the
-    /// purge, and a purge whose save failed.
-    @discardableResult
-    static func sweepOrphanedFacts(liveMeetingIDs: Set<UUID>, context: ModelContext) -> Bool {
-        // ponytail: fetch-all then filter in memory — #Predicate cannot express
-        // "not in this set". Facts are per-meeting small; move to a batched
-        // fetch if a large library ever makes this scan noticeable.
-        guard let all = try? context.fetch(FetchDescriptor<KnowledgeFact>()) else {
-            logger.error("Could not fetch facts for the orphan sweep")
-            return false
-        }
-        return remove(all.filter { !liveMeetingIDs.contains($0.sourceMeetingID) }, context: context)
-    }
-
-    /// `facts` are the rows this run selected for removal. Everything else here
-    /// is repair work that must run even when that selection is empty — a
-    /// deleted meeting can leave traces on rows it never sourced.
-    private static func remove(_ facts: [KnowledgeFact], context: ModelContext) -> Bool {
-
-        // A fact several meetings state identically exists as one row: dedup
-        // drops the repeats and stamps their meetings as extracted, so they are
-        // never read again. Deleting the row's source must therefore hand the
-        // fact to a meeting that is still here rather than discard a claim the
-        // library still supports.
-        //
-        // A failed read must never be mistaken for "the library is empty": that
-        // would leave every fact without a surviving source and delete the lot,
-        // turning a transient error into permanent knowledge loss.
+    /// Drops deleted meetings' support from every fact, then clears up what is
+    /// left behind. Both entry points funnel here because, once sources are a
+    /// uniform list, "this meeting was deleted" and "these meetings are gone"
+    /// are the same operation.
+    ///
+    /// A failed read must never be mistaken for "the library is empty": that
+    /// would strip every fact of its support and delete the lot, turning a
+    /// transient error into permanent knowledge loss.
+    private static func reconcileStore(context: ModelContext) -> Bool {
         let liveMeetings: [Meeting]
         let allEntities: [KnowledgeEntity]
         let allFacts: [KnowledgeFact]
@@ -69,55 +50,39 @@ enum KnowledgeStore {
             logger.error("Could not read the store while removing knowledge, so nothing was removed: \(error.localizedDescription)")
             return false
         }
-        let liveDates = Dictionary(liveMeetings.map { ($0.id, $0.createdAt) }, uniquingKeysWith: { first, _ in first })
-        let liveIDs = Set(liveDates.keys)
+        let liveIDs = Set(liveMeetings.map(\.id))
 
-        // A deleted meeting that only restated someone else's fact appears
-        // nowhere in the selections above — its contribution lives solely in a
-        // corroboration array, and neither the purge predicate nor the sweep
-        // filter looks there. Left alone, the id of a meeting the user deleted
-        // stays on disk for good. Idempotent: once pruned there is nothing to do.
-        var prunedCorroborations = false
-        for fact in allFacts {
-            guard let ids = fact.corroboratedByMeetingIDs else { continue }
-            for dead in ids where !liveIDs.contains(dead) {
-                fact.removeCorroboration(dead)
-                prunedCorroborations = true
-            }
-        }
-
-        // Rejected facts are tombstones: the text is already cleared and only a
-        // salted fingerprint remains, whose whole job is to stop a claim the
-        // user rejected from reappearing via a different meeting. They are never
-        // removed on their own — but they cannot keep an otherwise-empty
-        // entity's learned name alive either, so they still count toward the
-        // emptiness check below.
+        // One pass replaces the old promote-or-delete branch and the separate
+        // corroboration prune. A fact keeps whatever support survives, and its
+        // date and quote follow on their own because both are derived — nothing
+        // is re-pointed, so nothing can be re-pointed wrongly.
         var removable: [KnowledgeFact] = []
-        var promoted = 0
-        var candidates: [UUID: KnowledgeEntity] = [:]
-        var lostAFact: Set<UUID> = []
-        // Promotion re-dates a fact, which reorders the entity's facts. Synthesis
-        // is fed newest-first and told to prefer the newer fact when two
-        // conflict, so its narrative can outlive the ordering it was written
-        // from — and the count-based freshness marker cannot see that.
-        var reordered: Set<UUID> = []
-        for fact in facts {
+        // Entities to re-check for emptiness: anything that lost support at all.
+        var changedEntities: Set<UUID> = []
+        // Entities whose narrative must be rebuilt: only those where a fact the
+        // narrative is written from lost support. A tombstone contributes
+        // nothing to it, so re-checking one must not churn an accurate summary.
+        var lostVisibleSupport: Set<UUID> = []
+        var changed = false
+        for fact in allFacts {
+            let before = fact.sources
+            fact.sources.removeAll { !liveIDs.contains($0.meetingID) }
+            guard fact.sources.count != before.count else { continue }
+            changed = true
             if let entity = fact.entity {
-                candidates[entity.id] = entity
+                changedEntities.insert(entity.id)
+                if fact.status != .rejected {
+                    // Losing a source can change which statement is newest, and
+                    // synthesis is fed newest-first and told to prefer the newer
+                    // fact on conflict — so its narrative has to be rebuilt.
+                    lostVisibleSupport.insert(entity.id)
+                }
             }
-            guard fact.status != .rejected else { continue }
-            if let survivor = fact.sourceMeetingIDs.first(where: { liveIDs.contains($0) }),
-               let date = liveDates[survivor] {
-                if fact.capturedAt != date, let entity = fact.entity {
-                    reordered.insert(entity.id)
-                }
-                fact.promoteSource(to: survivor, capturedAt: date, liveMeetingIDs: liveIDs)
-                promoted += 1
-            } else {
+            // A tombstone holds no meeting content, only a salted fingerprint
+            // keeping a rejected claim out. It is never removed for lack of
+            // support; it goes only with its entity.
+            if fact.sources.isEmpty, fact.status != .rejected {
                 removable.append(fact)
-                if let entity = fact.entity {
-                    lostAFact.insert(entity.id)
-                }
             }
         }
         let removedIDs = Set(removable.map(\.id))
@@ -126,17 +91,13 @@ enum KnowledgeStore {
         }
 
         var doomed: [UUID: KnowledgeEntity] = [:]
-        for entity in candidates.values {
+        for entity in allEntities where changedEntities.contains(entity.id) {
             // Judged against `removedIDs` rather than re-reading `entity.facts`,
             // which still lists rows that are deleted-pending until the save.
             if entity.visibleFacts.contains(where: { !removedIDs.contains($0.id) }) {
-                // Only an entity that actually lost a fact needs its narrative
-                // rewritten. Re-selecting a retained tombstone on a later sweep
-                // must not churn one that is still accurate.
-                if lostAFact.contains(entity.id) || reordered.contains(entity.id) {
-                    entity.synthesis = nil
-                    entity.synthesizedFactCount = nil
-                }
+                guard lostVisibleSupport.contains(entity.id) else { continue }
+                entity.synthesis = nil
+                entity.synthesizedFactCount = nil
             } else if entity.redirectTo == nil {
                 // Nothing left to show. An entity holding only tombstones goes
                 // too, since its name was still learned from these meetings —
@@ -146,7 +107,8 @@ enum KnowledgeStore {
                 // extraction recreate it under a fresh id would quietly
                 // un-reject a claim the user threw out.
                 let backedByALiveMeeting = entity.facts.contains { fact in
-                    !removedIDs.contains(fact.id) && liveIDs.contains(fact.sourceMeetingID)
+                    !removedIDs.contains(fact.id)
+                        && fact.sourceMeetingIDs.contains(where: liveIDs.contains)
                 }
                 if !backedByALiveMeeting {
                     doomed[entity.id] = entity
@@ -158,7 +120,7 @@ enum KnowledgeStore {
             context.delete(entity)
         }
 
-        guard !removable.isEmpty || promoted > 0 || !doomed.isEmpty || prunedCorroborations else { return true }
+        guard changed || !doomed.isEmpty else { return true }
         do {
             try context.save()
         } catch {

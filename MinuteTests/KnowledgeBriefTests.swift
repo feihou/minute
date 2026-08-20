@@ -122,7 +122,7 @@ struct KnowledgeBriefTests {
             status: .autoCaptured, sourceMeetingID: earlier, capturedAt: .now, entity: entity
         )
         // Dedup put this meeting's identical statement onto the earlier row.
-        fact.addCorroboration(thisMeeting)
+        fact.addSource(FactSource(meetingID: thisMeeting, quote: nil, capturedAt: .now))
         context.insert(fact)
         try context.save()
 

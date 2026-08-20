@@ -126,11 +126,11 @@ struct MeetingListView: View {
             guard !storeIsEphemeral, !didSweepOrphans else { return }
             didSweepOrphans = true
             MeetingStore.removeOrphanedAudio(referencedFileNames: Set(meetings.compactMap(\.audioFileName)))
-            // Same idea for the knowledge base: clears facts left by meetings
-            // deleted before the purge existed, and by any purge whose save
+            // Same idea for the knowledge base: drops support left by meetings
+            // deleted before this existed, and by any earlier pass whose save
             // failed. Runs on the same guard, so it never touches the fallback
             // store, where the meetings backing these facts still exist.
-            KnowledgeStore.sweepOrphanedFacts(liveMeetingIDs: Set(meetings.map(\.id)), context: context)
+            KnowledgeStore.reconcile(context: context)
         }
         .onChange(of: widgetSnapshot, initial: true) { _, snapshot in
             WidgetSnapshotPublisher.publish(snapshot)

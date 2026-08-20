@@ -31,57 +31,40 @@ enum KnowledgeIngest {
         // a name mentioned twice in one meeting lands on one entity.
         var known = try context.fetch(FetchDescriptor<KnowledgeEntity>())
 
-        // Idempotent re-run: this meeting's unreviewed facts are wholly
-        // superseded by this extraction (spec §2).
-        let stale = try context.fetch(FetchDescriptor<KnowledgeFact>(
-            predicate: #Predicate { $0.sourceMeetingID == meetingID && $0.statusRaw == "suggested" }
-        ))
-        // context.delete doesn't save immediately, so deleted-but-unsaved
-        // facts stay visible in entity.facts until try context.save() below.
-        // Dedup/contradiction scans over entity.facts must skip these IDs or
-        // a replacement fact with matching text "duplicates" the very fact
-        // it's replacing, and the meeting ends up with zero facts.
-        // A stale row that another meeting also states is not this meeting's to
-        // discard. Re-point it at that meeting and leave it out of `staleIDs`,
-        // so the fresh extraction dedups against it and records the
-        // corroboration again rather than dropping a claim the other meeting
-        // still makes — that meeting is stamped as extracted and never re-read.
-        let meetings = try context.fetch(FetchDescriptor<Meeting>())
-        let liveDates = Dictionary(meetings.map { ($0.id, $0.createdAt) }, uniquingKeysWith: { first, _ in first })
-        let liveIDs = Set(liveDates.keys)
+        // Idempotent re-run: this meeting's unreviewed statements are wholly
+        // superseded by this extraction (spec §2), and so is its support for
+        // anything another meeting also states. Both fall out of one pass now
+        // that support is a single list.
+        //
+        // ponytail: fetch-all then filter in memory — #Predicate cannot look
+        // inside a codable array.
+        let allFacts = try context.fetch(FetchDescriptor<KnowledgeFact>())
+        // context.delete doesn't save immediately, so deleted-but-unsaved facts
+        // stay visible in entity.facts until try context.save() below.
+        // Dedup/contradiction scans over entity.facts must skip these IDs or a
+        // replacement fact with matching text "duplicates" the very fact it is
+        // replacing, and the meeting ends up with zero facts.
         var staleIDs: Set<UUID> = []
         // Entities whose fact set changes here get their synthesis marker
         // cleared below: a re-extraction can swap facts one-for-one, so
         // count-based staleness alone would miss the content change.
         var touched: [UUID: KnowledgeEntity] = [:]
-        for fact in stale {
-            if let survivor = (fact.corroboratedByMeetingIDs ?? [])
-                .first(where: { $0 != meetingID && liveIDs.contains($0) }),
-                let date = liveDates[survivor] {
-                // Re-dating reorders the entity's facts, and synthesis is fed
-                // newest-first with "prefer the newer one on conflict" — so the
-                // narrative has to be rebuilt even though the count is unchanged.
-                if fact.capturedAt != date, let entity = fact.entity {
-                    touched[entity.id] = entity
-                }
-                fact.promoteSource(to: survivor, capturedAt: date, liveMeetingIDs: liveIDs)
-                continue
+        for fact in allFacts where fact.sourceMeetingIDs.contains(meetingID) {
+            if fact.sources.count > 1 {
+                // Other meetings state this too, so the row stays. Whether THIS
+                // meeting still states it is decided by its new transcript, so
+                // its entry goes and the loop below re-adds it if the claim
+                // survives — a re-transcribed meeting must stop vouching for
+                // something it no longer says.
+                fact.removeSource(meetingID: meetingID)
+                if let entity = fact.entity { touched[entity.id] = entity }
+            } else if fact.status == .suggested {
+                staleIDs.insert(fact.id)
+                if let entity = fact.entity { touched[entity.id] = entity }
+                context.delete(fact)
             }
-            staleIDs.insert(fact.id)
-            if let entity = fact.entity { touched[entity.id] = entity }
-            context.delete(fact)
-        }
-
-        // This meeting's corroborations are its contribution too, so the same
-        // "wholly superseded by this extraction" rule applies: clear them and
-        // let the loop below add back only the claims its new transcript still
-        // makes. Otherwise a re-transcribed meeting keeps vouching for a fact
-        // it no longer states, and deleting that fact's source would hand it to
-        // this meeting on the strength of evidence that is gone.
-        // ponytail: in-memory scan — #Predicate can't look inside a codable
-        // array. Move to a stored join if fact counts ever make this hurt.
-        for fact in try context.fetch(FetchDescriptor<KnowledgeFact>()) {
-            fact.removeCorroboration(meetingID)
+            // An approved or auto-captured row this meeting alone states
+            // survives re-extraction untouched (spec §2).
         }
 
         for candidate in candidates {
@@ -131,9 +114,13 @@ enum KnowledgeIngest {
                 // fair reason to drop the candidate — it is not a reason to let
                 // this meeting inherit the fact once the original source goes.
                 if duplicate.status != .rejected,
-                   candidate.validatedQuote != nil,
+                   let quote = candidate.validatedQuote,
                    KnowledgeText.statesTheSame(duplicate.originalText, candidate.fact) {
-                    duplicate.addCorroboration(meetingID)
+                    // The restatement brings its own quote now, so the row no
+                    // longer depends on one meeting's phrasing to explain it.
+                    duplicate.addSource(FactSource(
+                        meetingID: meetingID, quote: quote, capturedAt: meeting.createdAt
+                    ))
                 }
                 result.duplicatesDropped += 1
                 continue

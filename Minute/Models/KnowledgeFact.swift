@@ -14,6 +14,21 @@ enum FactStatus: String, Codable {
     case superseded
 }
 
+/// One meeting's support for a fact: which meeting stated it, when, and the
+/// phrase from that transcript that validated it.
+///
+/// Every entry is the same shape. There is no primary source and no lesser
+/// one, which is what stops a read from consulting half the list.
+struct FactSource: Codable, Hashable, Sendable {
+    var meetingID: UUID
+    /// Set only when a phrase from that meeting's transcript validated the
+    /// claim. Nil means the meeting stated it but nothing could be quoted —
+    /// dedup discards a repeat's quote, so restatements usually have none.
+    var quote: String?
+    /// That meeting's date. Facts are timestamped observations.
+    var capturedAt: Date
+}
+
 @Model
 final class KnowledgeFact {
     var id: UUID
@@ -23,12 +38,16 @@ final class KnowledgeFact {
     /// against this (or its fingerprint once rejected).
     var originalText: String
     var statusRaw: String
-    /// Plain UUID on purpose — no relationship; UI must tolerate deleted meetings.
-    var sourceMeetingID: UUID
-    /// Only set when validated as a fuzzy substring of the transcript.
-    var sourceQuote: String?
-    /// The source meeting's date — facts are timestamped observations.
-    var capturedAt: Date
+    /// Every meeting that states this fact, one entry each.
+    ///
+    /// A fact several meetings make identically is one row — dedup drops the
+    /// repeats — so its support has to be a list. It was previously a primary
+    /// meeting id plus a bare array of corroborating ids, which meant only the
+    /// primary carried a quote and a date, every read had to remember to
+    /// consult both, and deleting the primary meant mutating the row to look
+    /// like one of the others. Uniform entries make those bugs unwriteable:
+    /// nothing is promoted, and the date and quote below are derived.
+    var sources: [FactSource]
     var reviewedAt: Date?
     var supersededByID: UUID?
     /// Salted hash of (normalized originalText, entity ID). Set on rejection
@@ -38,14 +57,18 @@ final class KnowledgeFact {
     /// (the meeting's date). Nil for rows written before this field existed.
     /// Recently-learned ordering (and m2b's review auto-archive) read this.
     var createdAt: Date?
-    /// Later meetings that restated this fact word for word. Dedup drops those
-    /// candidates and stamps their meeting as extracted, so this row becomes
-    /// the only record of a claim several meetings support — and that meeting
-    /// is never re-read. Without this, deleting `sourceMeetingID` would discard
-    /// knowledge a surviving meeting still backs. Nil for rows written before
-    /// this field existed, and for the common uncorroborated case.
-    var corroboratedByMeetingIDs: [UUID]?
     var entity: KnowledgeEntity?
+
+    // MARK: - Pre-`sources` storage
+    //
+    // Read once by `KnowledgeMigration` to build `sources`, then never again.
+    // The columns stay so an existing store keeps its data through the
+    // lightweight migration; `originalName` preserves the mapping.
+
+    @Attribute(originalName: "sourceMeetingID") var legacySourceMeetingID: UUID
+    @Attribute(originalName: "sourceQuote") var legacySourceQuote: String?
+    @Attribute(originalName: "capturedAt") var legacyCapturedAt: Date
+    @Attribute(originalName: "corroboratedByMeetingIDs") var legacyCorroboratedByMeetingIDs: [UUID]?
 
     var status: FactStatus {
         get { FactStatus(rawValue: statusRaw) ?? .suggested }
@@ -57,9 +80,7 @@ final class KnowledgeFact {
         text: String,
         originalText: String,
         status: FactStatus,
-        sourceMeetingID: UUID,
-        sourceQuote: String? = nil,
-        capturedAt: Date,
+        sources: [FactSource],
         entity: KnowledgeEntity?,
         createdAt: Date = .now
     ) {
@@ -67,52 +88,68 @@ final class KnowledgeFact {
         self.text = text
         self.originalText = originalText
         self.statusRaw = status.rawValue
-        self.sourceMeetingID = sourceMeetingID
-        self.sourceQuote = sourceQuote
-        self.capturedAt = capturedAt
+        self.sources = sources
         self.entity = entity
         self.createdAt = createdAt
+        // Only ever read by the migration, and only for rows that predate
+        // `sources`. Seeded so the columns stay non-optional.
+        self.legacySourceMeetingID = sources.first?.meetingID ?? UUID()
+        self.legacyCapturedAt = sources.first?.capturedAt ?? createdAt
     }
 
-    /// Every meeting that supports this fact: the one it was captured from,
-    /// followed by any later meeting whose identical restatement was deduped.
-    var sourceMeetingIDs: [UUID] {
-        [sourceMeetingID] + (corroboratedByMeetingIDs ?? [])
+    /// Convenience for the common case: one meeting, one statement.
+    convenience init(
+        id: UUID = UUID(),
+        text: String,
+        originalText: String,
+        status: FactStatus,
+        sourceMeetingID: UUID,
+        sourceQuote: String? = nil,
+        capturedAt: Date,
+        entity: KnowledgeEntity?,
+        createdAt: Date = .now
+    ) {
+        self.init(
+            id: id, text: text, originalText: originalText, status: status,
+            sources: [FactSource(meetingID: sourceMeetingID, quote: sourceQuote, capturedAt: capturedAt)],
+            entity: entity, createdAt: createdAt
+        )
     }
 
-    /// Records that `meetingID` restated this fact. No-op when it is already
-    /// the source or already recorded.
-    func addCorroboration(_ meetingID: UUID) {
-        guard meetingID != sourceMeetingID else { return }
-        var ids = corroboratedByMeetingIDs ?? []
-        guard !ids.contains(meetingID) else { return }
-        ids.append(meetingID)
-        corroboratedByMeetingIDs = ids
+    // MARK: - Derived from `sources`
+    //
+    // Nothing here is stored, so deleting a meeting cannot leave a stale date
+    // or a quote belonging to a transcript that no longer exists.
+
+    /// Newest supporting meeting's date. Synthesis is fed newest-first and
+    /// "recently learned" orders by it, so the most recent statement wins.
+    var capturedAt: Date {
+        sources.map(\.capturedAt).max() ?? legacyCapturedAt
     }
 
-    /// Drops `meetingID` from the corroborations, used when that meeting is
-    /// re-extracted: whether it still makes this claim is decided by its new
-    /// transcript, not by what it said before.
-    func removeCorroboration(_ meetingID: UUID) {
-        guard let ids = corroboratedByMeetingIDs, ids.contains(meetingID) else { return }
-        let remaining = ids.filter { $0 != meetingID }
-        corroboratedByMeetingIDs = remaining.isEmpty ? nil : remaining
+    var sourceMeetingIDs: [UUID] { sources.map(\.meetingID) }
+
+    /// The meeting a page links to: the most recent one that states this.
+    var newestSource: FactSource? {
+        sources.max { $0.capturedAt < $1.capturedAt }
     }
 
-    /// Re-points this fact at a meeting that still exists, used when its
-    /// original source is deleted but a corroborating meeting survives.
-    /// `capturedAt` follows, because it means "the source meeting's date".
-    func promoteSource(to meetingID: UUID, capturedAt date: Date, liveMeetingIDs: Set<UUID>) {
-        sourceMeetingID = meetingID
-        capturedAt = date
-        // The quote is verbatim transcript from the meeting that is going away,
-        // and dedup discarded the corroborating meeting's own quote, so there is
-        // nothing truthful left to show. Keeping it would leave content from a
-        // deleted meeting at rest and attribute it to a meeting that never said
-        // those words.
-        sourceQuote = nil
-        let remaining = (corroboratedByMeetingIDs ?? [])
-            .filter { $0 != meetingID && liveMeetingIDs.contains($0) }
-        corroboratedByMeetingIDs = remaining.isEmpty ? nil : remaining
+    /// The quote to show, taken from the newest source that has one. A source
+    /// without a quote never lends another meeting's words to itself.
+    var sourceQuote: String? {
+        sources.sorted { $0.capturedAt > $1.capturedAt }.first { $0.quote != nil }?.quote
+    }
+
+    /// Records that a meeting states this fact, replacing any entry it already
+    /// had so a re-extraction updates rather than duplicates.
+    func addSource(_ source: FactSource) {
+        sources.removeAll { $0.meetingID == source.meetingID }
+        sources.append(source)
+    }
+
+    /// Drops a meeting's support. Used when that meeting is deleted, and when
+    /// it is re-extracted and may no longer make the claim.
+    func removeSource(meetingID: UUID) {
+        sources.removeAll { $0.meetingID == meetingID }
     }
 }
