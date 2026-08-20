@@ -41,12 +41,27 @@ enum KnowledgeIngest {
         // Dedup/contradiction scans over entity.facts must skip these IDs or
         // a replacement fact with matching text "duplicates" the very fact
         // it's replacing, and the meeting ends up with zero facts.
-        let staleIDs = Set(stale.map(\.id))
+        // A stale row that another meeting also states is not this meeting's to
+        // discard. Re-point it at that meeting and leave it out of `staleIDs`,
+        // so the fresh extraction dedups against it and records the
+        // corroboration again rather than dropping a claim the other meeting
+        // still makes — that meeting is stamped as extracted and never re-read.
+        let meetings = try context.fetch(FetchDescriptor<Meeting>())
+        let liveDates = Dictionary(meetings.map { ($0.id, $0.createdAt) }, uniquingKeysWith: { first, _ in first })
+        let liveIDs = Set(liveDates.keys)
+        var staleIDs: Set<UUID> = []
         // Entities whose fact set changes here get their synthesis marker
         // cleared below: a re-extraction can swap facts one-for-one, so
         // count-based staleness alone would miss the content change.
         var touched: [UUID: KnowledgeEntity] = [:]
         for fact in stale {
+            if let survivor = (fact.corroboratedByMeetingIDs ?? [])
+                .first(where: { $0 != meetingID && liveIDs.contains($0) }),
+                let date = liveDates[survivor] {
+                fact.promoteSource(to: survivor, capturedAt: date, liveMeetingIDs: liveIDs)
+                continue
+            }
+            staleIDs.insert(fact.id)
             if let entity = fact.entity { touched[entity.id] = entity }
             context.delete(fact)
         }

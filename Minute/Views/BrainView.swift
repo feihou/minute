@@ -324,16 +324,17 @@ struct EntityDetailView: View {
         }
     }
 
-    private var factsSection: some View {
-        VStack(alignment: .leading, spacing: Layout.headingGap) {
-            SectionHeading("Facts")
-            VStack(alignment: .leading, spacing: 18) {
-                ForEach(entity.visibleFacts) { fact in
-                    factRow(fact)
-                }
-            }
+    @ViewBuilder private var factsSection: some View {
+        SectionHeading("Facts")
+            .padding(.top, Layout.sectionGap)
+            .padding(.bottom, Layout.headingGap)
+        // Rows sit directly in the enclosing LazyVStack. A wrapper VStack would
+        // make the whole section one child and build every row up front, which
+        // a person or project that has accumulated years of facts would feel.
+        ForEach(Array(entity.visibleFacts.enumerated()), id: \.element.id) { index, fact in
+            factRow(fact)
+                .padding(.top, index == 0 ? 0 : 18)
         }
-        .padding(.top, Layout.sectionGap)
     }
 
     private func factRow(_ fact: KnowledgeFact) -> some View {

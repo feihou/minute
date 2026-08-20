@@ -96,6 +96,12 @@ final class KnowledgeFact {
     func promoteSource(to meetingID: UUID, capturedAt date: Date, liveMeetingIDs: Set<UUID>) {
         sourceMeetingID = meetingID
         capturedAt = date
+        // The quote is verbatim transcript from the meeting that is going away,
+        // and dedup discarded the corroborating meeting's own quote, so there is
+        // nothing truthful left to show. Keeping it would leave content from a
+        // deleted meeting at rest and attribute it to a meeting that never said
+        // those words.
+        sourceQuote = nil
         let remaining = (corroboratedByMeetingIDs ?? [])
             .filter { $0 != meetingID && liveMeetingIDs.contains($0) }
         corroboratedByMeetingIDs = remaining.isEmpty ? nil : remaining

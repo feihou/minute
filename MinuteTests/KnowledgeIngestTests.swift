@@ -309,4 +309,38 @@ struct KnowledgeIngestTests {
         #expect(tombstone.corroboratedByMeetingIDs == nil)
     }
 
+    @Test func reExtractionKeepsAFactAnotherMeetingStillStates() throws {
+        let context = try makeContext()
+        let first = Meeting(title: "first")
+        let second = Meeting(title: "second")
+        context.insert(first)
+        context.insert(second)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        // A suggested row from the first meeting that the second meeting also
+        // stated, so dedup dropped the second candidate.
+        let existing = KnowledgeFact(
+            text: "Sarah leads the Atlas redesign", originalText: "Sarah leads the Atlas redesign",
+            status: .suggested, sourceMeetingID: first.id, capturedAt: first.createdAt, entity: entity
+        )
+        existing.addCorroboration(second.id)
+        context.insert(existing)
+        try context.save()
+
+        // Re-transcribing the first meeting re-extracts it, and this time the
+        // model no longer produces that fact.
+        _ = try KnowledgeIngest.apply(
+            [candidate("Sarah", "Sarah is on the hiring panel")],
+            from: first, context: context
+        )
+
+        // Dropping the stale row would lose a claim the second meeting makes,
+        // and the second meeting is stamped as extracted, so it is never re-read.
+        let texts = try context.fetch(FetchDescriptor<KnowledgeFact>()).map(\.originalText)
+        #expect(texts.contains("Sarah leads the Atlas redesign"))
+        let carried = try #require(try context.fetch(FetchDescriptor<KnowledgeFact>())
+            .first { $0.originalText == "Sarah leads the Atlas redesign" })
+        #expect(carried.sourceMeetingID == second.id)
+    }
+
 }

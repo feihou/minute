@@ -304,6 +304,85 @@ struct KnowledgeDeletionTests {
         #expect(try entities(in: context).count == 1)
     }
 
+    @Test func promotingAFactDropsTheQuoteFromTheDeletedMeeting() throws {
+        let context = try makeContext()
+        let first = Meeting(title: "First")
+        let second = Meeting(title: "Second")
+        context.insert(first)
+        context.insert(second)
+        let priya = KnowledgeEntity(name: "Priya", kind: .person)
+        context.insert(priya)
+        let fact = KnowledgeFact(
+            text: "Owns the Japan launch",
+            originalText: "Owns the Japan launch",
+            status: .autoCaptured,
+            sourceMeetingID: first.id,
+            sourceQuote: "I'll take the Japan launch checklist",
+            capturedAt: first.createdAt,
+            entity: priya
+        )
+        fact.addCorroboration(second.id)
+        context.insert(fact)
+        try context.save()
+
+        #expect(MeetingStore.delete(first, context: context))
+
+        let survivor = try #require(try facts(in: context).first)
+        // The quote is verbatim transcript from the meeting just deleted, and
+        // the second meeting's own quote was thrown away by dedup — keeping it
+        // would leave deleted content at rest under the wrong meeting's name.
+        #expect(survivor.sourceQuote == nil)
+        #expect(survivor.sourceMeetingID == second.id)
+    }
+
+    @Test func anEntityLeftHoldingOnlyTombstonesIsRemoved() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "Only source")
+        context.insert(meeting)
+        let priya = KnowledgeEntity(name: "Priya", kind: .person, aliases: ["P. Sharma"])
+        context.insert(priya)
+        let tombstone = KnowledgeFact(
+            text: "", originalText: "", status: .rejected,
+            sourceMeetingID: meeting.id, capturedAt: meeting.createdAt, entity: priya
+        )
+        tombstone.fingerprint = "abc"
+        context.insert(tombstone)
+        try context.save()
+
+        #expect(MeetingStore.delete(meeting, context: context))
+
+        // A tombstone holds no content, but it cannot keep a name and aliases
+        // learned from the deleted meeting alive after Delete All Meetings.
+        #expect(try entities(in: context).isEmpty)
+        #expect(try facts(in: context).isEmpty)
+    }
+
+    @Test func aRedirectEntityKeepingLiveFactsStandsOnItsOwnInsteadOfBeingDeleted() throws {
+        let context = try makeContext()
+        let deleted = Meeting(title: "Deleted")
+        let kept = Meeting(title: "Kept")
+        context.insert(deleted)
+        context.insert(kept)
+        let canonical = KnowledgeEntity(name: "Priya Sharma", kind: .person)
+        context.insert(canonical)
+        let merged = KnowledgeEntity(name: "Priya", kind: .person, redirectTo: canonical.id)
+        context.insert(merged)
+        addFact("Owns the Q3 scope", to: canonical, from: deleted, context: context)
+        addFact("Owns the Japan launch", to: merged, from: kept, context: context)
+        try context.save()
+
+        #expect(MeetingStore.delete(deleted, context: context))
+
+        // The destination is gone, but this one still holds a fact a kept
+        // meeting supports — deleting it would cascade that fact away, so it
+        // stops being a tombstone instead.
+        let survivors = try entities(in: context)
+        #expect(survivors.count == 1)
+        #expect(survivors.first?.name == "Priya")
+        #expect(survivors.first?.redirectTo == nil)
+        #expect(try facts(in: context).count == 1)
+    }
+
     // MARK: - Sweep (upgrade path and failed purges)
 
     @Test func sweepRemovesFactsWhoseMeetingIsAlreadyGone() throws {
