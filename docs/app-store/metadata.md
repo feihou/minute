@@ -20,7 +20,7 @@ This is a release-owner draft, not legal advice. Product copy below is ready to 
 
 `Record, transcribe, identify speakers, and create AI notes on your iPhone. No account, no backend, no tracking. Open source under MIT.`
 
-### 4. Description (3,725 of 4,000 characters)
+### 4. Description (3,880 of 4,000 characters)
 
 Minute takes notes at your meetings so you can be in them. Record an in-person conversation, watch the transcript appear live, and create structured notes — all processed on your iPhone. No account. No backend. No analytics. Meeting content is not uploaded to an AI or transcription service.
 
@@ -34,7 +34,7 @@ WHAT YOU GET
 
 • AI meeting notes — Apple Intelligence, or a local open model you download in Settings, creates an overview, key points, decisions, action items, and open questions entirely on device. Choose a meeting template and output language, add spelling context, and get per-speaker perspectives after speakers have been identified. Long meetings are chunked and merged automatically.
 
-• Brain — Minute reads your saved meetings on device and builds a browsable knowledge base of the people, projects, and topics that keep coming up. Each one gets a short written summary plus dated facts that link back to the meeting they came from, and opening a meeting shows what Minute already knows about the people in it. This version's Brain is read-only.
+• Brain — Minute reads your saved meetings on device and builds a browsable knowledge base of the people, projects, and topics that keep coming up. Each one gets a short written summary plus dated facts that link back to the meeting they came from, and opening a meeting shows what Minute already knows about the people in it. This version's Brain is read-only, and it needs Apple Intelligence — the optional local summary model doesn't power it.
 
 • Import, search, and revisit — import existing audio for best-effort local transcription; search titles, transcripts, notes, and speaker names; re-transcribe saved audio when needed.
 
@@ -51,6 +51,8 @@ REQUIREMENTS
 • iOS 26 or later. iPhone only.
 • Recording works without transcription. Live transcription requires Apple Speech support for the current device language and model availability.
 • AI notes use Apple Intelligence by default, which needs an Apple Intelligence-capable iPhone with Apple Intelligence turned on. If your iPhone can't run it, download a local model in Settings instead and notes work without it.
+
+• Brain needs Apple Intelligence and has no local-model alternative.
 
 OPEN SOURCE
 
@@ -147,7 +149,7 @@ Official definitions: [Age rating values and definitions](https://developer.appl
 
 ## 3. App Review notes (ready to paste)
 
-> Minute records in-person meetings and processes meeting content on the device. Live transcription uses Apple's on-device SpeechTranscriber (iOS 26). Structured notes use Apple's on-device FoundationModels and require Apple Intelligence. Optional speaker identification uses FluidAudio's offline CoreML pipeline; the model files are downloaded from Hugging Face when first used and cached, but recordings, transcripts, summaries, and identifiers created by Minute are not part of that request. There is no account, login, backend, analytics, or demo credential. To test: launch the app, tap the record button, allow microphone access, speak a few sentences, stop, and open the saved meeting. Transcription depends on Apple Speech support for the device language and local model readiness; recording and playback continue when it is unavailable. Generate notes from the meeting detail screen. Speaker identification is a separate optional action on a saved meeting and may need network access for its first model setup. Optional iCloud Backup and iCloud Drive Folder features are both off by default and copy meeting data only to the reviewer's own iCloud account. The project is open source under the MIT License: https://github.com/feihou/minute
+> Minute records in-person meetings and processes meeting content on the device. Live transcription uses Apple's on-device SpeechTranscriber (iOS 26). Structured notes use Apple's on-device FoundationModels (Apple Intelligence) or, if you prefer, a local open model downloaded in Settings, which runs through MLX without Apple Intelligence. The Brain tab is Apple Intelligence-only and has no local-model alternative; without it the tab says so. Optional speaker identification uses FluidAudio's offline CoreML pipeline; the model files are downloaded from Hugging Face when first used and cached, but recordings, transcripts, summaries, and identifiers created by Minute are not part of that request. There is no account, login, backend, analytics, or demo credential. To test: launch the app, tap the record button, allow microphone access, speak a few sentences, stop, and open the saved meeting. Transcription depends on Apple Speech support for the device language and local model readiness; recording and playback continue when it is unavailable. Generate notes from the meeting detail screen. Speaker identification is a separate optional action on a saved meeting and may need network access for its first model setup. Optional iCloud Backup and iCloud Drive Folder features are both off by default and copy meeting data only to the reviewer's own iCloud account. The project is open source under the MIT License: https://github.com/feihou/minute
 
 ## 4. Export compliance
 
