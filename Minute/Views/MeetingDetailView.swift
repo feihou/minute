@@ -3,7 +3,8 @@ import SwiftUI
 import UIKit
 
 /// Everything about one meeting: playback, summary, transcript, and
-/// edit/copy/share/delete — organized as a header card plus tabbed content.
+/// edit/copy/share/delete — laid out as a single reading surface rather than a
+/// stack of cards, so the notes read like a document instead of a form.
 struct MeetingDetailView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
@@ -63,50 +64,26 @@ struct MeetingDetailView: View {
     private var diarizationError: String? { jobs.error(.diarization, for: meeting) }
 
     var body: some View {
-        List {
-            headerSection
-
-            if !briefContent.isEmpty {
-                Section {
-                    ForEach(briefContent, id: \.entity.id) { item in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(item.entity.name)
-                                .font(.subheadline.weight(.semibold))
-                            ForEach(item.facts) { fact in
-                                Label {
-                                    Text(fact.text)
-                                        .font(.footnote)
-                                } icon: {
-                                    Image(systemName: "circle.fill")
-                                        .font(.system(size: 5))
-                                        .foregroundStyle(Color.accentColor)
-                                }
-                            }
-                        }
-                        .padding(.vertical, 2)
-                    }
-                } header: {
-                    Label("What You Know", systemImage: "brain.head.profile")
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                masthead
+                briefSection
+                tabPicker
+                switch selectedTab {
+                case .summary:
+                    summaryContent
+                case .transcript:
+                    transcriptContent
                 }
             }
-
-            Section {
-                Picker("Section", selection: $selectedTab) {
-                    Text("Summary").tag(Tab.summary)
-                    Text("Transcript").tag(Tab.transcript)
-                }
-                .pickerStyle(.segmented)
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets())
-            }
-
-            switch selectedTab {
-            case .summary:
-                summaryContent
-            case .transcript:
-                transcriptSection
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Layout.margin)
+            .padding(.bottom, 56)
         }
+        // Both edges: the notes run under the navigation bar at the top and
+        // under the tab bar at the bottom, and a hard cut at either one reads
+        // as clipped text rather than as more page below.
+        .scrollEdgeEffectStyle(.soft, for: .all)
         .navigationTitle(meeting.createdAt.formatted(date: .abbreviated, time: .shortened))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -196,7 +173,7 @@ struct MeetingDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The recording, transcript, and summary will be permanently deleted from this iPhone.")
+            Text("The recording, transcript, summary, and everything Brain learned from this meeting will be permanently deleted from this iPhone.")
         }
         .alert("This meeting couldn't be deleted", isPresented: $deleteFailed) {
             Button("OK", role: .cancel) {}
@@ -239,50 +216,85 @@ struct MeetingDetailView: View {
         }
     }
 
-    // MARK: - Header
+    // MARK: - Masthead
 
-    private var headerSection: some View {
-        Section {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 12) {
-                    BrandIconTile(size: 42, cornerRadius: 10, iconSize: 17)
+    /// The meeting's own title is the headline of the page, so it is set at
+    /// display size and its details collapse into one quiet line — three
+    /// separate chips restated what the line already says.
+    private var masthead: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Title", text: $meeting.title, axis: .vertical)
+                .font(.largeTitle.bold())
+                .textFieldStyle(.plain)
+                .accessibilityLabel("Meeting title")
 
-                    TextField("Title", text: $meeting.title, axis: .vertical)
-                        .font(.title3.bold())
-                        .accessibilityLabel("Meeting title")
-                }
+            Text(metaLine)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
 
-                // Falls back to a vertical stack when the chips can't fit
-                // (large Dynamic Type, narrow devices, long localized dates).
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 8) { metaChips }
-                    VStack(alignment: .leading, spacing: 8) { metaChips }
-                }
+            if let url = MeetingStore.audioURL(for: meeting) {
+                PlaybackBarView(player: player, url: url)
+                    .padding(.top, 8)
+            }
+        }
+        .padding(.top, 6)
+    }
 
-                if let url = MeetingStore.audioURL(for: meeting) {
-                    PlaybackBarView(player: player, url: url)
+    private var metaLine: String {
+        var parts = [meeting.createdAt.formatted(.dateTime.month(.abbreviated).day().hour().minute())]
+        if meeting.duration > 0 {
+            parts.append(meeting.duration.clockString)
+        }
+        parts.append("On device")
+        return parts.joined(separator: "  ·  ")
+    }
+
+    // MARK: - Section scaffolding
+
+    /// One block on the reading surface: a quiet heading, then its content.
+    /// The generous leading gap is what separates blocks — no card edges, no
+    /// rules.
+    private func block<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: Layout.headingGap) {
+            SectionHeading(title)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, Layout.sectionGap)
+    }
+
+    private var tabPicker: some View {
+        Picker("Section", selection: $selectedTab) {
+            Text("Summary").tag(Tab.summary)
+            Text("Transcript").tag(Tab.transcript)
+        }
+        .pickerStyle(.segmented)
+        .padding(.top, Layout.sectionGap - 4)
+    }
+
+    // MARK: - Brief
+
+    @ViewBuilder private var briefSection: some View {
+        if !briefContent.isEmpty {
+            block("What You Know") {
+                VStack(alignment: .leading, spacing: 18) {
+                    ForEach(briefContent, id: \.entity.id) { item in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(item.entity.name)
+                                .font(.subheadline.weight(.semibold))
+                            ForEach(item.facts) { fact in
+                                BulletRow(tint: .secondary) {
+                                    Text(fact.text).font(.footnote)
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            .padding(.vertical, 6)
         }
-
-    }
-
-    @ViewBuilder private var metaChips: some View {
-        metaChip("calendar", meeting.createdAt.formatted(.dateTime.month(.abbreviated).day().hour().minute()))
-        if meeting.duration > 0 {
-            metaChip("clock", meeting.duration.clockString)
-        }
-        metaChip("lock.fill", "On device")
-    }
-
-    private func metaChip(_ systemImage: String, _ text: String) -> some View {
-        Label(text, systemImage: systemImage)
-            .font(.caption.weight(.medium))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color(.secondarySystemFill).opacity(0.6), in: Capsule())
     }
 
     // MARK: - Summary
@@ -290,238 +302,250 @@ struct MeetingDetailView: View {
     @ViewBuilder private var summaryContent: some View {
         // Progress and errors stay visible for regeneration too, when a
         // summary already exists below.
-        if isGenerating || summaryError != nil {
-            Section {
-                if isGenerating {
-                    HStack(spacing: 12) {
-                        ProgressView()
-                        Text(jobStatus ?? "Summarizing on device…")
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Stop") {
-                            jobs.cancel(meeting)
-                        }
-                        .buttonStyle(.borderless)
-                        .font(.subheadline.weight(.medium))
-                    }
+        if isGenerating {
+            HStack(spacing: 12) {
+                ProgressView()
+                Text(jobStatus ?? "Summarizing on device…")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Stop") {
+                    jobs.cancel(meeting)
                 }
-                if let summaryError {
-                    Text(summaryError)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
+                .font(.subheadline.weight(.medium))
+                .buttonStyle(.borderless)
             }
+            .padding(.top, Layout.sectionGap - 8)
         }
+        if let summaryError {
+            notice(summaryError, systemImage: "exclamationmark.triangle.fill", tint: .red)
+                .padding(.top, Layout.sectionGap - 10)
+        }
+
         if let summary = meeting.summary {
             if let skipped = summary.skippedParts, skipped > 0 {
-                Section {
-                    Label(
-                        "\(skipped) part\(skipped == 1 ? "" : "s") of the transcript couldn't be summarized, so these notes may be incomplete. Regenerating may recover them.",
-                        systemImage: "exclamationmark.triangle"
-                    )
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
-                }
+                notice(
+                    "\(skipped) part\(skipped == 1 ? "" : "s") of the transcript couldn't be summarized, so these notes may be incomplete. Regenerating may recover them.",
+                    systemImage: "exclamationmark.triangle.fill",
+                    tint: .orange
+                )
+                .padding(.top, Layout.sectionGap - 10)
             }
             if !summary.overview.isEmpty {
-                Section {
+                block("Overview") {
                     Text(summary.overview)
-                } header: {
-                    Label("Overview", systemImage: "text.alignleft")
+                        .lineSpacing(4)
                 }
             }
             if let sections = summary.sections {
                 ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
-                    bulletSection(section.title, systemImage: "list.bullet", items: section.items)
+                    bulletBlock(section.title, items: section.items)
                 }
             }
-            bulletSection("Key Points", systemImage: "list.bullet", items: summary.keyPoints)
-            bulletSection("Decisions", systemImage: "checkmark.seal", items: summary.decisions)
+            bulletBlock("Key Points", items: summary.keyPoints)
+            bulletBlock("Decisions", items: summary.decisions)
             if let perspectives = summary.speakerPerspectives, !perspectives.isEmpty {
-                Section {
-                    ForEach(Array(perspectives.enumerated()), id: \.offset) { _, perspective in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(perspective.speaker)
-                                .font(.subheadline.weight(.semibold))
-                            ForEach(Array(perspective.points.enumerated()), id: \.offset) { _, point in
-                                Label {
-                                    Text(point)
-                                } icon: {
-                                    Image(systemName: "circle.fill")
-                                        .font(.system(size: 5))
-                                        .foregroundStyle(Color.accentColor)
+                block("Speaker Perspectives") {
+                    VStack(alignment: .leading, spacing: 18) {
+                        ForEach(Array(perspectives.enumerated()), id: \.offset) { _, perspective in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(perspective.speaker)
+                                    .font(.subheadline.weight(.semibold))
+                                ForEach(Array(perspective.points.enumerated()), id: \.offset) { _, point in
+                                    BulletRow(point)
                                 }
                             }
                         }
-                        .padding(.vertical, 2)
                     }
-                } header: {
-                    Label("Speaker Perspectives", systemImage: "person.2")
                 }
             }
             if !summary.actionItems.isEmpty {
-                Section {
-                    ForEach(Array(summary.actionItems.enumerated()), id: \.offset) { _, item in
-                        actionItemRow(item)
+                block("Action Items") {
+                    VStack(alignment: .leading, spacing: 16) {
+                        ForEach(Array(summary.actionItems.enumerated()), id: \.offset) { _, item in
+                            actionItemRow(item)
+                        }
                     }
-                } header: {
-                    Label("Action Items", systemImage: "flag")
                 }
             }
-            bulletSection("Open Questions", systemImage: "questionmark.circle", items: summary.openQuestions)
+            bulletBlock("Open Questions", items: summary.openQuestions)
         } else if !isGenerating {
-            Section {
-                if !meeting.hasTranscript {
-                    Text("No transcript was captured for this meeting, so a summary can't be generated.")
-                        .foregroundStyle(.secondary)
-                } else if let unavailable = SummarizationEngines.availabilityMessage {
-                    Text(unavailable)
-                        .foregroundStyle(.secondary)
-                } else {
-                    VStack(spacing: 12) {
-                        Image(systemName: "sparkles")
-                            .font(.title2)
-                            .foregroundStyle(Color.accentColor)
-                        Text("Turn this meeting into key points, decisions, and action items — entirely on device.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                        Button {
-                            generateSummary()
-                        } label: {
-                            Label("Generate Summary", systemImage: "sparkles")
-                                .font(.headline)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 4)
-                        }
-                        .buttonStyle(.glassProminent)
-                        .controlSize(.large)
+            emptySummaryState
+                .padding(.top, Layout.sectionGap)
+        }
+    }
+
+    @ViewBuilder private var emptySummaryState: some View {
+        if !meeting.hasTranscript {
+            Text("No transcript was captured for this meeting, so a summary can't be generated.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        } else if let unavailable = SummarizationEngines.availabilityMessage {
+            Text(unavailable)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        } else {
+            VStack(spacing: 14) {
+                Image(systemName: "sparkles")
+                    .font(.title)
+                    .foregroundStyle(Color.accentColor)
+                Text("Turn this meeting into key points, decisions, and action items — entirely on device.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Button {
+                    generateSummary()
+                } label: {
+                    Label("Generate Summary", systemImage: "sparkles")
+                        .font(.headline)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.glassProminent)
+                .controlSize(.large)
+                .padding(.top, 2)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+        }
+    }
+
+    @ViewBuilder private func bulletBlock(_ title: String, items: [String]) -> some View {
+        if !items.isEmpty {
+            block(title) {
+                VStack(alignment: .leading, spacing: Layout.itemGap) {
+                    // Offsets, not \.self — edited lists can contain duplicates.
+                    ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                        BulletRow(item)
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
                 }
             }
         }
     }
 
     private func actionItemRow(_ item: ActionItem) -> some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: 12) {
             Image(systemName: "checkmark.circle")
+                .font(.body)
                 .foregroundStyle(Color.accentColor)
-                .padding(.top, 2)
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(item.task)
-                if item.owner != ActionItem.notSpecified || item.deadline != ActionItem.notSpecified {
-                    HStack(spacing: 6) {
-                        if item.owner != ActionItem.notSpecified {
-                            metaChip("person", item.owner)
-                        }
-                        if item.deadline != ActionItem.notSpecified {
-                            metaChip("calendar.badge.clock", item.deadline)
-                        }
-                    }
+                if let detail = ownerAndDeadline(item) {
+                    Text(detail)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
     }
 
-    @ViewBuilder private func bulletSection(_ title: String, systemImage: String, items: [String]) -> some View {
-        if !items.isEmpty {
-            Section {
-                // Offsets, not \.self — edited lists can contain duplicates.
-                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                    Label {
-                        Text(item)
-                    } icon: {
-                        Image(systemName: "circle.fill")
-                            .font(.system(size: 5))
-                            .foregroundStyle(Color.accentColor)
-                    }
-                }
-            } header: {
-                Label(title, systemImage: systemImage)
-            }
+    /// "Priya  ·  Friday" — the owner and due date as a caption under the task
+    /// rather than two more pill-shaped chips.
+    private func ownerAndDeadline(_ item: ActionItem) -> String? {
+        let parts = [item.owner, item.deadline].filter { $0 != ActionItem.notSpecified && !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
+    }
+
+    /// Inline warning or error. Tinted text on a matching wash — loud enough to
+    /// catch, quiet enough not to become the page's focal point.
+    private func notice(_ text: String, systemImage: String, tint: Color) -> some View {
+        Label {
+            Text(text).font(.footnote)
+        } icon: {
+            Image(systemName: systemImage).font(.footnote)
         }
+        .foregroundStyle(tint)
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     // MARK: - Transcript
 
-    @ViewBuilder private var transcriptSection: some View {
-        if isRetranscribing || isDiarizing || transcriptError != nil || diarizationError != nil {
-            Section {
-                if isRetranscribing {
-                    HStack(spacing: 12) {
-                        ProgressView()
-                        Text("Re-transcribing on device…")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                if isDiarizing {
-                    HStack(spacing: 12) {
-                        ProgressView()
-                        Text(jobStatus ?? "Identifying speakers on device…")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                if let transcriptError {
-                    Text(transcriptError)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
-                if let diarizationError {
-                    Text(diarizationError)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
-            }
-        }
-        Section {
-            if meeting.hasTranscript {
-                ForEach(Array(meeting.segments.enumerated()), id: \.offset) { _, segment in
-                    VStack(alignment: .leading, spacing: 3) {
-                        if let speaker = segment.speaker {
-                            Button {
-                                beginRenamingSpeaker(speaker)
-                            } label: {
-                                Text(meeting.speakerName(for: speaker))
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(Self.speakerColor(for: speaker))
-                            }
-                            .buttonStyle(.borderless)
-                            // Re-transcribing and re-identifying both discard
-                            // the speaker numbering, so a name typed while one
-                            // is running would be wiped the moment it finished.
-                            .disabled(isBusy)
-                            .accessibilityLabel("Rename \(meeting.speakerName(for: speaker))")
-                        }
-                        HStack(alignment: .firstTextBaseline, spacing: 10) {
-                            Text(segment.start.clockString)
-                                .font(.caption.monospacedDigit().weight(.medium))
-                                .foregroundStyle(Color.accentColor)
-                            Text(segment.text)
-                        }
-                    }
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        if player.isLoaded {
-                            player.seek(to: segment.start)
-                            player.play()
-                        }
-                    }
-                }
-            } else {
-                Text("No transcript was captured for this meeting.")
+    @ViewBuilder private var transcriptContent: some View {
+        if isRetranscribing || isDiarizing {
+            HStack(spacing: 12) {
+                ProgressView()
+                Text(isRetranscribing ? "Re-transcribing on device…" : (jobStatus ?? "Identifying speakers on device…"))
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
-        } footer: {
-            let hints = [
-                meeting.hasTranscript && player.isLoaded ? "Tap a line to jump playback there." : nil,
-                meeting.hasSpeakers ? "Tap a name to rename that speaker." : nil,
-            ].compactMap(\.self)
-            if !hints.isEmpty {
-                Text(hints.joined(separator: " "))
+            .padding(.top, Layout.sectionGap - 8)
+        }
+        if let transcriptError {
+            notice(transcriptError, systemImage: "exclamationmark.triangle.fill", tint: .red)
+                .padding(.top, Layout.sectionGap - 10)
+        }
+        if let diarizationError {
+            notice(diarizationError, systemImage: "exclamationmark.triangle.fill", tint: .red)
+                .padding(.top, Layout.sectionGap - 10)
+        }
+
+        if meeting.hasTranscript {
+            VStack(alignment: .leading, spacing: 20) {
+                ForEach(Array(meeting.segments.enumerated()), id: \.offset) { _, segment in
+                    transcriptRow(segment)
+                }
+            }
+            .padding(.top, Layout.sectionGap - 6)
+
+            if let hint = transcriptHint {
+                Text(hint)
+                    .font(.footnote)
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 24)
+            }
+        } else {
+            Text("No transcript was captured for this meeting.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(.top, Layout.sectionGap)
+        }
+    }
+
+    /// Speaker and timestamp ride above the line rather than beside it, so the
+    /// spoken text keeps a single straight left edge all the way down.
+    private func transcriptRow(_ segment: TranscriptSegment) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                if let speaker = segment.speaker {
+                    Button {
+                        beginRenamingSpeaker(speaker)
+                    } label: {
+                        Text(meeting.speakerName(for: speaker))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Self.speakerColor(for: speaker))
+                    }
+                    .buttonStyle(.borderless)
+                    // Re-transcribing and re-identifying both discard the
+                    // speaker numbering, so a name typed while one is running
+                    // would be wiped the moment it finished.
+                    .disabled(isBusy)
+                    .accessibilityLabel("Rename \(meeting.speakerName(for: speaker))")
+                }
+                Text(segment.start.clockString)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+            Text(segment.text)
+                .lineSpacing(3)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if player.isLoaded {
+                player.seek(to: segment.start)
+                player.play()
             }
         }
+    }
+
+    private var transcriptHint: String? {
+        let hints = [
+            player.isLoaded ? "Tap a line to jump playback there." : nil,
+            meeting.hasSpeakers ? "Tap a name to rename that speaker." : nil,
+        ].compactMap(\.self)
+        return hints.isEmpty ? nil : hints.joined(separator: " ")
     }
 
     // MARK: - Actions

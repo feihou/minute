@@ -79,7 +79,7 @@ struct SettingsView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Every meeting, recording, transcript, and summary will be permanently deleted from this iPhone.")
+                Text("Every meeting, recording, transcript, and summary — and everything Brain learned from them — will be permanently deleted from this iPhone.")
             }
             .alert("Couldn't update backup setting", isPresented: $backupPolicyFailed) {
                 Button("OK", role: .cancel) {}
@@ -110,19 +110,26 @@ struct SettingsView: View {
 
     // MARK: - Sections
 
+    /// Sits on the grouped background rather than in a row: this is the sheet's
+    /// masthead, not a setting the user can act on.
     private var identitySection: some View {
         Section {
-            HStack(spacing: 14) {
-                BrandIconTile(size: 48, cornerRadius: 11, iconSize: 20)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Minute")
-                        .font(.headline)
-                    Text("Meetings are processed entirely on this iPhone; cloud backups are optional.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+            VStack(spacing: 10) {
+                BrandIconTile(size: 58, cornerRadius: 14, iconSize: 24)
+                Text("Minute")
+                    .font(.title3.weight(.semibold))
+                Text("Meetings are processed entirely on this iPhone; cloud backups are optional.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 16)
             }
-            .padding(.vertical, 2)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 4)
+            .padding(.bottom, 10)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .accessibilityElement(children: .combine)
         }
     }
 
@@ -259,7 +266,7 @@ struct SettingsView: View {
         } header: {
             Text("Storage")
         } footer: {
-            Text("Deleting removes every meeting, its audio, transcript, and summary from this iPhone. This can't be undone.")
+            Text("Deleting removes every meeting, its audio, transcript, and summary from this iPhone, along with everything Brain learned from it. This can't be undone.")
         }
     }
 
@@ -331,18 +338,36 @@ struct SettingsView: View {
         }
     }
 
+    /// These are statements, not settings. They get plain glyphs instead of the
+    /// filled tiles the tappable rows use — four gradient tiles on four
+    /// sentences reads as chrome and makes the prose harder to scan.
     private var privacySection: some View {
         Section("Privacy") {
-            settingsLabel("Recordings, transcripts, and summaries stay on this iPhone unless you turn on an iCloud backup option above.",
-                          systemImage: "iphone", tint: .green)
-            settingsLabel("Transcription and summarization run entirely on device.",
-                          systemImage: "cpu", tint: .green)
-            settingsLabel("No account, no analytics, no tracking.",
-                          systemImage: "person.crop.circle.badge.xmark", tint: .green)
-            settingsLabel("Recording laws differ by region — always tell everyone in the room before recording.",
-                          systemImage: "exclamationmark.bubble", tint: .orange)
+            VStack(alignment: .leading, spacing: 14) {
+                privacyLine("iphone", "Recordings, transcripts, and summaries stay on this iPhone unless you turn on an iCloud backup option above.")
+                privacyLine("cpu", "Transcription and summarization run entirely on device.")
+                privacyLine("person.crop.circle.badge.xmark", "No account, no analytics, no tracking.")
+                privacyLine("exclamationmark.bubble",
+                            "Recording laws differ by region — always tell everyone in the room before recording.",
+                            tint: .orange)
+            }
+            .padding(.vertical, 6)
         }
-        .font(.callout)
+    }
+
+    private func privacyLine(_ systemImage: String, _ text: String, tint: Color = .green) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.footnote)
+                .foregroundStyle(tint)
+                .frame(width: 18)
+                .padding(.top, 1)
+                .accessibilityHidden(true)
+            Text(text)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private var capabilitiesSection: some View {
