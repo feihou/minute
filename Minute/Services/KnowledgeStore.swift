@@ -138,9 +138,19 @@ enum KnowledgeStore {
                     entity.synthesizedFactCount = nil
                 }
             } else if entity.redirectTo == nil {
-                // Nothing left to show — including an entity holding only
-                // tombstones, whose name was still learned from these meetings.
-                doomed[entity.id] = entity
+                // Nothing left to show. An entity holding only tombstones goes
+                // too, since its name was still learned from these meetings —
+                // unless one of those tombstones came from a meeting that is
+                // still here. A rejection fingerprint is salted with the
+                // entity's id, so deleting the entity and letting a later
+                // extraction recreate it under a fresh id would quietly
+                // un-reject a claim the user threw out.
+                let backedByALiveMeeting = entity.facts.contains { fact in
+                    !removedIDs.contains(fact.id) && liveIDs.contains(fact.sourceMeetingID)
+                }
+                if !backedByALiveMeeting {
+                    doomed[entity.id] = entity
+                }
             }
         }
         settleInboundRedirects(to: &doomed, among: allEntities, removedIDs: removedIDs)

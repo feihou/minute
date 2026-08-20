@@ -433,6 +433,38 @@ struct KnowledgeDeletionTests {
         #expect(try facts(in: context).count == 2)
     }
 
+    @Test func anEntityKeepsItsNameWhileATombstoneFromALiveMeetingNeedsIt() throws {
+        let context = try makeContext()
+        let deleted = Meeting(title: "Deleted")
+        let kept = Meeting(title: "Kept")
+        context.insert(deleted)
+        context.insert(kept)
+        let priya = KnowledgeEntity(name: "Priya", kind: .person)
+        context.insert(priya)
+        // Its only visible fact came from the meeting being deleted...
+        addFact("Owns the Japan launch", to: priya, from: deleted, context: context)
+        // ...but a claim the user rejected came from a meeting that is still here.
+        let tombstone = KnowledgeFact(
+            text: "", originalText: "", status: .rejected,
+            sourceMeetingID: kept.id, capturedAt: kept.createdAt, entity: priya
+        )
+        tombstone.fingerprint = "salted-hash-of-the-rejected-claim"
+        context.insert(tombstone)
+        try context.save()
+
+        #expect(MeetingStore.delete(deleted, context: context))
+
+        // Deleting the entity would cascade to that tombstone, and its
+        // fingerprint is salted with this entity's id — so re-extracting the
+        // kept meeting would recreate the entity under a new id and quietly
+        // un-reject the claim.
+        let survivor = try #require(try entities(in: context).first)
+        #expect(survivor.name == "Priya")
+        #expect(survivor.visibleFacts.isEmpty)
+        #expect(try facts(in: context).count == 1)
+        #expect(try facts(in: context).first?.fingerprint == "salted-hash-of-the-rejected-claim")
+    }
+
     // MARK: - Sweep (upgrade path and failed purges)
 
     @Test func sweepRemovesFactsWhoseMeetingIsAlreadyGone() throws {

@@ -20,7 +20,7 @@ This is a release-owner draft, not legal advice. Product copy below is ready to 
 
 `Record, transcribe, identify speakers, and create AI notes on your iPhone. No account, no backend, no tracking. Open source under MIT.`
 
-### 4. Description (3,585 of 4,000 characters)
+### 4. Description (3,725 of 4,000 characters)
 
 Minute takes notes at your meetings so you can be in them. Record an in-person conversation, watch the transcript appear live, and create structured notes — all processed on your iPhone. No account. No backend. No analytics. Meeting content is not uploaded to an AI or transcription service.
 
@@ -50,7 +50,7 @@ REQUIREMENTS
 
 • iOS 26 or later. iPhone only.
 • Recording works without transcription. Live transcription requires Apple Speech support for the current device language and model availability.
-• AI notes require an Apple Intelligence-capable iPhone with Apple Intelligence enabled.
+• AI notes use Apple Intelligence by default, which needs an Apple Intelligence-capable iPhone with Apple Intelligence turned on. If your iPhone can't run it, download a local model in Settings instead and notes work without it.
 
 OPEN SOURCE
 
