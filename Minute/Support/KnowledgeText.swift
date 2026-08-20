@@ -13,6 +13,18 @@ enum KnowledgeText {
         tokens(text).sorted().joined(separator: " ")
     }
 
+    /// Order-preserving equality of two statements.
+    ///
+    /// `normalized` sorts tokens so dedup can catch a reordering, which also
+    /// makes "assigned Alex to Jordan" and "assigned Jordan to Alex" identical
+    /// to it. Dropping the second as a duplicate is one thing; recording it as
+    /// corroboration is another, because that claims both meetings said the
+    /// same thing — and a promotion would later put the first meeting's words
+    /// under the second meeting's name.
+    static func statesTheSame(_ a: String, _ b: String) -> Bool {
+        tokens(a) == tokens(b)
+    }
+
     /// Jaccard similarity of normalized tokens, 0...1. Unspaced scripts
     /// (CJK) yield one giant token, so when either side has fewer than
     /// `wordTokenFloor` word tokens the comparison falls back to character

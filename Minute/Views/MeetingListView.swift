@@ -109,10 +109,13 @@ struct MeetingListView: View {
             .navigationDestination(item: $meetingDestination) { meeting in
                 MeetingDetailView(meeting: meeting, autoGenerateSummary: destinationAutoSummarizes)
             }
-            .safeAreaInset(edge: .bottom) {
+            // safeAreaBar, not safeAreaInset: the bar reserves its own space and
+            // participates in the scroll edge effect, so rows fade out beneath
+            // the button instead of colliding with it mid-scroll.
+            .safeAreaBar(edge: .bottom) {
                 if !meetings.isEmpty {
                     recordButton
-                        .padding(.bottom, 6)
+                        .padding(.bottom, 8)
                 }
             }
         }
@@ -123,6 +126,11 @@ struct MeetingListView: View {
             guard !storeIsEphemeral, !didSweepOrphans else { return }
             didSweepOrphans = true
             MeetingStore.removeOrphanedAudio(referencedFileNames: Set(meetings.compactMap(\.audioFileName)))
+            // Same idea for the knowledge base: clears facts left by meetings
+            // deleted before the purge existed, and by any purge whose save
+            // failed. Runs on the same guard, so it never touches the fallback
+            // store, where the meetings backing these facts still exist.
+            KnowledgeStore.sweepOrphanedFacts(liveMeetingIDs: Set(meetings.map(\.id)), context: context)
         }
         .onChange(of: widgetSnapshot, initial: true) { _, snapshot in
             WidgetSnapshotPublisher.publish(snapshot)
@@ -185,13 +193,15 @@ struct MeetingListView: View {
     private var meetingList: some View {
         List {
             ForEach(groupedMeetings, id: \.title) { group in
-                Section(group.title) {
+                Section {
                     ForEach(group.items) { meeting in
                         NavigationLink {
                             MeetingDetailView(meeting: meeting)
                         } label: {
                             MeetingRowView(meeting: meeting)
                         }
+                        .listRowInsets(EdgeInsets(top: 12, leading: Layout.margin, bottom: 12, trailing: Layout.margin))
+                        .listRowSeparator(.hidden, edges: .top)
                         .swipeActions(edge: .trailing) {
                             Button(role: .destructive) {
                                 deleteFailed = !MeetingStore.delete(meeting, context: context)
@@ -216,9 +226,19 @@ struct MeetingListView: View {
                             }
                         }
                     }
+                } header: {
+                    SectionHeading(group.title)
+                        .padding(.top, 10)
+                        .padding(.bottom, 2)
                 }
+                .listRowInsets(EdgeInsets(top: 0, leading: Layout.margin, bottom: 0, trailing: Layout.margin))
             }
         }
+        // Plain, not inset-grouped: the day headings already separate the
+        // library into blocks, so wrapping every row in its own floating card
+        // adds chrome without adding structure.
+        .listStyle(.plain)
+        .scrollEdgeEffectStyle(.soft, for: .bottom)
         .searchable(text: $searchText, prompt: "Search titles, transcripts, notes")
         .overlay {
             if groupedMeetings.isEmpty, !searchText.isEmpty {
@@ -271,12 +291,13 @@ struct MeetingListView: View {
         // ScrollView keeps the primary action reachable at accessibility
         // Dynamic Type sizes, where the content exceeds the screen height.
         ScrollView {
-            VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
                 emptyStateContent
             }
-            .frame(maxWidth: .infinity)
-            .padding(.top, 36)
-            .padding(.bottom, 28)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 28)
+            .padding(.top, 12)
+            .padding(.bottom, 40)
         }
     }
 
@@ -284,45 +305,46 @@ struct MeetingListView: View {
             ZStack {
                 Circle()
                     .fill(LinearGradient.brand)
-                    .frame(width: 96, height: 96)
-                    .shadow(color: Color.accentColor.opacity(0.35), radius: 18, y: 8)
+                    .frame(width: 76, height: 76)
+                    .shadow(color: Color.accentColor.opacity(0.3), radius: 16, y: 8)
                 Image(systemName: "waveform")
-                    .font(.system(size: 40, weight: .semibold))
+                    .font(.system(size: 32, weight: .semibold))
                     .foregroundStyle(.white)
             }
             .accessibilityHidden(true)
-            .padding(.bottom, 24)
+            .padding(.bottom, 26)
 
-            Text("Capture your first meeting")
-                .font(.title2.bold())
-                .padding(.bottom, 6)
+            // Left-aligned and set large: the empty screen is the app's cover
+            // page, so it gets a headline rather than a centered notice.
+            Text("Capture your\nfirst meeting")
+                .font(.largeTitle.bold())
+                .lineSpacing(2)
+                .padding(.bottom, 10)
             Text("Record the room, watch the live transcript, and let on-device intelligence write the notes.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 36)
-                .padding(.bottom, 28)
+                .padding(.bottom, 34)
 
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 18) {
                 featureRow("mic.fill", "Record", "High-quality audio with pause and resume")
                 featureRow("text.quote", "Transcribe", "Live speech-to-text as the meeting happens")
                 featureRow("sparkles", "Summarize", "Key points, decisions, and action items")
                 featureRow("lock.fill", "Private", "Stays on this iPhone unless you opt into iCloud backup")
             }
-            .padding(.horizontal, 44)
 
             recordButton
                 .padding(.top, 36)
+                .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private func featureRow(_ systemImage: String, _ title: String, _ caption: String) -> some View {
-        HStack(spacing: 14) {
+        HStack(alignment: .top, spacing: 14) {
             Image(systemName: systemImage)
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Color.accentColor)
-                .frame(width: 34, height: 34)
-                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            VStack(alignment: .leading, spacing: 1) {
+                .frame(width: 28, height: 28)
+                .background(Color.accentColor.opacity(0.12), in: Circle())
+            VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
                 Text(caption)
@@ -403,40 +425,42 @@ struct MeetingListView: View {
 struct MeetingRowView: View {
     let meeting: Meeting
 
-    var body: some View {
-        HStack(spacing: 12) {
-            BrandIconTile(size: 42, cornerRadius: 10, iconSize: 17)
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(meeting.title)
-                    .font(.headline)
-                    .lineLimit(1)
-                HStack(spacing: 5) {
-                    Text(meeting.createdAt.formatted(date: .abbreviated, time: .shortened))
-                    if meeting.duration > 0 {
-                        Text("·")
-                        Text(meeting.duration.clockString)
-                    }
-                }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                if meeting.summary != nil {
-                    statusChip("Summarized", systemImage: "sparkles", tint: .accentColor)
-                } else if meeting.hasTranscript {
-                    statusChip("Transcript", systemImage: "text.quote", tint: .secondary)
-                }
-            }
-        }
-        .padding(.vertical, 3)
+    /// Shown only when the meeting still needs something. A badge on every
+    /// finished meeting would mark the normal case and carry no information,
+    /// so the absence of a note is what says "these notes are ready".
+    private var pendingNote: String? {
+        guard meeting.summary == nil else { return nil }
+        return meeting.hasTranscript ? "No notes yet" : "No transcript"
     }
 
-    private func statusChip(_ text: String, systemImage: String, tint: Color) -> some View {
-        Label(text, systemImage: systemImage)
-            .font(.caption2.weight(.medium))
-            .foregroundStyle(tint)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(tint.opacity(0.12), in: Capsule())
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(meeting.title)
+                .font(.headline)
+                // Two lines fits nearly every title at normal sizes and keeps
+                // the list scannable; at accessibility sizes two lines is a few
+                // words, so the title gets the room instead of an ellipsis.
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 5 : 2)
+                .foregroundStyle(.primary)
+
+            HStack(spacing: 6) {
+                Text(MeetingDateGroup.rowTimestamp(for: meeting.createdAt))
+                if meeting.duration > 0 {
+                    Text("·")
+                    Text(meeting.duration.clockString)
+                        .monospacedDigit()
+                }
+                if let pendingNote {
+                    Text("·")
+                    Text(pendingNote)
+                        .fontWeight(.medium)
+                }
+            }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -457,29 +481,29 @@ struct NewMeetingSheet: View {
                 ZStack {
                     Circle()
                         .fill(LinearGradient.brand)
-                        .frame(width: 68, height: 68)
+                        .frame(width: 64, height: 64)
                         .shadow(color: Color.accentColor.opacity(0.3), radius: 12, y: 5)
                     Image(systemName: "mic.fill")
-                        .font(.system(size: 28, weight: .semibold))
+                        .font(.system(size: 26, weight: .semibold))
                         .foregroundStyle(.white)
                 }
                 .accessibilityHidden(true)
-                .padding(.top, 28)
+                .padding(.top, 26)
                 .padding(.bottom, 18)
 
                 Text("Give it a title you'll recognize later.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .padding(.bottom, 14)
+                    .padding(.bottom, 16)
 
                 TextField("Meeting title", text: $title)
                     .font(.body)
                     .multilineTextAlignment(.center)
                     .submitLabel(.done)
-                    .padding(13)
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .padding(14)
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .padding(.horizontal, 24)
-                    .padding(.bottom, 22)
+                    .padding(.bottom, 24)
                     .accessibilityLabel("Meeting title")
 
                 Button {
@@ -495,7 +519,7 @@ struct NewMeetingSheet: View {
                 .controlSize(.large)
                 .tint(.red)
                 .padding(.horizontal, 24)
-                .padding(.bottom, 14)
+                .padding(.bottom, 16)
 
                 Label("Recording stays on this iPhone (and your iCloud backup, if enabled). Make sure everyone in the room knows the meeting is being recorded.",
                       systemImage: "lock.fill")

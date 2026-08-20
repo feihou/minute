@@ -42,3 +42,68 @@ struct BrandIconTile: View {
         .accessibilityHidden(true)
     }
 }
+
+// MARK: - Reading surfaces
+
+/// Spacing scale for the screens that present content as a document —
+/// meeting notes, transcripts, entity pages. Rhythm comes from these few
+/// steps rather than a bespoke number at every call site.
+enum Layout {
+    /// Side margin for body text on a reading surface.
+    static let margin: CGFloat = 20
+    /// Space above a section heading — the main separator between blocks,
+    /// standing in for the card edges and rules a form would use.
+    static let sectionGap: CGFloat = 30
+    /// Heading to its first line of content.
+    static let headingGap: CGFloat = 10
+    /// Between sibling items inside one section.
+    static let itemGap: CGFloat = 12
+}
+
+/// Section label for reading surfaces: small, uppercase, wide-tracked, and
+/// sitting in the flow of the page. Deliberately unadorned — an icon per
+/// heading reads as decoration once there are six of them down one screen.
+struct SectionHeading: View {
+    let title: String
+
+    init(_ title: String) {
+        self.title = title
+    }
+
+    var body: some View {
+        Text(title.uppercased())
+            .font(.caption.weight(.semibold))
+            .tracking(0.9)
+            .foregroundStyle(.secondary)
+            // Uppercasing is a visual treatment. Without this the transformed
+            // string becomes the name VoiceOver reads, a braille display shows,
+            // and a UI test queries — "WHAT YOU KNOW" rather than the title.
+            .accessibilityLabel(title)
+            .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// Bullet with the dot in its own gutter, so wrapped lines align under the
+/// text instead of under the dot.
+struct BulletRow<Content: View>: View {
+    var tint: Color = .accentColor
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Circle()
+                .fill(tint.opacity(0.6))
+                .frame(width: 5, height: 5)
+                // Drops the dot to the middle of the first line's cap height.
+                .padding(.top, 7)
+                .accessibilityHidden(true)
+            content
+        }
+    }
+}
+
+extension BulletRow where Content == Text {
+    init(_ text: String, tint: Color = .accentColor) {
+        self.init(tint: tint) { Text(text) }
+    }
+}

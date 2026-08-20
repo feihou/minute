@@ -41,14 +41,47 @@ enum KnowledgeIngest {
         // Dedup/contradiction scans over entity.facts must skip these IDs or
         // a replacement fact with matching text "duplicates" the very fact
         // it's replacing, and the meeting ends up with zero facts.
-        let staleIDs = Set(stale.map(\.id))
+        // A stale row that another meeting also states is not this meeting's to
+        // discard. Re-point it at that meeting and leave it out of `staleIDs`,
+        // so the fresh extraction dedups against it and records the
+        // corroboration again rather than dropping a claim the other meeting
+        // still makes — that meeting is stamped as extracted and never re-read.
+        let meetings = try context.fetch(FetchDescriptor<Meeting>())
+        let liveDates = Dictionary(meetings.map { ($0.id, $0.createdAt) }, uniquingKeysWith: { first, _ in first })
+        let liveIDs = Set(liveDates.keys)
+        var staleIDs: Set<UUID> = []
         // Entities whose fact set changes here get their synthesis marker
         // cleared below: a re-extraction can swap facts one-for-one, so
         // count-based staleness alone would miss the content change.
         var touched: [UUID: KnowledgeEntity] = [:]
         for fact in stale {
+            if let survivor = (fact.corroboratedByMeetingIDs ?? [])
+                .first(where: { $0 != meetingID && liveIDs.contains($0) }),
+                let date = liveDates[survivor] {
+                // Re-dating reorders the entity's facts, and synthesis is fed
+                // newest-first with "prefer the newer one on conflict" — so the
+                // narrative has to be rebuilt even though the count is unchanged.
+                if fact.capturedAt != date, let entity = fact.entity {
+                    touched[entity.id] = entity
+                }
+                fact.promoteSource(to: survivor, capturedAt: date, liveMeetingIDs: liveIDs)
+                continue
+            }
+            staleIDs.insert(fact.id)
             if let entity = fact.entity { touched[entity.id] = entity }
             context.delete(fact)
+        }
+
+        // This meeting's corroborations are its contribution too, so the same
+        // "wholly superseded by this extraction" rule applies: clear them and
+        // let the loop below add back only the claims its new transcript still
+        // makes. Otherwise a re-transcribed meeting keeps vouching for a fact
+        // it no longer states, and deleting that fact's source would hand it to
+        // this meeting on the strength of evidence that is gone.
+        // ponytail: in-memory scan — #Predicate can't look inside a codable
+        // array. Move to a stored join if fact counts ever make this hurt.
+        for fact in try context.fetch(FetchDescriptor<KnowledgeFact>()) {
+            fact.removeCorroboration(meetingID)
         }
 
         for candidate in candidates {
@@ -64,7 +97,9 @@ enum KnowledgeIngest {
             let candidateFingerprint = KnowledgeText.fingerprint(candidate.fact, entityID: entity.id)
             let candidateNormalized = KnowledgeText.normalized(candidate.fact)
             var crossMeetingNearDuplicate = false
-            let isDuplicate = entity.facts.contains { existing in
+            // first(where:), not contains: the matched row is needed below to
+            // record that this meeting says the same thing.
+            let duplicate = entity.facts.first { existing in
                 if staleIDs.contains(existing.id) { return false }
                 if existing.status == .rejected {
                     return existing.fingerprint == candidateFingerprint
@@ -75,11 +110,31 @@ enum KnowledgeIngest {
                 guard KnowledgeText.tokenOverlap(existing.originalText, candidate.fact) >= nearDuplicateThreshold else {
                     return false
                 }
-                if existing.sourceMeetingID == meetingID { return true }
+                // sourceMeetingIDs, not sourceMeetingID: an earlier candidate
+                // in this same run may have corroborated this row, which makes
+                // a later paraphrase a within-meeting repeat rather than a
+                // cross-meeting one worth sending to review.
+                if existing.sourceMeetingIDs.contains(meetingID) { return true }
                 crossMeetingNearDuplicate = true
                 return false
             }
-            if isDuplicate {
+            if let duplicate {
+                // Dropping the candidate leaves that one row as the only record
+                // of a claim both meetings make, and this meeting is about to be
+                // stamped as extracted, so it will never be read again. Note the
+                // corroboration, or deleting the first meeting would discard
+                // knowledge this one still supports. Tombstones are excluded:
+                // they exist to keep a rejected claim out, not to hold sources.
+                // Only on evidence as strong as the fact itself: the same
+                // statement token-for-token in order, and a quote that actually
+                // validated against this transcript. A looser match is still a
+                // fair reason to drop the candidate — it is not a reason to let
+                // this meeting inherit the fact once the original source goes.
+                if duplicate.status != .rejected,
+                   candidate.validatedQuote != nil,
+                   KnowledgeText.statesTheSame(duplicate.originalText, candidate.fact) {
+                    duplicate.addCorroboration(meetingID)
+                }
                 result.duplicatesDropped += 1
                 continue
             }

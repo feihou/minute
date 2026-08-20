@@ -16,7 +16,11 @@ enum KnowledgeBrief {
     static func briefFacts(for entity: KnowledgeEntity, excludingMeetingID meetingID: UUID) -> [KnowledgeFact] {
         Array(
             entity.settledFacts
-                .filter { $0.sourceMeetingID != meetingID }
+                // Full source set, not just the primary: a fact this meeting
+                // restated was deduped onto another meeting's row, and showing
+                // it as prior knowledge would credit this meeting's own words
+                // to a surface that promises what you knew beforehand.
+                .filter { !$0.sourceMeetingIDs.contains(meetingID) }
                 .prefix(factsPerEntity)
         )
     }

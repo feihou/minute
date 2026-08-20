@@ -42,6 +42,34 @@ struct MeetingDateGroupTests {
         #expect(title == older.formatted(.dateTime.month(.wide).year()))
         #expect(title.contains("2026"))
     }
+
+    @Test func todayRowShowsTimeOnly() {
+        let today = date(2026, 8, 14, hour: 16)
+        let stamp = MeetingDateGroup.rowTimestamp(for: today, now: now, calendar: calendar)
+        // The "Today" header already names the day, so the row omits it.
+        #expect(stamp == today.formatted(date: .omitted, time: .shortened))
+        #expect(!stamp.contains("2026"))
+    }
+
+    @Test func yesterdayRowShowsTimeOnly() {
+        let yesterday = date(2026, 8, 13, hour: 16)
+        #expect(MeetingDateGroup.rowTimestamp(for: yesterday, now: now, calendar: calendar)
+            == yesterday.formatted(date: .omitted, time: .shortened))
+    }
+
+    @Test func olderRowThisYearKeepsTheDayButNotTheYear() {
+        let older = date(2026, 3, 10)
+        let stamp = MeetingDateGroup.rowTimestamp(for: older, now: now, calendar: calendar)
+        #expect(stamp == older.formatted(.dateTime.month(.abbreviated).day().hour().minute()))
+        #expect(!stamp.contains("2026"))
+    }
+
+    @Test func rowFromAnotherYearKeepsTheYear() {
+        let ancient = date(2024, 11, 2)
+        let stamp = MeetingDateGroup.rowTimestamp(for: ancient, now: now, calendar: calendar)
+        #expect(stamp == ancient.formatted(.dateTime.year().month(.abbreviated).day()))
+        #expect(stamp.contains("2024"))
+    }
 }
 
 struct AudioQualityTests {
