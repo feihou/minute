@@ -44,8 +44,10 @@ enum KnowledgeStore {
         return remove(all.filter { !liveMeetingIDs.contains($0.sourceMeetingID) }, context: context)
     }
 
+    /// `facts` are the rows this run selected for removal. Everything else here
+    /// is repair work that must run even when that selection is empty — a
+    /// deleted meeting can leave traces on rows it never sourced.
     private static func remove(_ facts: [KnowledgeFact], context: ModelContext) -> Bool {
-        guard !facts.isEmpty else { return true }
 
         // A fact several meetings state identically exists as one row: dedup
         // drops the repeats and stamps their meetings as extracted, so they are
@@ -58,15 +60,31 @@ enum KnowledgeStore {
         // turning a transient error into permanent knowledge loss.
         let liveMeetings: [Meeting]
         let allEntities: [KnowledgeEntity]
+        let allFacts: [KnowledgeFact]
         do {
             liveMeetings = try context.fetch(FetchDescriptor<Meeting>())
             allEntities = try context.fetch(FetchDescriptor<KnowledgeEntity>())
+            allFacts = try context.fetch(FetchDescriptor<KnowledgeFact>())
         } catch {
             logger.error("Could not read the store while removing knowledge, so nothing was removed: \(error.localizedDescription)")
             return false
         }
         let liveDates = Dictionary(liveMeetings.map { ($0.id, $0.createdAt) }, uniquingKeysWith: { first, _ in first })
         let liveIDs = Set(liveDates.keys)
+
+        // A deleted meeting that only restated someone else's fact appears
+        // nowhere in the selections above — its contribution lives solely in a
+        // corroboration array, and neither the purge predicate nor the sweep
+        // filter looks there. Left alone, the id of a meeting the user deleted
+        // stays on disk for good. Idempotent: once pruned there is nothing to do.
+        var prunedCorroborations = false
+        for fact in allFacts {
+            guard let ids = fact.corroboratedByMeetingIDs else { continue }
+            for dead in ids where !liveIDs.contains(dead) {
+                fact.removeCorroboration(dead)
+                prunedCorroborations = true
+            }
+        }
 
         // Rejected facts are tombstones: the text is already cleared and only a
         // salted fingerprint remains, whose whole job is to stop a claim the
@@ -122,7 +140,7 @@ enum KnowledgeStore {
             context.delete(entity)
         }
 
-        guard !removable.isEmpty || promoted > 0 || !doomed.isEmpty else { return true }
+        guard !removable.isEmpty || promoted > 0 || !doomed.isEmpty || prunedCorroborations else { return true }
         do {
             try context.save()
         } catch {

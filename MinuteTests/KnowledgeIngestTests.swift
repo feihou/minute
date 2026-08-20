@@ -401,4 +401,36 @@ struct KnowledgeIngestTests {
         #expect(fact.corroboratedByMeetingIDs == [second.id])
     }
 
+    @Test func aParaphraseAfterACorroborationInTheSameRunIsStillAWithinMeetingRepeat() throws {
+        let context = try makeContext()
+        let first = Meeting(title: "first")
+        let second = Meeting(title: "second")
+        context.insert(first)
+        context.insert(second)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        context.insert(KnowledgeFact(
+            text: "Sarah leads the Atlas redesign", originalText: "Sarah leads the Atlas redesign",
+            status: .approved, sourceMeetingID: first.id, capturedAt: .now, entity: entity
+        ))
+        try context.save()
+
+        // Adjacent chunks of the second meeting emit the same claim twice: once
+        // verbatim, once paraphrased.
+        let result = try KnowledgeIngest.apply(
+            [
+                candidate("Sarah", "Sarah leads the Atlas redesign"),
+                candidate("Sarah", "Sarah leads the Atlas redesign work"),
+            ],
+            from: second, context: context
+        )
+
+        // The first corroborates the existing row, which makes the second a
+        // repeat of something this meeting already said — not a cross-meeting
+        // near-duplicate worth sending to review.
+        #expect(result.duplicatesDropped == 2)
+        #expect(result.suggested == 0)
+        #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).count == 1)
+    }
+
 }

@@ -111,4 +111,26 @@ struct KnowledgeBriefTests {
 
         #expect(facts.map(\.text) == ["settled", "auto"])
     }
+    @Test func briefExcludesAFactThisMeetingItselfRestated() throws {
+        let context = try makeContext()
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        let earlier = UUID()
+        let thisMeeting = UUID()
+        let fact = KnowledgeFact(
+            text: "Sarah leads the Atlas redesign", originalText: "Sarah leads the Atlas redesign",
+            status: .autoCaptured, sourceMeetingID: earlier, capturedAt: .now, entity: entity
+        )
+        // Dedup put this meeting's identical statement onto the earlier row.
+        fact.addCorroboration(thisMeeting)
+        context.insert(fact)
+        try context.save()
+
+        // "What You Know" promises knowledge from other meetings, so a claim
+        // this meeting makes itself must not appear as prior knowledge.
+        #expect(KnowledgeBrief.briefFacts(for: entity, excludingMeetingID: thisMeeting).isEmpty)
+        // It is still prior knowledge for any other meeting.
+        #expect(KnowledgeBrief.briefFacts(for: entity, excludingMeetingID: UUID()).count == 1)
+    }
+
 }

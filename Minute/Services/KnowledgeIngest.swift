@@ -104,7 +104,11 @@ enum KnowledgeIngest {
                 guard KnowledgeText.tokenOverlap(existing.originalText, candidate.fact) >= nearDuplicateThreshold else {
                     return false
                 }
-                if existing.sourceMeetingID == meetingID { return true }
+                // sourceMeetingIDs, not sourceMeetingID: an earlier candidate
+                // in this same run may have corroborated this row, which makes
+                // a later paraphrase a within-meeting repeat rather than a
+                // cross-meeting one worth sending to review.
+                if existing.sourceMeetingIDs.contains(meetingID) { return true }
                 crossMeetingNearDuplicate = true
                 return false
             }

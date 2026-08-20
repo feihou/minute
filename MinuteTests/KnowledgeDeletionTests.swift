@@ -383,6 +383,29 @@ struct KnowledgeDeletionTests {
         #expect(try facts(in: context).count == 1)
     }
 
+    @Test func deletingAMeetingThatOnlyRestatedAFactLeavesNoTraceOfIt() throws {
+        let context = try makeContext()
+        let source = Meeting(title: "Source")
+        let restater = Meeting(title: "Restater")
+        context.insert(source)
+        context.insert(restater)
+        let priya = KnowledgeEntity(name: "Priya", kind: .person)
+        context.insert(priya)
+        let fact = addFact("Owns the Japan launch", to: priya, from: source, context: context)
+        fact.addCorroboration(restater.id)
+        try context.save()
+
+        #expect(MeetingStore.delete(restater, context: context))
+
+        // The fact belongs to the meeting that still exists, so it stays —
+        // but nothing may be left on disk pointing at the deleted one. Its id
+        // lives only in a corroboration array, which neither the purge
+        // predicate nor the sweep filter selects on.
+        let survivor = try #require(try facts(in: context).first)
+        #expect(survivor.sourceMeetingID == source.id)
+        #expect(survivor.corroboratedByMeetingIDs == nil)
+    }
+
     // MARK: - Sweep (upgrade path and failed purges)
 
     @Test func sweepRemovesFactsWhoseMeetingIsAlreadyGone() throws {

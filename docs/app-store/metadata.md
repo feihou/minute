@@ -20,7 +20,7 @@ This is a release-owner draft, not legal advice. Product copy below is ready to 
 
 `Record, transcribe, identify speakers, and create AI notes on your iPhone. No account, no backend, no tracking. Open source under MIT.`
 
-### 4. Description (3,453 of 4,000 characters)
+### 4. Description (3,585 of 4,000 characters)
 
 Minute takes notes at your meetings so you can be in them. Record an in-person conversation, watch the transcript appear live, and create structured notes — all processed on your iPhone. No account. No backend. No analytics. Meeting content is not uploaded to an AI or transcription service.
 
@@ -44,7 +44,7 @@ WHAT YOU GET
 
 PRIVATE BY DESIGN
 
-Recordings, transcripts, and summaries stay on your iPhone by default. Two optional meeting-data backups — including them in your iPhone backup, or mirroring browsable notes and audio to iCloud Drive — are both off by default. Deleting a meeting removes its local recording, its notes, and everything Brain learned from it. Network activity is limited to model setup and user-chosen iCloud features: iOS may fetch Apple's speech assets, and FluidAudio fetches its speaker model from Hugging Face. Meeting content is never uploaded to either model host.
+Recordings, transcripts, and summaries stay on your iPhone by default. Two optional meeting-data backups — including them in your iPhone backup, or mirroring browsable notes and audio to iCloud Drive — are both off by default. Deleting a meeting removes its local recording, its notes, and everything Brain learned from it. Network activity is limited to model setup and user-chosen iCloud features: iOS may fetch Apple's speech assets, FluidAudio fetches its speaker model from Hugging Face, and any Whisper or local summary model you choose in Settings is downloaded from Hugging Face when you tap Get. These are file downloads — meeting content is never uploaded to any model host.
 
 REQUIREMENTS
 
