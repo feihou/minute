@@ -343,4 +343,62 @@ struct KnowledgeIngestTests {
         #expect(carried.sourceMeetingID == second.id)
     }
 
+    @Test func reExtractionRevokesACorroborationTheMeetingNoLongerMakes() throws {
+        let context = try makeContext()
+        let first = Meeting(title: "first")
+        let second = Meeting(title: "second")
+        context.insert(first)
+        context.insert(second)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        let fact = KnowledgeFact(
+            text: "Sarah leads the Atlas redesign", originalText: "Sarah leads the Atlas redesign",
+            status: .autoCaptured, sourceMeetingID: first.id, capturedAt: first.createdAt, entity: entity
+        )
+        fact.addCorroboration(second.id)
+        context.insert(fact)
+        try context.save()
+
+        // The second meeting is re-transcribed and its new transcript says
+        // something else entirely.
+        _ = try KnowledgeIngest.apply(
+            [candidate("Sarah", "Sarah is on the hiring panel")],
+            from: second, context: context
+        )
+
+        // It no longer vouches for the old claim...
+        #expect(fact.corroboratedByMeetingIDs == nil)
+        // ...so deleting the meeting that does state it takes the fact with it,
+        // rather than attributing it to a transcript that no longer supports it.
+        #expect(MeetingStore.delete(first, context: context))
+        let remaining = try context.fetch(FetchDescriptor<KnowledgeFact>()).map(\.originalText)
+        #expect(!remaining.contains("Sarah leads the Atlas redesign"))
+    }
+
+    @Test func reExtractionKeepsACorroborationTheMeetingStillMakes() throws {
+        let context = try makeContext()
+        let first = Meeting(title: "first")
+        let second = Meeting(title: "second")
+        context.insert(first)
+        context.insert(second)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        let fact = KnowledgeFact(
+            text: "Sarah leads the Atlas redesign", originalText: "Sarah leads the Atlas redesign",
+            status: .autoCaptured, sourceMeetingID: first.id, capturedAt: first.createdAt, entity: entity
+        )
+        fact.addCorroboration(second.id)
+        context.insert(fact)
+        try context.save()
+
+        // Re-transcribed, and it still says the same thing.
+        _ = try KnowledgeIngest.apply(
+            [candidate("Sarah", "Sarah leads the Atlas redesign")],
+            from: second, context: context
+        )
+
+        // Cleared and re-added in the same run, so the evidence stands.
+        #expect(fact.corroboratedByMeetingIDs == [second.id])
+    }
+
 }

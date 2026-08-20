@@ -90,6 +90,15 @@ final class KnowledgeFact {
         corroboratedByMeetingIDs = ids
     }
 
+    /// Drops `meetingID` from the corroborations, used when that meeting is
+    /// re-extracted: whether it still makes this claim is decided by its new
+    /// transcript, not by what it said before.
+    func removeCorroboration(_ meetingID: UUID) {
+        guard let ids = corroboratedByMeetingIDs, ids.contains(meetingID) else { return }
+        let remaining = ids.filter { $0 != meetingID }
+        corroboratedByMeetingIDs = remaining.isEmpty ? nil : remaining
+    }
+
     /// Re-points this fact at a meeting that still exists, used when its
     /// original source is deleted but a corroborating meeting survives.
     /// `capturedAt` follows, because it means "the source meeting's date".

@@ -66,6 +66,18 @@ enum KnowledgeIngest {
             context.delete(fact)
         }
 
+        // This meeting's corroborations are its contribution too, so the same
+        // "wholly superseded by this extraction" rule applies: clear them and
+        // let the loop below add back only the claims its new transcript still
+        // makes. Otherwise a re-transcribed meeting keeps vouching for a fact
+        // it no longer states, and deleting that fact's source would hand it to
+        // this meeting on the strength of evidence that is gone.
+        // ponytail: in-memory scan — #Predicate can't look inside a codable
+        // array. Move to a stored join if fact counts ever make this hurt.
+        for fact in try context.fetch(FetchDescriptor<KnowledgeFact>()) {
+            fact.removeCorroboration(meetingID)
+        }
+
         for candidate in candidates {
             let resolved = resolve(candidate, in: &known, context: context)
             let entity = resolved.entity
