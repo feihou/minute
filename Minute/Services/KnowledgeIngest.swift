@@ -58,6 +58,12 @@ enum KnowledgeIngest {
             if let survivor = (fact.corroboratedByMeetingIDs ?? [])
                 .first(where: { $0 != meetingID && liveIDs.contains($0) }),
                 let date = liveDates[survivor] {
+                // Re-dating reorders the entity's facts, and synthesis is fed
+                // newest-first with "prefer the newer one on conflict" — so the
+                // narrative has to be rebuilt even though the count is unchanged.
+                if fact.capturedAt != date, let entity = fact.entity {
+                    touched[entity.id] = entity
+                }
                 fact.promoteSource(to: survivor, capturedAt: date, liveMeetingIDs: liveIDs)
                 continue
             }
@@ -119,7 +125,14 @@ enum KnowledgeIngest {
                 // corroboration, or deleting the first meeting would discard
                 // knowledge this one still supports. Tombstones are excluded:
                 // they exist to keep a rejected claim out, not to hold sources.
-                if duplicate.status != .rejected {
+                // Only on evidence as strong as the fact itself: the same
+                // statement token-for-token in order, and a quote that actually
+                // validated against this transcript. A looser match is still a
+                // fair reason to drop the candidate — it is not a reason to let
+                // this meeting inherit the fact once the original source goes.
+                if duplicate.status != .rejected,
+                   candidate.validatedQuote != nil,
+                   KnowledgeText.statesTheSame(duplicate.originalText, candidate.fact) {
                     duplicate.addCorroboration(meetingID)
                 }
                 result.duplicatesDropped += 1

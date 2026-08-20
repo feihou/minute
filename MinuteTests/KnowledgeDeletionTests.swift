@@ -406,6 +406,33 @@ struct KnowledgeDeletionTests {
         #expect(survivor.corroboratedByMeetingIDs == nil)
     }
 
+    @Test func promotingAFactRebuildsTheNarrativeItReordered() throws {
+        let context = try makeContext()
+        let older = Meeting(title: "Older", createdAt: .now.addingTimeInterval(-7200))
+        let newer = Meeting(title: "Newer")
+        context.insert(older)
+        context.insert(newer)
+        let priya = KnowledgeEntity(name: "Priya", kind: .person)
+        context.insert(priya)
+        let promoted = addFact("Owns the Japan launch", to: priya, from: older, context: context)
+        promoted.addCorroboration(newer.id)
+        addFact("Owns the Q3 scope", to: priya, from: newer, context: context)
+        priya.synthesis = "Written while the Japan launch fact was the older of the two."
+        priya.synthesizedFactCount = 2
+        try context.save()
+
+        #expect(MeetingStore.delete(older, context: context))
+
+        // Nothing was removed — the count is unchanged, so the count-based
+        // freshness marker cannot see this. But re-dating the promoted fact
+        // reordered the set the narrative was written from, and synthesis
+        // resolves conflicts by preferring the newer fact.
+        let survivor = try #require(try entities(in: context).first)
+        #expect(survivor.synthesis == nil)
+        #expect(survivor.synthesizedFactCount == nil)
+        #expect(try facts(in: context).count == 2)
+    }
+
     // MARK: - Sweep (upgrade path and failed purges)
 
     @Test func sweepRemovesFactsWhoseMeetingIsAlreadyGone() throws {

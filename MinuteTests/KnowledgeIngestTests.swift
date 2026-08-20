@@ -433,4 +433,60 @@ struct KnowledgeIngestTests {
         #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).count == 1)
     }
 
+    @Test func aReorderedRestatementIsDroppedButNotTreatedAsCorroboration() throws {
+        let context = try makeContext()
+        let first = Meeting(title: "first")
+        let second = Meeting(title: "second")
+        context.insert(first)
+        context.insert(second)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        let existing = KnowledgeFact(
+            text: "Sarah assigned Alex to Jordan", originalText: "Sarah assigned Alex to Jordan",
+            status: .autoCaptured, sourceMeetingID: first.id, capturedAt: .now, entity: entity
+        )
+        context.insert(existing)
+        try context.save()
+
+        // Same tokens, opposite meaning. `normalized` sorts, so dedup cannot
+        // tell these apart — that part is existing behaviour.
+        let result = try KnowledgeIngest.apply(
+            [candidate("Sarah", "Sarah assigned Jordan to Alex")],
+            from: second, context: context
+        )
+
+        #expect(result.duplicatesDropped == 1)
+        // But the second meeting did not say what the first said, so it must
+        // not end up owning the first meeting's claim when that meeting goes.
+        #expect(existing.corroboratedByMeetingIDs == nil)
+    }
+
+    @Test func anUngroundedRestatementIsDroppedButNotTreatedAsCorroboration() throws {
+        let context = try makeContext()
+        let first = Meeting(title: "first")
+        let second = Meeting(title: "second")
+        context.insert(first)
+        context.insert(second)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        let existing = KnowledgeFact(
+            text: "Sarah leads the Atlas redesign", originalText: "Sarah leads the Atlas redesign",
+            status: .autoCaptured, sourceMeetingID: first.id, capturedAt: .now, entity: entity
+        )
+        context.insert(existing)
+        try context.save()
+
+        // No quote survived validation against this transcript, which is what
+        // would normally hold the candidate back as a draft.
+        let result = try KnowledgeIngest.apply(
+            [candidate("Sarah", "Sarah leads the Atlas redesign", quote: nil)],
+            from: second, context: context
+        )
+
+        #expect(result.duplicatesDropped == 1)
+        // Corroboration would let this meeting inherit an auto-captured fact on
+        // evidence too weak to have captured it in the first place.
+        #expect(existing.corroboratedByMeetingIDs == nil)
+    }
+
 }

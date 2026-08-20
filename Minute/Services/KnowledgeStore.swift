@@ -96,6 +96,11 @@ enum KnowledgeStore {
         var promoted = 0
         var candidates: [UUID: KnowledgeEntity] = [:]
         var lostAFact: Set<UUID> = []
+        // Promotion re-dates a fact, which reorders the entity's facts. Synthesis
+        // is fed newest-first and told to prefer the newer fact when two
+        // conflict, so its narrative can outlive the ordering it was written
+        // from — and the count-based freshness marker cannot see that.
+        var reordered: Set<UUID> = []
         for fact in facts {
             if let entity = fact.entity {
                 candidates[entity.id] = entity
@@ -103,6 +108,9 @@ enum KnowledgeStore {
             guard fact.status != .rejected else { continue }
             if let survivor = fact.sourceMeetingIDs.first(where: { liveIDs.contains($0) }),
                let date = liveDates[survivor] {
+                if fact.capturedAt != date, let entity = fact.entity {
+                    reordered.insert(entity.id)
+                }
                 fact.promoteSource(to: survivor, capturedAt: date, liveMeetingIDs: liveIDs)
                 promoted += 1
             } else {
@@ -125,7 +133,7 @@ enum KnowledgeStore {
                 // Only an entity that actually lost a fact needs its narrative
                 // rewritten. Re-selecting a retained tombstone on a later sweep
                 // must not churn one that is still accurate.
-                if lostAFact.contains(entity.id) {
+                if lostAFact.contains(entity.id) || reordered.contains(entity.id) {
                     entity.synthesis = nil
                     entity.synthesizedFactCount = nil
                 }
