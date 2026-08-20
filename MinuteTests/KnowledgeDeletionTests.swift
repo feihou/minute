@@ -1,0 +1,222 @@
+import Foundation
+import SwiftData
+import Testing
+@testable import Minute
+
+/// Deleting a meeting must take the knowledge extracted from it. Facts key off
+/// a plain `sourceMeetingID` rather than a SwiftData relationship, so nothing
+/// cascades on its own — these tests pin the explicit cleanup.
+@MainActor
+struct KnowledgeDeletionTests {
+    /// Containers with the relationship-bearing knowledge schema are retained
+    /// for the process lifetime: ModelContainer teardown is not actor-isolated,
+    /// and a container deiniting in the background while another test runs
+    /// crashes the test host inside SwiftData.framework.
+    private static var retainedContainers: [ModelContainer] = []
+
+    @discardableResult
+    private static func retain(_ container: ModelContainer) -> ModelContainer {
+        retainedContainers.append(container)
+        return container
+    }
+
+    private func makeContext() throws -> ModelContext {
+        try Self.retain(ModelContainer(
+            for: Meeting.self, KnowledgeEntity.self, KnowledgeFact.self,
+            configurations: MeetingStore.modelConfiguration(inMemory: true)
+        )).mainContext
+    }
+
+    @discardableResult
+    private func addFact(
+        _ text: String,
+        to entity: KnowledgeEntity,
+        from meeting: Meeting,
+        status: FactStatus = .autoCaptured,
+        context: ModelContext
+    ) -> KnowledgeFact {
+        let fact = KnowledgeFact(
+            text: text,
+            originalText: text,
+            status: status,
+            sourceMeetingID: meeting.id,
+            capturedAt: meeting.createdAt,
+            entity: entity
+        )
+        context.insert(fact)
+        return fact
+    }
+
+    private func facts(in context: ModelContext) throws -> [KnowledgeFact] {
+        try context.fetch(FetchDescriptor<KnowledgeFact>())
+    }
+
+    private func entities(in context: ModelContext) throws -> [KnowledgeEntity] {
+        try context.fetch(FetchDescriptor<KnowledgeEntity>())
+    }
+
+    // MARK: - Deleting a meeting
+
+    @Test func deletingAMeetingRemovesTheFactsItProduced() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "Roadmap")
+        context.insert(meeting)
+        let priya = KnowledgeEntity(name: "Priya", kind: .person)
+        context.insert(priya)
+        addFact("Owns the Japan launch", to: priya, from: meeting, context: context)
+        try context.save()
+        #expect(try facts(in: context).count == 1)
+
+        #expect(MeetingStore.delete(meeting, context: context))
+
+        #expect(try facts(in: context).isEmpty)
+    }
+
+    @Test func factsFromOtherMeetingsAreUntouched() throws {
+        let context = try makeContext()
+        let deleted = Meeting(title: "Deleted")
+        let kept = Meeting(title: "Kept")
+        context.insert(deleted)
+        context.insert(kept)
+        let priya = KnowledgeEntity(name: "Priya", kind: .person)
+        context.insert(priya)
+        addFact("From the deleted meeting", to: priya, from: deleted, context: context)
+        addFact("From the kept meeting", to: priya, from: kept, context: context)
+        try context.save()
+
+        #expect(MeetingStore.delete(deleted, context: context))
+
+        let remaining = try facts(in: context)
+        #expect(remaining.count == 1)
+        #expect(remaining.first?.text == "From the kept meeting")
+        // The entity still has something to say, so it stays.
+        #expect(try entities(in: context).count == 1)
+    }
+
+    @Test func anEntityLeftWithNothingIsRemoved() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "Only source")
+        context.insert(meeting)
+        let priya = KnowledgeEntity(name: "Priya", kind: .person)
+        context.insert(priya)
+        addFact("Owns the Japan launch", to: priya, from: meeting, context: context)
+        try context.save()
+
+        #expect(MeetingStore.delete(meeting, context: context))
+
+        // The name itself was learned from the deleted meeting, so keeping an
+        // empty "Priya" page would retain meeting-derived personal data.
+        #expect(try entities(in: context).isEmpty)
+    }
+
+    @Test func aSurvivingEntityLosesTheNarrativeWrittenFromDeletedFacts() throws {
+        let context = try makeContext()
+        let deleted = Meeting(title: "Deleted")
+        let kept = Meeting(title: "Kept")
+        context.insert(deleted)
+        context.insert(kept)
+        let priya = KnowledgeEntity(name: "Priya", kind: .person)
+        priya.synthesis = "Priya owns the Japan launch and the Q3 scope."
+        priya.synthesizedFactCount = 2
+        context.insert(priya)
+        addFact("Owns the Japan launch", to: priya, from: deleted, context: context)
+        addFact("Owns the Q3 scope", to: priya, from: kept, context: context)
+        try context.save()
+
+        #expect(MeetingStore.delete(deleted, context: context))
+
+        let survivor = try #require(try entities(in: context).first)
+        // The narrative was written over a fact that no longer exists, so it
+        // could still describe the deleted meeting. It must be regenerated.
+        #expect(survivor.synthesis == nil)
+        #expect(survivor.synthesizedFactCount == nil)
+    }
+
+    @Test func aMergeTombstoneEntitySurvivesLosingItsFacts() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "Only source")
+        context.insert(meeting)
+        let canonical = KnowledgeEntity(name: "Priya Sharma", kind: .person)
+        context.insert(canonical)
+        let merged = KnowledgeEntity(name: "Priya", kind: .person, redirectTo: canonical.id)
+        context.insert(merged)
+        addFact("Owns the Japan launch", to: merged, from: meeting, context: context)
+        addFact("Owns the Q3 scope", to: canonical, from: meeting, context: context)
+        try context.save()
+
+        #expect(MeetingStore.delete(meeting, context: context))
+
+        // The redirect must survive, or a later merge resolution dangles.
+        let survivors = try entities(in: context)
+        #expect(survivors.count == 1)
+        #expect(survivors.first?.redirectTo == canonical.id)
+    }
+
+    // MARK: - Sweep (upgrade path and failed purges)
+
+    @Test func sweepRemovesFactsWhoseMeetingIsAlreadyGone() throws {
+        let context = try makeContext()
+        let live = Meeting(title: "Live")
+        context.insert(live)
+        let priya = KnowledgeEntity(name: "Priya", kind: .person)
+        context.insert(priya)
+        addFact("Still sourced", to: priya, from: live, context: context)
+        // A meeting deleted by a build that had no purge — the fact it left
+        // behind points at a UUID no meeting has.
+        let orphan = KnowledgeFact(
+            text: "Orphaned by an older version",
+            originalText: "Orphaned by an older version",
+            status: .autoCaptured,
+            sourceMeetingID: UUID(),
+            capturedAt: .now,
+            entity: priya
+        )
+        context.insert(orphan)
+        try context.save()
+        #expect(try facts(in: context).count == 2)
+
+        #expect(KnowledgeStore.sweepOrphanedFacts(liveMeetingIDs: [live.id], context: context))
+
+        let remaining = try facts(in: context)
+        #expect(remaining.count == 1)
+        #expect(remaining.first?.text == "Still sourced")
+    }
+
+    @Test func sweepKeepsEverythingWhenNoMeetingIsMissing() throws {
+        let context = try makeContext()
+        let live = Meeting(title: "Live")
+        context.insert(live)
+        let priya = KnowledgeEntity(name: "Priya", kind: .person)
+        context.insert(priya)
+        addFact("Still sourced", to: priya, from: live, context: context)
+        priya.synthesis = "Priya is still around."
+        priya.synthesizedFactCount = 1
+        try context.save()
+
+        #expect(KnowledgeStore.sweepOrphanedFacts(liveMeetingIDs: [live.id], context: context))
+
+        #expect(try facts(in: context).count == 1)
+        // A no-op sweep must not invalidate a perfectly current narrative.
+        #expect(try entities(in: context).first?.synthesis == "Priya is still around.")
+    }
+
+    @Test func deleteAllMeetingsEmptiesTheKnowledgeBase() throws {
+        let context = try makeContext()
+        let meetings = (0..<3).map { Meeting(title: "Meeting \($0)") }
+        meetings.forEach { context.insert($0) }
+        let people = ["Priya", "Atlas", "Onboarding"].map { KnowledgeEntity(name: $0, kind: .person) }
+        people.forEach { context.insert($0) }
+        for (index, entity) in people.enumerated() {
+            addFact("Fact \(index)", to: entity, from: meetings[index], context: context)
+        }
+        try context.save()
+
+        // Settings' Delete All Meetings is this loop.
+        for meeting in meetings {
+            #expect(MeetingStore.delete(meeting, context: context))
+        }
+
+        #expect(try facts(in: context).isEmpty)
+        #expect(try entities(in: context).isEmpty)
+    }
+}

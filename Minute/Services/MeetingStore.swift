@@ -199,6 +199,7 @@ enum MeetingStore {
     @discardableResult
     static func delete(_ meeting: Meeting, context: ModelContext) -> Bool {
         let audioFileName = meeting.audioFileName
+        let meetingID = meeting.id
         context.delete(meeting)
         do {
             try context.save()
@@ -217,6 +218,13 @@ enum MeetingStore {
         if let audioFileName {
             deleteAudioFile(named: audioFileName)
         }
+        // Facts extracted into the Brain are keyed by meeting UUID rather than
+        // by a SwiftData relationship, so nothing cascades to them — remove
+        // them explicitly, or a deleted meeting keeps speaking through its
+        // facts. Deliberately after the meeting delete commits: a failure here
+        // must not resurrect the meeting, and the launch sweep in
+        // MeetingListView catches whatever a failed save leaves behind.
+        KnowledgeStore.purgeFacts(fromMeeting: meetingID, context: context)
         return true
     }
 
