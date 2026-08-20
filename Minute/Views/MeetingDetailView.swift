@@ -482,12 +482,14 @@ struct MeetingDetailView: View {
         }
 
         if meeting.hasTranscript {
-            VStack(alignment: .leading, spacing: 20) {
-                ForEach(Array(meeting.segments.enumerated()), id: \.offset) { _, segment in
-                    transcriptRow(segment)
-                }
+            // The ForEach sits directly in the enclosing LazyVStack. Wrapping it
+            // in a VStack would make the whole transcript a single child, so
+            // every row is built up front — an hour-long meeting feels that, and
+            // it gives back the virtualization the old List had.
+            ForEach(Array(meeting.segments.enumerated()), id: \.offset) { index, segment in
+                transcriptRow(segment)
+                    .padding(.top, index == 0 ? Layout.sectionGap - 6 : 20)
             }
-            .padding(.top, Layout.sectionGap - 6)
 
             if let hint = transcriptHint {
                 Text(hint)

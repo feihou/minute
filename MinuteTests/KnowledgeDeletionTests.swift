@@ -132,7 +132,30 @@ struct KnowledgeDeletionTests {
         #expect(survivor.synthesizedFactCount == nil)
     }
 
-    @Test func aMergeTombstoneEntitySurvivesLosingItsFacts() throws {
+    @Test func aMergeTombstoneSurvivesWhileItsDestinationDoes() throws {
+        let context = try makeContext()
+        let deleted = Meeting(title: "Deleted")
+        let kept = Meeting(title: "Kept")
+        context.insert(deleted)
+        context.insert(kept)
+        let canonical = KnowledgeEntity(name: "Priya Sharma", kind: .person)
+        context.insert(canonical)
+        let merged = KnowledgeEntity(name: "Priya", kind: .person, redirectTo: canonical.id)
+        context.insert(merged)
+        addFact("Owns the Japan launch", to: merged, from: deleted, context: context)
+        addFact("Owns the Q3 scope", to: canonical, from: kept, context: context)
+        try context.save()
+
+        #expect(MeetingStore.delete(deleted, context: context))
+
+        // The tombstone has lost its own facts but still points somewhere real,
+        // so it stays and merge resolution keeps working.
+        let survivors = try entities(in: context)
+        #expect(survivors.count == 2)
+        #expect(survivors.contains { $0.redirectTo == canonical.id })
+    }
+
+    @Test func aMergeTombstoneIsRemovedWithItsDestination() throws {
         let context = try makeContext()
         let meeting = Meeting(title: "Only source")
         context.insert(meeting)
@@ -146,10 +169,64 @@ struct KnowledgeDeletionTests {
 
         #expect(MeetingStore.delete(meeting, context: context))
 
-        // The redirect must survive, or a later merge resolution dangles.
-        let survivors = try entities(in: context)
-        #expect(survivors.count == 1)
-        #expect(survivors.first?.redirectTo == canonical.id)
+        // Keeping the tombstone once its destination is gone would leave a
+        // redirect to nothing: resolution falls back to the tombstone itself,
+        // and new facts land on an entity every Brain surface filters out.
+        #expect(try entities(in: context).isEmpty)
+    }
+
+    @Test func aMergeTombstoneChainIsRemovedWithItsFinalDestination() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "Only source")
+        context.insert(meeting)
+        let canonical = KnowledgeEntity(name: "Priya Sharma", kind: .person)
+        context.insert(canonical)
+        let middle = KnowledgeEntity(name: "P. Sharma", kind: .person, redirectTo: canonical.id)
+        context.insert(middle)
+        let oldest = KnowledgeEntity(name: "Priya", kind: .person, redirectTo: middle.id)
+        context.insert(oldest)
+        addFact("Owns the Q3 scope", to: canonical, from: meeting, context: context)
+        try context.save()
+
+        #expect(MeetingStore.delete(meeting, context: context))
+
+        // A winner can itself have been merged away, so the walk has to follow
+        // the whole chain rather than one hop.
+        #expect(try entities(in: context).isEmpty)
+    }
+
+    @Test func sweepLeavesAnEntityAloneWhenItsOnlyOrphanIsARejectedTombstone() throws {
+        let context = try makeContext()
+        let live = Meeting(title: "Live")
+        context.insert(live)
+        let priya = KnowledgeEntity(name: "Priya", kind: .person)
+        context.insert(priya)
+        addFact("Still sourced", to: priya, from: live, context: context)
+        // Retained on purpose: the fingerprint stops a rejected claim coming
+        // back from another meeting. Its source meeting is long gone, so every
+        // sweep re-selects it.
+        let tombstone = KnowledgeFact(
+            text: "",
+            originalText: "",
+            status: .rejected,
+            sourceMeetingID: UUID(),
+            capturedAt: .now,
+            entity: priya
+        )
+        context.insert(tombstone)
+        priya.synthesis = "Priya is still around."
+        priya.synthesizedFactCount = 1
+        try context.save()
+
+        // Twice: a re-touch would show up as the narrative being discarded.
+        #expect(KnowledgeStore.sweepOrphanedFacts(liveMeetingIDs: [live.id], context: context))
+        #expect(KnowledgeStore.sweepOrphanedFacts(liveMeetingIDs: [live.id], context: context))
+
+        let survivor = try #require(try entities(in: context).first)
+        #expect(survivor.synthesis == "Priya is still around.")
+        #expect(survivor.synthesizedFactCount == 1)
+        // The tombstone itself is kept.
+        #expect(try facts(in: context).count == 2)
     }
 
     // MARK: - Sweep (upgrade path and failed purges)

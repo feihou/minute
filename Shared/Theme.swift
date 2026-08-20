@@ -75,6 +75,10 @@ struct SectionHeading: View {
             .font(.caption.weight(.semibold))
             .tracking(0.9)
             .foregroundStyle(.secondary)
+            // Uppercasing is a visual treatment. Without this the transformed
+            // string becomes the name VoiceOver reads, a braille display shows,
+            // and a UI test queries — "WHAT YOU KNOW" rather than the title.
+            .accessibilityLabel(title)
             .accessibilityAddTraits(.isHeader)
     }
 }

@@ -41,16 +41,23 @@ enum KnowledgeStore {
     }
 
     private static func remove(_ facts: [KnowledgeFact], context: ModelContext) -> Bool {
-        guard !facts.isEmpty else { return true }
-
         // Rejected facts are tombstones: the text is already cleared and only a
         // salted fingerprint remains, whose whole job is to stop a claim the
         // user rejected from reappearing via a different meeting. They hold no
         // meeting content, so they stay — unless their entity goes entirely.
         let removable = facts.filter { $0.status != .rejected }
+        // Nothing actually being removed means nothing to tidy. Bailing here is
+        // what stops the launch sweep from re-touching an entity every time it
+        // re-selects a retained tombstone whose source meeting is long gone,
+        // which would discard and regenerate that entity's narrative on every
+        // single launch.
+        guard !removable.isEmpty else { return true }
+
         let removedIDs = Set(removable.map(\.id))
+        // Derived from `removable`, not from every matched fact: an entity is
+        // only affected by facts that are actually going away.
         var touched: [UUID: KnowledgeEntity] = [:]
-        for fact in facts {
+        for fact in removable {
             if let entity = fact.entity {
                 touched[entity.id] = entity
             }
@@ -59,6 +66,7 @@ enum KnowledgeStore {
             context.delete(fact)
         }
 
+        var doomed: [UUID: KnowledgeEntity] = [:]
         for entity in touched.values {
             // Judged against `removedIDs` rather than re-reading `entity.facts`,
             // which still lists rows that are deleted-pending until the save.
@@ -72,10 +80,13 @@ enum KnowledgeStore {
             } else if entity.redirectTo == nil {
                 // Nothing left to show. The name itself was learned from the
                 // meeting, so an empty page would keep meeting-derived personal
-                // data alive. A merge tombstone (`redirectTo` set) is kept so
-                // resolution through it cannot dangle.
-                context.delete(entity)
+                // data alive.
+                doomed[entity.id] = entity
             }
+        }
+        addInboundTombstones(to: &doomed, context: context)
+        for entity in doomed.values {
+            context.delete(entity)
         }
 
         do {
@@ -85,5 +96,27 @@ enum KnowledgeStore {
             return false
         }
         return true
+    }
+
+    /// A merged-away entity exists only to point at the entity that won the
+    /// merge. Once that winner is being removed the tombstone leads nowhere,
+    /// and resolution falling back to the tombstone itself would attach newly
+    /// extracted facts to an entity every Brain surface filters out. It holds
+    /// no facts of its own and its name came from the same meetings, so it goes
+    /// with its destination. Walks the chain, since a winner may itself have
+    /// been merged away.
+    private static func addInboundTombstones(
+        to doomed: inout [UUID: KnowledgeEntity],
+        context: ModelContext
+    ) {
+        guard !doomed.isEmpty,
+              let all = try? context.fetch(FetchDescriptor<KnowledgeEntity>()) else { return }
+        var queue = Array(doomed.keys)
+        while let destination = queue.popLast() {
+            for entity in all where entity.redirectTo == destination && doomed[entity.id] == nil {
+                doomed[entity.id] = entity
+                queue.append(entity.id)
+            }
+        }
     }
 }

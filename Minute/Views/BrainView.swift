@@ -376,6 +376,7 @@ struct EntityDetailView: View {
             .textCase(.uppercase)
             .tracking(0.6)
             .foregroundStyle(tint)
+            .accessibilityLabel(text)
     }
 }
 

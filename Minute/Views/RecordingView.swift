@@ -217,6 +217,7 @@ struct RecordingView: View {
                 .textCase(.uppercase)
                 .tracking(0.9)
                 .foregroundStyle(.white.opacity(0.45))
+                .accessibilityLabel("Live Transcript")
             transcriptArea
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
