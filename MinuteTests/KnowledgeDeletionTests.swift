@@ -229,6 +229,81 @@ struct KnowledgeDeletionTests {
         #expect(try facts(in: context).count == 2)
     }
 
+    // MARK: - Facts several meetings support
+
+    @Test func aFactAnotherMeetingRestatedIsKeptAndRepointed() throws {
+        let context = try makeContext()
+        let first = Meeting(title: "First", createdAt: .now.addingTimeInterval(-7200))
+        let second = Meeting(title: "Second")
+        context.insert(first)
+        context.insert(second)
+        let priya = KnowledgeEntity(name: "Priya", kind: .person)
+        context.insert(priya)
+        let fact = addFact("Owns the Japan launch", to: priya, from: first, context: context)
+        // What KnowledgeIngest records when the second meeting says the same
+        // thing: the candidate is dropped and only this row survives.
+        fact.addCorroboration(second.id)
+        try context.save()
+
+        #expect(MeetingStore.delete(first, context: context))
+
+        // The second meeting still says this and is stamped as extracted, so it
+        // will never be re-read — dropping the row would lose the claim.
+        let survivor = try #require(try facts(in: context).first)
+        #expect(survivor.text == "Owns the Japan launch")
+        #expect(survivor.sourceMeetingID == second.id)
+        #expect(survivor.capturedAt == second.createdAt)
+        #expect(survivor.corroboratedByMeetingIDs == nil)
+        #expect(try entities(in: context).count == 1)
+    }
+
+    @Test func aRestatedFactGoesOnceItsLastMeetingDoes() throws {
+        let context = try makeContext()
+        let first = Meeting(title: "First")
+        let second = Meeting(title: "Second")
+        context.insert(first)
+        context.insert(second)
+        let priya = KnowledgeEntity(name: "Priya", kind: .person)
+        context.insert(priya)
+        let fact = addFact("Owns the Japan launch", to: priya, from: first, context: context)
+        fact.addCorroboration(second.id)
+        try context.save()
+
+        #expect(MeetingStore.delete(first, context: context))
+        #expect(try facts(in: context).count == 1)
+        #expect(MeetingStore.delete(second, context: context))
+
+        #expect(try facts(in: context).isEmpty)
+        #expect(try entities(in: context).isEmpty)
+    }
+
+    @Test func theSweepRescuesARestatedFactRatherThanTreatingItAsOrphaned() throws {
+        let context = try makeContext()
+        let live = Meeting(title: "Live")
+        context.insert(live)
+        let priya = KnowledgeEntity(name: "Priya", kind: .person)
+        context.insert(priya)
+        // Its original meeting was deleted by a build without the purge, but a
+        // meeting that still exists restated it.
+        let fact = KnowledgeFact(
+            text: "Owns the Japan launch",
+            originalText: "Owns the Japan launch",
+            status: .autoCaptured,
+            sourceMeetingID: UUID(),
+            capturedAt: .now.addingTimeInterval(-7200),
+            entity: priya
+        )
+        fact.addCorroboration(live.id)
+        context.insert(fact)
+        try context.save()
+
+        #expect(KnowledgeStore.sweepOrphanedFacts(liveMeetingIDs: [live.id], context: context))
+
+        let survivor = try #require(try facts(in: context).first)
+        #expect(survivor.sourceMeetingID == live.id)
+        #expect(try entities(in: context).count == 1)
+    }
+
     // MARK: - Sweep (upgrade path and failed purges)
 
     @Test func sweepRemovesFactsWhoseMeetingIsAlreadyGone() throws {

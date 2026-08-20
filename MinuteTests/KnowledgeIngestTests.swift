@@ -235,4 +235,78 @@ struct KnowledgeIngestTests {
         #expect(sarah.synthesizedFactCount == nil)
         #expect(bystander.synthesizedFactCount == 0)
     }
+    @Test func aRepeatFromAnotherMeetingIsDroppedButRecordedAsCorroboration() throws {
+        let context = try makeContext()
+        let firstMeeting = Meeting(title: "first")
+        let secondMeeting = Meeting(title: "second")
+        context.insert(firstMeeting)
+        context.insert(secondMeeting)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        let existing = KnowledgeFact(
+            text: "Sarah leads the Atlas redesign", originalText: "Sarah leads the Atlas redesign",
+            status: .approved, sourceMeetingID: firstMeeting.id, capturedAt: .now, entity: entity
+        )
+        context.insert(existing)
+        try context.save()
+
+        let result = try KnowledgeIngest.apply(
+            [candidate("Sarah", "Sarah leads the Atlas redesign")],
+            from: secondMeeting, context: context
+        )
+
+        // Still dropped — the entity page must not show the claim twice.
+        #expect(result.duplicatesDropped == 1)
+        // But the second meeting is about to be stamped as extracted and will
+        // never be read again, so this row has to remember that it says this
+        // too. Otherwise deleting the first meeting silently loses the fact.
+        #expect(existing.corroboratedByMeetingIDs == [secondMeeting.id])
+        #expect(existing.sourceMeetingIDs == [firstMeeting.id, secondMeeting.id])
+    }
+
+    @Test func aRepeatWithinTheSameMeetingRecordsNoCorroboration() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "m")
+        context.insert(meeting)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        let existing = KnowledgeFact(
+            text: "Sarah leads the Atlas redesign", originalText: "Sarah leads the Atlas redesign",
+            status: .approved, sourceMeetingID: meeting.id, capturedAt: .now, entity: entity
+        )
+        context.insert(existing)
+        try context.save()
+
+        let result = try KnowledgeIngest.apply(
+            [candidate("Sarah", "Sarah leads the Atlas redesign")],
+            from: meeting, context: context
+        )
+
+        #expect(result.duplicatesDropped == 1)
+        // A meeting cannot corroborate itself.
+        #expect(existing.corroboratedByMeetingIDs == nil)
+    }
+
+    @Test func aTombstonedClaimRecordsNoCorroboration() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "m")
+        context.insert(meeting)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        let tombstone = KnowledgeFact(
+            text: "", originalText: "", status: .rejected,
+            sourceMeetingID: UUID(), capturedAt: .now, entity: entity
+        )
+        tombstone.fingerprint = KnowledgeText.fingerprint("Sarah is leaving", entityID: entity.id)
+        context.insert(tombstone)
+        try context.save()
+
+        let result = try KnowledgeIngest.apply([candidate("Sarah", "Sarah is leaving")], from: meeting, context: context)
+
+        #expect(result.duplicatesDropped == 1)
+        // A tombstone exists to keep a rejected claim out, not to hold sources —
+        // corroborating it would give the rejection a reason to be kept alive.
+        #expect(tombstone.corroboratedByMeetingIDs == nil)
+    }
+
 }

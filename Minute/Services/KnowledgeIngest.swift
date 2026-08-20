@@ -64,7 +64,9 @@ enum KnowledgeIngest {
             let candidateFingerprint = KnowledgeText.fingerprint(candidate.fact, entityID: entity.id)
             let candidateNormalized = KnowledgeText.normalized(candidate.fact)
             var crossMeetingNearDuplicate = false
-            let isDuplicate = entity.facts.contains { existing in
+            // first(where:), not contains: the matched row is needed below to
+            // record that this meeting says the same thing.
+            let duplicate = entity.facts.first { existing in
                 if staleIDs.contains(existing.id) { return false }
                 if existing.status == .rejected {
                     return existing.fingerprint == candidateFingerprint
@@ -79,7 +81,16 @@ enum KnowledgeIngest {
                 crossMeetingNearDuplicate = true
                 return false
             }
-            if isDuplicate {
+            if let duplicate {
+                // Dropping the candidate leaves that one row as the only record
+                // of a claim both meetings make, and this meeting is about to be
+                // stamped as extracted, so it will never be read again. Note the
+                // corroboration, or deleting the first meeting would discard
+                // knowledge this one still supports. Tombstones are excluded:
+                // they exist to keep a rejected claim out, not to hold sources.
+                if duplicate.status != .rejected {
+                    duplicate.addCorroboration(meetingID)
+                }
                 result.duplicatesDropped += 1
                 continue
             }

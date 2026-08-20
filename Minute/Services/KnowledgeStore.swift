@@ -7,6 +7,10 @@ import SwiftData
 /// `KnowledgeFact.sourceMeetingID` is a plain UUID rather than a SwiftData
 /// relationship — entity pages are built to tolerate a deleted source meeting —
 /// so no delete rule cascades here and the cleanup has to be explicit.
+///
+/// "Produced" means facts no surviving meeting still supports. A fact another
+/// meeting restated word for word is re-pointed at that meeting instead of
+/// being deleted, because dedup collapsed both statements into this one row.
 enum KnowledgeStore {
     private static let logger = Logger(subsystem: "com.minuteapp.Minute", category: "KnowledgeStore")
 
@@ -41,17 +45,38 @@ enum KnowledgeStore {
     }
 
     private static func remove(_ facts: [KnowledgeFact], context: ModelContext) -> Bool {
+        guard !facts.isEmpty else { return true }
+
+        // A fact several meetings state identically exists as one row: dedup
+        // drops the repeats and stamps their meetings as extracted, so they are
+        // never read again. Deleting the row's source must therefore hand the
+        // fact to a meeting that is still here rather than discard a claim the
+        // library still supports.
+        let liveMeetings = (try? context.fetch(FetchDescriptor<Meeting>())) ?? []
+        let liveDates = Dictionary(liveMeetings.map { ($0.id, $0.createdAt) }, uniquingKeysWith: { first, _ in first })
+        let liveIDs = Set(liveDates.keys)
+
         // Rejected facts are tombstones: the text is already cleared and only a
         // salted fingerprint remains, whose whole job is to stop a claim the
         // user rejected from reappearing via a different meeting. They hold no
         // meeting content, so they stay — unless their entity goes entirely.
-        let removable = facts.filter { $0.status != .rejected }
-        // Nothing actually being removed means nothing to tidy. Bailing here is
-        // what stops the launch sweep from re-touching an entity every time it
-        // re-selects a retained tombstone whose source meeting is long gone,
-        // which would discard and regenerate that entity's narrative on every
-        // single launch.
-        guard !removable.isEmpty else { return true }
+        var removable: [KnowledgeFact] = []
+        var promotedCount = 0
+        for fact in facts where fact.status != .rejected {
+            if let survivor = fact.sourceMeetingIDs.first(where: { liveIDs.contains($0) }),
+               let date = liveDates[survivor] {
+                fact.promoteSource(to: survivor, capturedAt: date, liveMeetingIDs: liveIDs)
+                promotedCount += 1
+            } else {
+                removable.append(fact)
+            }
+        }
+        // Nothing removed and nothing re-pointed means nothing to tidy. Bailing
+        // here is what stops the launch sweep from re-touching an entity every
+        // time it re-selects a retained tombstone whose source meeting is long
+        // gone, which would discard and regenerate that entity's narrative on
+        // every single launch.
+        guard !removable.isEmpty || promotedCount > 0 else { return true }
 
         let removedIDs = Set(removable.map(\.id))
         // Derived from `removable`, not from every matched fact: an entity is
