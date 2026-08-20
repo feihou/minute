@@ -1,6 +1,6 @@
 # Privacy Policy for Minute
 
-**Effective date: August 6, 2026**
+**Effective date: August 17, 2026**
 
 Minute is an iPhone app that records in-person meetings, transcribes them on your device, identifies speakers when you ask it to, and generates meeting notes with on-device AI. This policy explains what data the app handles and what happens to it. The short version: the developer never receives your meeting content; recordings, transcripts, and summaries stay on your iPhone unless you back up or share them, and model setup never uploads them.
 
@@ -8,7 +8,7 @@ Minute is open source under the MIT license. You can verify everything in this p
 
 ## What Minute is
 
-Minute records meeting audio with your iPhone's microphone, produces a live transcript on-device — with Apple's speech recognition (SpeechTranscriber, iOS 26) or, optionally, a Whisper model (WhisperKit) you download in Settings — optionally identifies speakers using FluidAudio's on-device model, and generates structured summaries — overview, key points, decisions, action items, open questions, and, when speakers have been identified, per-speaker perspectives — using Apple's on-device Apple Intelligence model (FoundationModels) or, optionally, a local open model (via MLX) you download in Settings. Audio analysis, transcription, speaker identification, and summary generation happen on your iPhone.
+Minute records meeting audio with your iPhone's microphone, produces a live transcript on-device — with Apple's speech recognition (SpeechTranscriber, iOS 26) or, optionally, a Whisper model (WhisperKit) you download in Settings — optionally identifies speakers using FluidAudio's on-device model, and generates structured summaries — overview, key points, decisions, action items, open questions, and, when speakers have been identified, per-speaker perspectives — using Apple's on-device Apple Intelligence model (FoundationModels) or, optionally, a local open model (via MLX) you download in Settings. Minute also builds a local knowledge base ("Brain") from your saved meetings: the same on-device model reads meetings you have already captured and collects the people, projects, and topics that recur, so it can show you what it already knows. Audio analysis, transcription, speaker identification, summary generation, and knowledge extraction all happen on your iPhone.
 
 ## Data the app handles
 
@@ -18,6 +18,7 @@ Minute creates and stores the following data **locally on your iPhone**, in its 
 - **Transcripts**, with timestamps and optional speaker labels, generated on-device from your recordings
 - **Summaries and notes** generated on-device from your transcripts
 - **Meeting metadata** — titles, dates, durations
+- **Knowledge base entries** — the people, projects, and topics Minute recognizes across your meetings, short dated facts it extracts about each of them, and the brief summary it writes for each. These are derived on-device from your own transcripts, stored in the same local database, and deleted along with the meeting they came from
 - **Your settings** — audio quality, summary preferences, optional summary context you type in (such as attendee names or project terms)
 
 None of this meeting content is transmitted to the developer, Hugging Face, FluidAudio, or an AI/transcription service. A model download sends routine connection metadata to the model host, as described below. Your own backup and sharing choices can also create copies outside Minute's local storage.
@@ -70,7 +71,8 @@ A reminder that is your responsibility, not a data practice of the app: recordin
 Your meeting data stays in Minute's local storage unless you back up or share it, and remains there until you delete it:
 
 - **Deleting a meeting in the app permanently removes** its audio file, transcript, summary, and database entry from your iPhone. A cleanup pass at app launch also removes any audio files orphaned by a crash.
-- **Delete All Meetings** in Settings removes all meetings and their recordings, transcripts, summaries, and speaker labels. It does not reset app preferences such as Summary Context, audio quality, template/language, or backup choices; you can edit or clear those settings separately.
+- **Deleting a meeting also removes what Minute learned from it.** The knowledge base entries extracted from that meeting are deleted with it. A person, project, or topic left with nothing else to show is removed entirely, because its name was learned from that meeting too; one that still has facts from other meetings keeps them, and the short summary written about it is regenerated so it cannot still describe the deleted meeting. If a deletion is interrupted before this finishes, the next app launch completes it.
+- **Delete All Meetings** in Settings removes all meetings and their recordings, transcripts, summaries, speaker labels, and the entire knowledge base built from them. It does not reset app preferences such as Summary Context, audio quality, template/language, or backup choices; you can edit or clear those settings separately.
 - **Deleting the app** removes all of its local data, as with any iOS app.
 - **iCloud copies are yours to manage.** If you enabled the iCloud Drive folder, deleting a meeting removes files Minute recognizes as its mirrored notes, audio, and markers on the next enabled sync. The folder remains when unrecognized files are present. Recognition is filename-based: during every enabled mirror sync, Minute removes supported audio files whose UUID-only names look like its own but do not match the meeting's current recording. A user-added file matching that pattern can therefore be removed even while the meeting still exists. Keep unrelated files outside generated meeting folders, or rename them, if they must be preserved. Files left after you turn the option off, and data inside past device backups, are under your control — delete them in the Files app or in your iCloud settings.
 
