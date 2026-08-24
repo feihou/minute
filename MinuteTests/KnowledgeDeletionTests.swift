@@ -466,6 +466,68 @@ struct KnowledgeDeletionTests {
         #expect(try facts(in: context).first?.fingerprint == "salted-hash-of-the-rejected-claim")
     }
 
+    @Test func reconcileLeavesABackfillPendingFactAlone() throws {
+        let context = try makeContext()
+        let live = Meeting(title: "Live")
+        context.insert(live)
+        let priya = KnowledgeEntity(name: "Priya", kind: .person)
+        context.insert(priya)
+        // A migrated row whose backfill has not run yet (e.g. the launch read
+        // failed): sources is empty but the legacy columns still hold support.
+        let pending = KnowledgeFact(
+            text: "Owns the Japan launch", originalText: "Owns the Japan launch",
+            status: .autoCaptured, sources: [], entity: priya
+        )
+        pending.legacySourceMeetingID = live.id
+        pending.legacyCapturedAt = live.createdAt
+        context.insert(pending)
+        try context.save()
+
+        #expect(KnowledgeStore.reconcile(context: context))
+
+        // Treating "not yet backfilled" as "unsupported" would delete knowledge
+        // a retried backfill recovers next launch.
+        #expect(try facts(in: context).count == 1)
+        #expect(try entities(in: context).count == 1)
+    }
+
+    @Test func deletingAMeetingReSeatsTheLegacyColumnsOffIt() throws {
+        let context = try makeContext()
+        let first = Meeting(title: "First", createdAt: .now.addingTimeInterval(-7200))
+        let second = Meeting(title: "Second")
+        context.insert(first)
+        context.insert(second)
+        let priya = KnowledgeEntity(name: "Priya", kind: .person)
+        context.insert(priya)
+        // A backfilled two-source fact: legacy columns still name the first
+        // meeting, and a pre-scrub row may still carry its quote.
+        let fact = KnowledgeFact(
+            text: "Owns the Japan launch", originalText: "Owns the Japan launch",
+            status: .autoCaptured,
+            sources: [
+                FactSource(meetingID: first.id, quote: "I'll take the Japan launch", capturedAt: first.createdAt),
+                FactSource(meetingID: second.id, quote: nil, capturedAt: second.createdAt),
+            ],
+            entity: priya
+        )
+        fact.legacySourceMeetingID = first.id
+        fact.legacyCapturedAt = first.createdAt
+        fact.legacySourceQuote = "I'll take the Japan launch"
+        context.insert(fact)
+        try context.save()
+
+        #expect(MeetingStore.delete(first, context: context))
+
+        let survivor = try #require(try facts(in: context).first)
+        // The fact survives on the second meeting, and nothing on the row —
+        // sources or legacy columns — may still hold the deleted meeting's id
+        // or its transcript content.
+        #expect(survivor.sourceMeetingIDs == [second.id])
+        #expect(survivor.legacySourceMeetingID == second.id)
+        #expect(survivor.legacySourceQuote == nil)
+        #expect(survivor.sourceQuote == nil)
+    }
+
     // MARK: - Sweep (upgrade path and failed purges)
 
     @Test func sweepRemovesFactsWhoseMeetingIsAlreadyGone() throws {

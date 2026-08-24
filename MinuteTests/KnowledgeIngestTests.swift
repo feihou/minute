@@ -489,4 +489,31 @@ struct KnowledgeIngestTests {
         #expect(existing.sourceMeetingIDs == [first.id])
     }
 
+    @Test func aRestatementThatBecomesNewestMarksTheNarrativeStale() throws {
+        let context = try makeContext()
+        let older = Meeting(title: "older", createdAt: .now.addingTimeInterval(-7200))
+        let newer = Meeting(title: "newer")
+        context.insert(older)
+        context.insert(newer)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        entity.synthesis = "Written when the older meeting was the only source."
+        entity.synthesizedFactCount = 1
+        context.insert(entity)
+        context.insert(KnowledgeFact(
+            text: "Sarah leads the Atlas redesign", originalText: "Sarah leads the Atlas redesign",
+            status: .approved, sourceMeetingID: older.id, capturedAt: older.createdAt, entity: entity
+        ))
+        try context.save()
+
+        _ = try KnowledgeIngest.apply(
+            [candidate("Sarah", "Sarah leads the Atlas redesign")],
+            from: newer, context: context
+        )
+
+        // The restatement re-dated the fact to the newer meeting, and synthesis
+        // is fed newest-first — the count-based marker cannot see a reorder, so
+        // ingest has to clear it explicitly.
+        #expect(entity.synthesizedFactCount == nil)
+    }
+
 }

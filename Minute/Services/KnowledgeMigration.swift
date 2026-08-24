@@ -22,8 +22,20 @@ enum KnowledgeMigration {
         let pending = facts.filter(\.sources.isEmpty)
         guard !pending.isEmpty else { return true }
 
+        // A failed read must never be mistaken for an empty library: writing
+        // sources built from an empty date map would stamp every corroborator
+        // with the primary's date, and the now-nonempty list blocks any retry.
+        // Same rule as KnowledgeStore.reconcile — fail, change nothing, retry
+        // next launch.
+        let meetings: [Meeting]
+        do {
+            meetings = try context.fetch(FetchDescriptor<Meeting>())
+        } catch {
+            logger.error("Could not read meetings to date fact sources, so nothing was built: \(error.localizedDescription)")
+            return false
+        }
         let dates = Dictionary(
-            ((try? context.fetch(FetchDescriptor<Meeting>())) ?? []).map { ($0.id, $0.createdAt) },
+            meetings.map { ($0.id, $0.createdAt) },
             uniquingKeysWith: { first, _ in first }
         )
         for fact in pending {
@@ -43,6 +55,12 @@ enum KnowledgeMigration {
                 ))
             }
             fact.sources = rebuilt
+            // The quote and corroborator list were just copied into `sources`,
+            // which every read now consults instead. Left behind, the quote is
+            // a second copy of transcript content that deletion would have to
+            // remember to scrub — clearing it here means deletion never has to.
+            fact.legacySourceQuote = nil
+            fact.legacyCorroboratedByMeetingIDs = nil
         }
         do {
             try context.save()

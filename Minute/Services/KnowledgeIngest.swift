@@ -118,9 +118,17 @@ enum KnowledgeIngest {
                    KnowledgeText.statesTheSame(duplicate.originalText, candidate.fact) {
                     // The restatement brings its own quote now, so the row no
                     // longer depends on one meeting's phrasing to explain it.
+                    let newestBefore = duplicate.capturedAt
                     duplicate.addSource(FactSource(
                         meetingID: meetingID, quote: quote, capturedAt: meeting.createdAt
                     ))
+                    // A dated source can make this fact the entity's newest,
+                    // and synthesis is fed newest-first with "prefer the newer
+                    // on conflict" — the count-based freshness marker cannot
+                    // see a reorder, so mark the entity for a rebuild.
+                    if duplicate.capturedAt != newestBefore, let entity = duplicate.entity {
+                        touched[entity.id] = entity
+                    }
                 }
                 result.duplicatesDropped += 1
                 continue

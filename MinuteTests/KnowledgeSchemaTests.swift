@@ -152,6 +152,12 @@ struct KnowledgeSchemaTests {
         // capturedAt is derived, so it follows the newest statement.
         #expect(fact.capturedAt == restater.createdAt)
 
+        // The legacy copies were consumed into `sources` and scrubbed, so a
+        // later deletion never has to remember to clear a second copy of the
+        // quote, and a re-run has no corroborators to duplicate.
+        #expect(fact.legacySourceQuote == nil)
+        #expect(fact.legacyCorroboratedByMeetingIDs == nil)
+
         // Idempotent: a second pass leaves a fact that already has sources alone.
         #expect(KnowledgeMigration.backfillSources(context: context))
         #expect(fact.sources.count == 2)

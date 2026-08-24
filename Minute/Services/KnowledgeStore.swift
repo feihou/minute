@@ -66,8 +66,24 @@ enum KnowledgeStore {
         var changed = false
         for fact in allFacts {
             let before = fact.sources
+            // Empty BEFORE pruning means the launch backfill has not run for
+            // this row yet (a failed store read, for instance). Its support
+            // still lives in the legacy columns, so treating it as unsupported
+            // would delete knowledge a retry would have recovered. Skip it;
+            // the backfill runs every launch and will fill it in.
+            guard !before.isEmpty else { continue }
             fact.sources.removeAll { !liveIDs.contains($0.meetingID) }
             guard fact.sources.count != before.count else { continue }
+            // The legacy columns are dead storage after backfill, but they can
+            // still name the meeting being deleted — and a quote from it is
+            // meeting content this deletion promised to remove. Re-seat them on
+            // a surviving source so nothing on the row references the dead one.
+            if !fact.sources.isEmpty, !liveIDs.contains(fact.legacySourceMeetingID),
+               let survivor = fact.sources.first {
+                fact.legacySourceMeetingID = survivor.meetingID
+                fact.legacyCapturedAt = survivor.capturedAt
+                fact.legacySourceQuote = nil
+            }
             changed = true
             if let entity = fact.entity {
                 changedEntities.insert(entity.id)
