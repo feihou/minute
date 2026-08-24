@@ -176,4 +176,35 @@ struct KnowledgeSchemaTests {
         #expect(sources.defaultValue != nil)
     }
 
+    @Test func backfillInvalidatesANarrativeItsDatingReordered() throws {
+        let context = try makeContainer().mainContext
+        let older = Meeting(title: "Older", createdAt: .now.addingTimeInterval(-7200))
+        let newer = Meeting(title: "Newer")
+        context.insert(older)
+        context.insert(newer)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        // Written pre-upgrade, when the corroborator had no date of its own and
+        // this fact looked like the older statement.
+        entity.synthesis = "Written under the old ordering."
+        entity.synthesizedFactCount = 1
+        context.insert(entity)
+        let fact = KnowledgeFact(
+            text: "Sarah leads Atlas", originalText: "Sarah leads Atlas",
+            status: .autoCaptured, sources: [], entity: entity
+        )
+        fact.legacySourceMeetingID = older.id
+        fact.legacyCapturedAt = older.createdAt
+        fact.legacyCorroboratedByMeetingIDs = [newer.id]
+        context.insert(fact)
+        try context.save()
+
+        #expect(KnowledgeMigration.backfillSources(context: context))
+
+        // The corroborator's real date is newer, so the fact's derived date
+        // moved and the newest-first feed reordered — the count-based marker
+        // cannot see that, so backfill must clear it.
+        #expect(fact.capturedAt == newer.createdAt)
+        #expect(entity.synthesizedFactCount == nil)
+    }
+
 }

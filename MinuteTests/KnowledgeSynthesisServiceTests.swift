@@ -147,4 +147,46 @@ struct KnowledgeSynthesisServiceTests {
         #expect(fresh == true)
         #expect(calls == 0)
     }
+    @Test func aMidAwaitRestatementRetriggersSynthesisWithTheReorderedFeed() async throws {
+        let context = try makeContext()
+        let older = Meeting(title: "older", createdAt: .now.addingTimeInterval(-7200))
+        let newer = Meeting(title: "newer")
+        context.insert(older)
+        context.insert(newer)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        let restated = KnowledgeFact(
+            text: "Sarah leads Atlas", originalText: "Sarah leads Atlas",
+            status: .approved, sourceMeetingID: older.id, capturedAt: older.createdAt, entity: entity
+        )
+        context.insert(restated)
+        context.insert(KnowledgeFact(
+            text: "Sarah owns Q3", originalText: "Sarah owns Q3",
+            status: .approved, sourceMeetingID: older.id,
+            capturedAt: older.createdAt.addingTimeInterval(60), entity: entity
+        ))
+        try context.save()
+
+        // While the model is writing, a newer meeting restates the first fact:
+        // no id changes, but the newest-first feed reorders under the await.
+        var feeds: [[String]] = []
+        let fresh = await KnowledgeSynthesisService.refreshIfStale(entity, context: context) { _, _, facts in
+            if feeds.isEmpty {
+                restated.addSource(FactSource(
+                    meetingID: newer.id, quote: "quote", capturedAt: newer.createdAt
+                ))
+            }
+            feeds.append(facts)
+            return "narrative over \(facts.first ?? "nothing")"
+        }
+
+        #expect(fresh)
+        // An id-set snapshot would have stamped the first narrative fresh; the
+        // recency-aware snapshot retries, so the committed narrative was built
+        // from the reordered feed with the restated fact now first.
+        #expect(feeds.count == 2)
+        #expect(feeds.last?.first == "Sarah leads Atlas")
+        #expect(entity.synthesis == "narrative over Sarah leads Atlas")
+    }
+
 }

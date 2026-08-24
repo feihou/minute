@@ -38,6 +38,11 @@ enum KnowledgeMigration {
             meetings.map { ($0.id, $0.createdAt) },
             uniquingKeysWith: { first, _ in first }
         )
+        // Entities whose narrative was written before their facts' real dates
+        // were known: giving a corroborator its own (newer) date can reorder
+        // the newest-first feed synthesis reads, and the count-based marker
+        // cannot see a reorder.
+        var reordered: [UUID: KnowledgeEntity] = [:]
         for fact in pending {
             var rebuilt = [FactSource(
                 meetingID: fact.legacySourceMeetingID,
@@ -55,12 +60,20 @@ enum KnowledgeMigration {
                 ))
             }
             fact.sources = rebuilt
+            if let entity = fact.entity,
+               fact.status == .autoCaptured || fact.status == .approved,
+               rebuilt.map(\.capturedAt).max() != fact.legacyCapturedAt {
+                reordered[entity.id] = entity
+            }
             // The quote and corroborator list were just copied into `sources`,
             // which every read now consults instead. Left behind, the quote is
             // a second copy of transcript content that deletion would have to
             // remember to scrub — clearing it here means deletion never has to.
             fact.legacySourceQuote = nil
             fact.legacyCorroboratedByMeetingIDs = nil
+        }
+        for entity in reordered.values {
+            entity.synthesizedFactCount = nil
         }
         do {
             try context.save()
