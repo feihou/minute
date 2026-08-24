@@ -59,6 +59,13 @@ struct KnowledgeSynthesisService {
     /// clear, or it wasn't stale to begin with) — `false` means an attempt
     /// could not complete (model unavailable, or a caught error), so the
     /// caller knows not to keep showing a "generating" state for nothing.
+    /// One line per settled fact, in feed order, carrying id and recency —
+    /// equal snapshots mean the model saw exactly this list in exactly this
+    /// order with exactly these dates.
+    private static func factsSnapshot(_ facts: [KnowledgeFact]) -> [String] {
+        facts.map { "\($0.id.uuidString)|\($0.capturedAt.timeIntervalSinceReferenceDate)" }
+    }
+
     @MainActor
     @discardableResult
     static func refreshIfStale(
@@ -79,9 +86,11 @@ struct KnowledgeSynthesisService {
         // Ingest can replace facts while the model is writing — a same-count
         // re-extraction flips the staleness marker nil-to-nil, so no new
         // view task starts, and committing here would stamp a narrative of
-        // vanished facts as fresh. Snapshot the fact identity, re-check
-        // after the await, retry on the fresh set; bounded so a churning
-        // ingest can't pin the model.
+        // vanished facts as fresh. Snapshot the fact identity AND recency:
+        // a restatement mid-await adds a source without changing any id, but
+        // it reorders the newest-first feed this narrative was written from.
+        // Re-check after the await, retry on the fresh set; bounded so a
+        // churning ingest can't pin the model.
         for _ in 0..<3 {
             // Settled facts only: drafts are badged individually on the
             // page, so the narrative must never present them as knowledge.
@@ -95,11 +104,11 @@ struct KnowledgeSynthesisService {
                 try? context.save()
                 return true
             }
-            let snapshotIDs = Set(settled.map(\.id))
+            let snapshot = Self.factsSnapshot(settled)
             do {
                 let narrative = try await synthesize(entity.name, entity.kind, settled.map(\.text))
                 guard !entity.isDeleted else { return true }
-                guard Set(entity.settledFacts.map(\.id)) == snapshotIDs else { continue }
+                guard Self.factsSnapshot(entity.settledFacts) == snapshot else { continue }
                 entity.synthesis = narrative.isEmpty ? nil : narrative
                 entity.synthesizedFactCount = settled.count
                 try? context.save()

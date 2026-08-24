@@ -119,4 +119,92 @@ struct KnowledgeSchemaTests {
         #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).count == 1)
         #expect(entity.synthesizedFactCount == nil)
     }
+    @Test func factsWrittenBeforeSourcesGetThemBuiltFromTheOldColumns() throws {
+        let context = try makeContainer().mainContext
+        let source = Meeting(title: "Source", createdAt: .now.addingTimeInterval(-7200))
+        let restater = Meeting(title: "Restater")
+        context.insert(source)
+        context.insert(restater)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        // Exactly how a row looks after the lightweight migration: the old
+        // columns carry the data and `sources` is empty.
+        let fact = KnowledgeFact(
+            text: "Sarah leads Atlas", originalText: "Sarah leads Atlas",
+            status: .autoCaptured, sources: [], entity: entity
+        )
+        fact.legacySourceMeetingID = source.id
+        fact.legacySourceQuote = "I'm leading Atlas"
+        fact.legacyCapturedAt = source.createdAt
+        fact.legacyCorroboratedByMeetingIDs = [restater.id]
+        context.insert(fact)
+        try context.save()
+
+        #expect(KnowledgeMigration.backfillSources(context: context))
+
+        #expect(fact.sourceMeetingIDs == [source.id, restater.id])
+        // The primary keeps its validated quote.
+        #expect(fact.sources.first?.quote == "I'm leading Atlas")
+        // A corroborator never had a date of its own; its meeting's real date
+        // is used rather than inheriting the primary's.
+        #expect(fact.sources.last?.capturedAt == restater.createdAt)
+        #expect(fact.sources.last?.quote == nil)
+        // capturedAt is derived, so it follows the newest statement.
+        #expect(fact.capturedAt == restater.createdAt)
+
+        // The legacy copies were consumed into `sources` and scrubbed, so a
+        // later deletion never has to remember to clear a second copy of the
+        // quote, and a re-run has no corroborators to duplicate.
+        #expect(fact.legacySourceQuote == nil)
+        #expect(fact.legacyCorroboratedByMeetingIDs == nil)
+
+        // Idempotent: a second pass leaves a fact that already has sources alone.
+        #expect(KnowledgeMigration.backfillSources(context: context))
+        #expect(fact.sources.count == 2)
+    }
+
+    /// The one migration failure lightweight migration cannot survive is a
+    /// mandatory attribute added without a default: existing rows have no value
+    /// to fill it with, store creation fails, and MinuteApp silently falls back
+    /// to in-memory storage — an upgrading user loses persistence. `sources`
+    /// shipped that way once; this pins the default so it cannot again.
+    @Test func sourcesCarriesADefaultSoExistingStoresCanMigrate() throws {
+        let schema = Schema([Meeting.self, KnowledgeEntity.self, KnowledgeFact.self])
+        let fact = try #require(schema.entities.first { $0.name == "KnowledgeFact" })
+        let sources = try #require(fact.attributes.first { $0.name == "sources" })
+        #expect(!sources.isOptional)
+        #expect(sources.defaultValue != nil)
+    }
+
+    @Test func backfillInvalidatesANarrativeItsDatingReordered() throws {
+        let context = try makeContainer().mainContext
+        let older = Meeting(title: "Older", createdAt: .now.addingTimeInterval(-7200))
+        let newer = Meeting(title: "Newer")
+        context.insert(older)
+        context.insert(newer)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        // Written pre-upgrade, when the corroborator had no date of its own and
+        // this fact looked like the older statement.
+        entity.synthesis = "Written under the old ordering."
+        entity.synthesizedFactCount = 1
+        context.insert(entity)
+        let fact = KnowledgeFact(
+            text: "Sarah leads Atlas", originalText: "Sarah leads Atlas",
+            status: .autoCaptured, sources: [], entity: entity
+        )
+        fact.legacySourceMeetingID = older.id
+        fact.legacyCapturedAt = older.createdAt
+        fact.legacyCorroboratedByMeetingIDs = [newer.id]
+        context.insert(fact)
+        try context.save()
+
+        #expect(KnowledgeMigration.backfillSources(context: context))
+
+        // The corroborator's real date is newer, so the fact's derived date
+        // moved and the newest-first feed reordered — the count-based marker
+        // cannot see that, so backfill must clear it.
+        #expect(fact.capturedAt == newer.createdAt)
+        #expect(entity.synthesizedFactCount == nil)
+    }
+
 }
