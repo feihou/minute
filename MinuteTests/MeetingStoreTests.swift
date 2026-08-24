@@ -68,10 +68,22 @@ struct MeetingStoreTests {
         defaults.removeObject(forKey: AppSettings.iCloudBackupKey)
         defer { previous.map { defaults.set($0, forKey: AppSettings.iCloudBackupKey) } }
 
+        // Apply the policy here rather than trusting the launch-time pass:
+        // `backupPolicyApplied` sticks once per process, so this test otherwise
+        // asserts whatever ambient state the host launch and earlier tests left
+        // on the real Application Support directory — which made it flake under
+        // parallel scheduling. Applying with the default (off) setting and
+        // asserting the result tests the same promise deterministically.
+        #expect(MeetingStore.applyBackupPolicy())
         let directory = try MeetingStore.recordingsDirectory()
         let base = directory.deletingLastPathComponent()
         let values = try base.resourceValues(forKeys: [.isExcludedFromBackupKey])
-        #expect(values.isExcludedFromBackup == true)
+        // The message names the directory read and the ephemeral flag because
+        // this test's one historic failure mode is the host app silently
+        // falling back to in-memory storage at launch (a failed store
+        // migration), which routes recordingsDirectory() to tmp.
+        #expect(values.isExcludedFromBackup == true,
+                "base=\(base.path) ephemeral=\(MeetingStore.useEphemeralStorage)")
     }
 
     // On a scratch directory, not the real Application Support tree, so tests

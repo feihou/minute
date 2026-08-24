@@ -157,4 +157,17 @@ struct KnowledgeSchemaTests {
         #expect(fact.sources.count == 2)
     }
 
+    /// The one migration failure lightweight migration cannot survive is a
+    /// mandatory attribute added without a default: existing rows have no value
+    /// to fill it with, store creation fails, and MinuteApp silently falls back
+    /// to in-memory storage — an upgrading user loses persistence. `sources`
+    /// shipped that way once; this pins the default so it cannot again.
+    @Test func sourcesCarriesADefaultSoExistingStoresCanMigrate() throws {
+        let schema = Schema([Meeting.self, KnowledgeEntity.self, KnowledgeFact.self])
+        let fact = try #require(schema.entities.first { $0.name == "KnowledgeFact" })
+        let sources = try #require(fact.attributes.first { $0.name == "sources" })
+        #expect(!sources.isOptional)
+        #expect(sources.defaultValue != nil)
+    }
+
 }

@@ -47,7 +47,13 @@ final class KnowledgeFact {
     /// consult both, and deleting the primary meant mutating the row to look
     /// like one of the others. Uniform entries make those bugs unwriteable:
     /// nothing is promoted, and the date and quote below are derived.
-    var sources: [FactSource]
+    /// The `= []` is load-bearing: it is the default CoreData applies to
+    /// existing rows during lightweight migration. Without it the migration
+    /// fails ("missing attribute values on mandatory destination attribute"),
+    /// MinuteApp silently falls back to in-memory storage, and an upgrading
+    /// user loses persistence. `KnowledgeMigration.backfillSources` fills the
+    /// empty lists from the legacy columns at launch.
+    var sources: [FactSource] = []
     var reviewedAt: Date?
     var supersededByID: UUID?
     /// Salted hash of (normalized originalText, entity ID). Set on rejection
