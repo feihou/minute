@@ -79,6 +79,10 @@ struct MinuteApp: App {
         let catchUp = KnowledgeCatchUp()
         let mainContext = container.mainContext
         jobs.onContentChanged = { catchUp.nudge(context: mainContext) }
+        // Extraction yields to work the user is waiting on: every job (the
+        // automatic post-save summary included) pauses the loop, and the
+        // job's completion nudge lifts that pause.
+        jobs.onWorkStarted = { catchUp.pauseForWork() }
         _meetingJobs = State(initialValue: jobs)
         _knowledgeCatchUp = State(initialValue: catchUp)
     }
@@ -126,7 +130,10 @@ struct MinuteApp: App {
             backgroundMirror?.cancel()
             backgroundMirror = nil
             if scenePhase == .active {
-                knowledgeCatchUp.nudge(context: container.mainContext)
+                // Resume, not nudge: a scene pause is lifted only by a resume,
+                // so a plain nudge would leave the loop parked after the first
+                // background trip.
+                knowledgeCatchUp.resume(context: container.mainContext)
             } else {
                 // Foreground-only: FM rate-limits background apps anyway.
                 knowledgeCatchUp.pause()
