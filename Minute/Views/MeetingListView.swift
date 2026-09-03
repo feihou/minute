@@ -501,15 +501,33 @@ struct MeetingListView: View {
 
     private func handleDeepLink(_ url: URL) {
         guard let deepLink = MinuteDeepLink(url: url) else { return }
-        switch deepLink {
-        case .newMeeting:
-            deepLinkState.receive(deepLink)
-            guard activeSession == nil else { return }
+        deepLinkState.receive(deepLink)
+        switch MeetingDeepLinkState.action(
+            for: deepLink,
+            isRecording: activeSession != nil,
+            isShowingNewMeeting: showingNewMeeting
+        ) {
+        case .ignore:
+            break
+        case .presentNewMeeting:
+            dismissPresentedSheets()
             beginNewMeeting()
-        case .meeting:
-            deepLinkState.receive(deepLink)
+        case .openMeeting:
+            dismissPresentedSheets()
             resolvePendingMeetingDeepLink()
         }
+    }
+
+    /// Clears anything modal covering the navigation stack, so a deep link's
+    /// destination is what the user actually sees. A meeting link used to push
+    /// the detail *underneath* an open Settings sheet — the user who tapped a
+    /// widget row got Settings until they found Done. Clearing
+    /// `showingNewMeeting` here is safe for the new-meeting link too: that
+    /// case only reaches this when the sheet is already down.
+    private func dismissPresentedSheets() {
+        showingSettings = false
+        showingImporter = false
+        showingNewMeeting = false
     }
 
     private func resolvePendingMeetingDeepLink() {
