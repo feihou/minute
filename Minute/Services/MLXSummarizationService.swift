@@ -197,7 +197,7 @@ enum MLXModelStore {
 
 // MARK: - Job gate
 
-/// Serializes local-model work across the whole app.
+/// Serializes MLX summary jobs across the whole app.
 ///
 /// Each summarize job builds its own service instance and loads its own
 /// 1-2.3 GB container (deliberately: keeping the weights resident between
@@ -207,6 +207,12 @@ enum MLXModelStore {
 /// away — and two containers resident together is what pushes the app past
 /// the foreground memory limit on the very devices the catalog's floors
 /// admit, killing it with both jobs lost and no failure recorded.
+///
+/// Scope is MLX summarization only: Whisper transcription does not run through
+/// this gate, so a resident Whisper model can still sit alongside a container —
+/// the co-residency the `container` comment below names. That is the memory
+/// headroom the catalog's floors already budget for; two summary containers is
+/// the case they do not.
 actor MLXJobGate {
     static let shared = MLXJobGate()
 
@@ -214,21 +220,47 @@ actor MLXJobGate {
     /// the wait instead of sitting on "Loading the summary model…".
     static let waitingStatus = "Waiting for another local-model job to finish…"
 
+    /// One queued job. Carrying a ticket rather than relying on position is
+    /// what lets cancellation pull a specific job out of the line without ever
+    /// resuming a continuation `release()` already took — resuming twice traps.
+    private struct QueuedJob {
+        let ticket: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
     private var isRunning = false
-    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var waiting: [QueuedJob] = []
 
     /// Runs `body` once no other local-model job is running, calling
     /// `onWaiting` first when this job has to queue. The gate reopens as soon
-    /// as `body` returns OR throws — a failed job must never wedge the queue.
+    /// as `body` returns OR throws — a failed job must never wedge the queue —
+    /// and a job cancelled while queued throws `CancellationError` at once,
+    /// without ever taking the gate.
     ///
     /// `body` is a labelled parameter, not a trailing one: callers pass two
     /// closures, and a labelled-plus-trailing pair is what SwiftLint's
     /// multiple_closures_with_trailing_closure rejects.
-    nonisolated func run<T>(
+    ///
+    /// `T: Sendable` because the value crosses from `body`'s main-actor
+    /// isolation back to a nonisolated caller.
+    nonisolated func run<T: Sendable>(
         onWaiting: @escaping @MainActor @Sendable () -> Void,
         body: @MainActor () async throws -> T
     ) async throws -> T {
-        await acquire(onWaiting: onWaiting)
+        let ticket = UUID()
+        try await withTaskCancellationHandler(
+            operation: { try await acquire(ticket: ticket, onWaiting: onWaiting) },
+            onCancel: {
+                // A fresh unstructured Task because the handler runs
+                // synchronously on whatever thread cancelled and so cannot
+                // touch actor state; Task {} does not inherit the cancellation
+                // that just fired, so this hop actually gets to run.
+                Task { await self.cancelQueuedJob(ticket) }
+            }
+        )
+        // Past this line the gate is held, so it must be reopened however the
+        // job ends. `acquire` throws only when it never took the gate, which is
+        // why the release lives here and not in a defer around the acquire.
         do {
             let value = try await body()
             await release()
@@ -239,22 +271,58 @@ actor MLXJobGate {
         }
     }
 
-    private func acquire(onWaiting: @escaping @MainActor @Sendable () -> Void) async {
+    private func acquire(ticket: UUID, onWaiting: @escaping @MainActor @Sendable () -> Void) async throws {
+        // A job the user already stopped must not take the gate at all, free or
+        // not: taking it would start minutes of on-device generation for work
+        // nobody is waiting on, and hold every other meeting's job behind it.
+        try Task.checkCancellation()
         if isRunning {
             await onWaiting()
         }
         // A loop, not a single suspension: release() wakes one waiter, but a
         // job arriving in between can take the gate first.
         while isRunning {
-            await withCheckedContinuation { waiting.append($0) }
+            try await waitForTurn(ticket: ticket)
         }
         isRunning = true
+    }
+
+    /// Suspends until `release()` picks this job, or throws the moment the job
+    /// is cancelled.
+    ///
+    /// A plain `withCheckedContinuation` ignores cancellation, which left a
+    /// stopped job pinned to the queue for the whole length of the other
+    /// meeting's generation — minutes, with Stop already tapped — and, because
+    /// MeetingJobs clears its per-meeting in-flight slot only when the task
+    /// body ends, shut that meeting out of every later job as well.
+    private func waitForTurn(ticket: UUID) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            // Cancelled between the check above and this line: the handler has
+            // already run and found nothing in the queue to pull out, so this
+            // job has to fail itself rather than wait for a wake-up nobody will
+            // send. Safe to read here because the body runs on this actor,
+            // before the suspension.
+            if Task.isCancelled {
+                continuation.resume(throwing: CancellationError())
+            } else {
+                waiting.append(QueuedJob(ticket: ticket, continuation: continuation))
+            }
+        }
+    }
+
+    /// Fails a queued job's suspension so Stop is felt while it is still in
+    /// line. A no-op once the job left the queue — it either already holds the
+    /// gate or was resumed by `release()`, and in both cases it releases on its
+    /// own way out, so no wake-up is lost.
+    private func cancelQueuedJob(_ ticket: UUID) {
+        guard let index = waiting.firstIndex(where: { $0.ticket == ticket }) else { return }
+        waiting.remove(at: index).continuation.resume(throwing: CancellationError())
     }
 
     private func release() {
         isRunning = false
         guard !waiting.isEmpty else { return }
-        waiting.removeFirst().resume()
+        waiting.removeFirst().continuation.resume()
     }
 }
 
@@ -339,8 +407,10 @@ final class MLXSummarizationService: SummarizationEngine {
         // `let container` is declared below and this defer clears the
         // instance property, not that local.
         defer { self.container = nil }
-        // A job cancelled while it queued behind another must not start a
-        // full generation now that its turn came.
+        // Backstop for the one interleaving the gate deliberately doesn't
+        // cover: a job cancelled at the very instant release() woke it takes
+        // the gate rather than dropping that wake-up on the floor, and must
+        // not start a full generation now that its turn came.
         try Task.checkCancellation()
 
         onProgress?("Loading the summary model…")
