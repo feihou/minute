@@ -110,4 +110,12 @@ struct SummaryGenerationTests {
         // it automatically would also wipe the error the user should read.
         #expect(!jobs.claimAutoSummary(for: meeting))
     }
+
+    @Test func noTextMessageSaysWhetherTheOldTranscriptWasKept() {
+        let kept = MeetingJobs.noTextMessage(keptExistingTranscript: true)
+        let fresh = MeetingJobs.noTextMessage(keptExistingTranscript: false)
+        #expect(kept.contains("existing transcript was kept"))
+        #expect(!fresh.contains("kept"))
+        #expect(fresh.hasPrefix("Re-transcription produced no text"))
+    }
 }

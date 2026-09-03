@@ -135,17 +135,11 @@ final class MeetingJobs {
             guard !meeting.isDeleted else { return }
             // A pass that produced nothing — the device language no longer
             // matching the audio, say — must not be mistaken for "this meeting
-            // has no speech". Replacing a good transcript with it destroys the
-            // only copy the user has.
-            guard !segments.isEmpty || !meeting.hasTranscript else {
-                // Whisper auto-detects the language, so the "device language"
-                // hint only applies to Apple Speech.
-                let hint = AppSettings.transcriptionEngine == .appleSpeech
-                    ? " Check that the iPhone's language matches the language spoken in this meeting."
-                    : ""
-                throw JobMessage(
-                    message: "Re-transcription produced no text, so the existing transcript was kept." + hint
-                )
+            // has no speech". Applying it would either destroy the only copy
+            // the user has, or silently leave a transcript-less meeting
+            // looking exactly as it did before they asked.
+            guard !segments.isEmpty else {
+                throw JobMessage(message: Self.noTextMessage(keptExistingTranscript: meeting.hasTranscript))
             }
             MeetingJobs.applyNewTranscript(segments, to: meeting)
             try? meeting.modelContext?.save()
@@ -213,6 +207,16 @@ final class MeetingJobs {
         meeting.segments = segments
         meeting.speakerNames = nil
         meeting.knowledgeExtractedAt = nil
+    }
+
+    /// Why an empty re-transcription is reported instead of applied. The
+    /// language hint only applies to Apple Speech; Whisper auto-detects.
+    static func noTextMessage(keptExistingTranscript: Bool) -> String {
+        let kept = keptExistingTranscript ? ", so the existing transcript was kept" : ""
+        let hint = AppSettings.transcriptionEngine == .appleSpeech
+            ? " Check that the iPhone's language matches the language spoken in this meeting."
+            : ""
+        return "Re-transcription produced no text\(kept)." + hint
     }
 
     /// Adopts the model's title only while the meeting still carries the
