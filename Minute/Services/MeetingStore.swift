@@ -67,28 +67,97 @@ enum MeetingStore {
         return applied
     }
 
-    /// Sets the backup-exclusion flag on one directory, and pins the data
-    /// protection class while we are here. Split out so tests can exercise the
-    /// flip on a scratch directory instead of racing concurrent tests over the
-    /// shared Application Support tree.
+    /// Sets the backup-exclusion flag on one directory. Split out so tests can
+    /// exercise the flip on a scratch directory instead of racing concurrent
+    /// tests over the shared Application Support tree. The data protection
+    /// class is applied separately — see `applyDataProtection`, which has to
+    /// run after the SwiftData container exists.
     static func setExcludedFromBackup(_ excluded: Bool, at url: URL) throws {
         var url = url
         var values = URLResourceValues()
         values.isExcludedFromBackup = excluded
         try url.setResourceValues(values)
-        // Meeting audio and transcripts are about as sensitive as this app's
-        // data gets. The default class keeps them readable once the phone has
-        // been unlocked a single time since boot — i.e. essentially always,
-        // which is exactly the state a stolen phone is in. `completeUnlessOpen`
-        // keeps an in-progress recording writable across a lock while leaving
-        // everything at rest unreadable until the next unlock.
-        //
-        // Set on the directory, which is what new files inherit; recordings
-        // made before this shipped keep the class they were created with.
-        try FileManager.default.setAttributes(
-            [.protectionKey: FileProtectionType.completeUnlessOpen],
-            ofItemAtPath: url.path
-        )
+    }
+
+    /// The subdirectory of Application Support that holds meeting audio.
+    private static let recordingsDirectoryName = "Recordings"
+
+    /// SwiftData's on-disk files for the default configuration: the database
+    /// plus its write-ahead log and shared-memory siblings. Named explicitly
+    /// because both the data-protection pass and the fallback reset have to
+    /// address them one by one — a directory attribute never reaches a file
+    /// that already exists, and deleting only `default.store` leaves a -wal a
+    /// later open replays.
+    static let storeFileNames = ["default.store", "default.store-wal", "default.store-shm"]
+
+    /// The data protection class Minute pins on its own files.
+    ///
+    /// Not `completeUnlessOpen` (class B), which is what this used to set.
+    /// A class-B file that is closed cannot be reopened once the device locks,
+    /// and Minute reads its own files precisely then: the iCloud Drive mirror
+    /// starts on `scenePhase == .background`, which is exactly what locking the
+    /// phone produces, and it copies each recording with `FileManager.copyItem`
+    /// after the class key has been discarded; re-transcription and speaker
+    /// identification open the audio (and the Whisper/MLX model files) after a
+    /// model-preparation wait the user may well spend with the phone locked.
+    /// The failures surfaced as "the last backup to iCloud Drive didn't
+    /// finish — check that you're signed in to iCloud" while iCloud was fine.
+    /// `completeUntilFirstUserAuthentication` still leaves everything
+    /// unreadable until the first unlock after a reboot — the state a stolen
+    /// powered-off phone is in — without breaking those reads.
+    static let dataProtectionClass = FileProtectionType.completeUntilFirstUserAuthentication
+
+    /// Pins the data protection class on everything Minute writes: the
+    /// Application Support directory (so new files inherit it), the Recordings
+    /// directory (which on an install upgraded from before the policy shipped
+    /// already exists and keeps whatever class it was created with, so new
+    /// audio inherits the wrong one), and the SwiftData store files, which
+    /// `ModelContainer` creates before any policy runs and which a directory
+    /// attribute therefore never reaches. `setAttributes` on a directory is not
+    /// recursive and only governs what is created inside it afterwards, which
+    /// is why each of these is named. Call once at launch, after the container
+    /// is open. Returns false when something could not be set.
+    ///
+    /// `apply` is injected so tests can assert what gets which class: the
+    /// simulator accepts `.protectionKey` and then reports it back as nil, so
+    /// reading the attribute afterwards would assert nothing.
+    @discardableResult
+    static func applyDataProtection(
+        base: URL? = nil,
+        apply: (URL, FileProtectionType) throws -> Void = { url, protection in
+            try FileManager.default.setAttributes([.protectionKey: protection], ofItemAtPath: url.path)
+        }
+    ) -> Bool {
+        var succeeded = true
+        do {
+            let root = try base ?? FileManager.default.url(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+            let recordings = root.appendingPathComponent(recordingsDirectoryName, isDirectory: true)
+            try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+            var targets = [root, recordings]
+            for name in storeFileNames {
+                let url = root.appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    targets.append(url)
+                }
+            }
+            for url in targets {
+                do {
+                    try apply(url, dataProtectionClass)
+                } catch {
+                    logger.error("Pinning the data protection class on \(url.lastPathComponent) failed: \(error.localizedDescription)")
+                    succeeded = false
+                }
+            }
+        } catch {
+            logger.error("Applying data protection failed: \(error.localizedDescription)")
+            succeeded = false
+        }
+        return succeeded
     }
 
     /// A local-only SwiftData configuration. The iCloud Documents
@@ -138,7 +207,7 @@ enum MeetingStore {
             appropriateFor: nil,
             create: true
         )
-        let directory = base.appendingPathComponent("Recordings", isDirectory: true)
+        let directory = base.appendingPathComponent(recordingsDirectoryName, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }

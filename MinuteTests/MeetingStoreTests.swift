@@ -106,6 +106,44 @@ struct MeetingStoreTests {
         #expect(values.isExcludedFromBackup == false)
     }
 
+    /// F34/F35: the class was pinned on Application Support only, which does
+    /// not reach the SwiftData store (ModelContainer creates it before any
+    /// policy runs) nor a Recordings directory that already existed. And the
+    /// class itself was wrong: `completeUnlessOpen` files cannot be reopened
+    /// after the phone locks, which is exactly when the iCloud Drive mirror
+    /// and the job engines read them.
+    ///
+    /// The applier is injected because the simulator accepts `.protectionKey`
+    /// and reports it back as nil — reading the attribute would assert
+    /// nothing about what was requested.
+    @Test func dataProtectionCoversTheStoreFilesAndTheRecordingsDirectory() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("protection-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        // The store files exist before any policy runs. The -shm sibling
+        // deliberately does not, so the pass is shown to skip what is absent
+        // rather than throw on it.
+        try Data("db".utf8).write(to: base.appendingPathComponent("default.store"))
+        try Data("wal".utf8).write(to: base.appendingPathComponent("default.store-wal"))
+
+        var applied: [(name: String, protection: FileProtectionType)] = []
+        let succeeded = MeetingStore.applyDataProtection(base: base) { url, protection in
+            applied.append((url.lastPathComponent, protection))
+        }
+
+        #expect(succeeded)
+        #expect(applied.map(\.name) == [
+            base.lastPathComponent,
+            "Recordings",
+            "default.store",
+            "default.store-wal",
+        ])
+        #expect(Set(applied.map(\.protection)) == [.completeUntilFirstUserAuthentication])
+        // Created if missing, so a fresh install's audio inherits the class.
+        #expect(FileManager.default.fileExists(atPath: base.appendingPathComponent("Recordings").path))
+    }
+
     @Test func ephemeralModeRoutesAudioToTemporaryDirectoryAndWipesIt() throws {
         MeetingStore.useEphemeralStorage = true
         defer { MeetingStore.useEphemeralStorage = false }

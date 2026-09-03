@@ -45,6 +45,10 @@ struct MinuteApp: App {
         // recordings may still sit in Application Support — apply the user's
         // backup choice to it regardless of which directory receives new audio.
         MeetingStore.applyBackupPolicy()
+        // After the container above, not before: the store files exist only
+        // once ModelContainer has created them, and a class set on the
+        // directory never reaches a file that already exists.
+        MeetingStore.applyDataProtection()
         // A crash or force-quit mid-recording leaves its Live Activity on the
         // lock screen; no recording survives process death, so clear them.
         RecordingLiveActivityController.endOrphans()
