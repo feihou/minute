@@ -133,6 +133,15 @@ enum KnowledgeStore {
                 }
             }
         }
+        // Historical stores hold person entities named "Speaker 3": extraction
+        // learned only later that a diarization placeholder is a different
+        // person in every meeting, so one page mixes strangers. They go the way
+        // of any doomed entity — the cascade takes their facts — and nothing
+        // recreates them, because the extractor now drops the name before it
+        // can reach ingest.
+        for entity in allEntities where KnowledgeExtractionService.isSpeakerPlaceholder(entity.name) {
+            doomed[entity.id] = entity
+        }
         settleInboundRedirects(to: &doomed, among: allEntities, removedIDs: removedIDs)
         for entity in doomed.values {
             context.delete(entity)
