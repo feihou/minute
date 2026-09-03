@@ -207,7 +207,6 @@ enum MeetingStore {
     @discardableResult
     static func delete(_ meeting: Meeting, context: ModelContext) -> Bool {
         let audioFileName = meeting.audioFileName
-        let meetingID = meeting.id
         context.delete(meeting)
         do {
             try context.save()
@@ -227,12 +226,15 @@ enum MeetingStore {
             deleteAudioFile(named: audioFileName)
         }
         // A fact's sources are a codable list rather than a SwiftData
-        // relationship, so nothing cascades to them — drop this meeting's
-        // support explicitly, or a deleted meeting keeps speaking through the
-        // facts it produced. Deliberately after the meeting delete commits: a
-        // failure here must not resurrect the meeting, and the launch pass in
-        // MeetingListView catches whatever a failed save leaves behind.
-        _ = meetingID
+        // relationship, so nothing cascades to them — a deleted meeting would
+        // keep speaking through the facts it produced. `reconcile` takes no
+        // meeting on purpose: with sources a uniform list, dropping one
+        // deleted meeting's support and reconciling the whole library are the
+        // same pass, so this both retires the facts only this meeting
+        // supported and clears anything an earlier failed pass left behind.
+        // Deliberately after the meeting delete commits: a failure here must
+        // not resurrect the meeting, and the launch pass in MeetingListView
+        // catches whatever a failed save leaves behind.
         KnowledgeStore.reconcile(context: context)
         return true
     }
