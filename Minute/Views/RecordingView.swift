@@ -59,7 +59,7 @@ struct RecordingView: View {
             ) {
                 Button("Discard Recording", role: .destructive) {
                     Task {
-                        await session.discard()
+                        await session.discard(in: context)
                         onFinish(nil)
                     }
                 }
@@ -132,7 +132,7 @@ struct RecordingView: View {
                             confirmingDiscard = true
                         } else {
                             Task {
-                                await session.discard()
+                                await session.discard(in: context)
                                 onFinish(nil)
                             }
                         }

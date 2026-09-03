@@ -59,11 +59,17 @@ final class RecordingSession: Identifiable {
     /// implying the recording still needs attention.
     private var noticeClearTask: Task<Void, Never>?
     private let startedAt = Date()
-    /// Captured once when recording stops; kept until a save succeeds so a
-    /// failed context.save() can be retried without touching the recorder.
-    /// Value data (not a Meeting instance) so every save attempt inserts a
-    /// fresh model object and a failed attempt can be discarded cleanly.
-    private var finishedRecording: (duration: TimeInterval, segments: [TranscriptSegment])?
+    /// Recorded duration banked when capture stopped, so a retried save still
+    /// has it after the recorder went idle.
+    private var recordedDuration: TimeInterval?
+    /// The row written as soon as capture stopped, before the transcript was
+    /// finalized. Kept so a retry (the transcript save failed) updates that
+    /// meeting instead of inserting a second one for the same audio.
+    private var savedMeeting: Meeting?
+    /// The finalized transcript, banked so a retried save doesn't wait on the
+    /// engine a second time — and so `saveWithoutTranscript()` can decide what
+    /// gets written.
+    private var pendingSegments: [TranscriptSegment]?
     /// Set the moment the user discards; a finish() resuming from an await
     /// afterwards must not save the meeting they just threw away.
     private var didDiscard = false
@@ -216,9 +222,20 @@ final class RecordingSession: Identifiable {
         }
     }
 
-    /// Stops everything, saves the meeting, and returns it. Returns nil when
-    /// persistence fails — the session enters `.failed` with the audio intact,
-    /// and calling finish again retries just the save.
+    /// Stops everything, saves the meeting, and returns it.
+    ///
+    /// The row is written BEFORE the transcript is finalized. The audio file is
+    /// complete and playable the moment `recorder.stop()` returns, but nothing
+    /// references it until a Meeting exists and the launch sweep deletes every
+    /// unreferenced recording — while finalizing (a Whisper final pass over up
+    /// to five minutes of tail) can easily outlive the ~30 s background
+    /// assertion that is all we have once stop() deactivates the audio session.
+    /// Persisting first means a suspension or jettison there costs the
+    /// transcript, which Re-transcribe can rebuild, instead of the meeting.
+    ///
+    /// Returns nil when a save failed — the session enters `.failed` with the
+    /// audio (and, past the first save, the meeting) intact, and calling finish
+    /// again retries only the step that failed.
     func finish(in context: ModelContext) async -> Meeting? {
         // One finish at a time, never after a discard, and never again after
         // a successful save — a stale second call would otherwise build a
@@ -227,47 +244,83 @@ final class RecordingSession: Identifiable {
         phase = .saving
         // recorder.stop() below deactivates the audio session, which is the
         // only thing keeping a backgrounded app alive. Swiping Home while the
-        // transcript finalizes would otherwise let iOS suspend us mid-save and
-        // cost the user the whole meeting.
+        // transcript finalizes would otherwise let iOS suspend us mid-save.
         let token = BackgroundTaskToken(name: "Save recording")
         defer { token.end() }
 
-        if finishedRecording == nil {
+        if recordedDuration == nil {
             transcriptionTask?.cancel()
-            let duration = recorder.stop()
-            let segments = await transcription.finish()
-            // The user may have discarded while the transcript finalized —
-            // never resurrect a recording they threw away.
-            guard !didDiscard else { return nil }
-            finishedRecording = (duration, segments)
+            recordedDuration = recorder.stop()
         }
-        guard let finishedRecording else { return nil }
+        guard let duration = recordedDuration else { return nil }
 
-        let saved = Self.savedTitles(draft: title, prefilledDefault: prefilledDefaultTitle)
-        let meeting = Meeting(
-            title: saved.title,
-            defaultTitle: saved.defaultTitle,
-            createdAt: startedAt,
-            duration: finishedRecording.duration,
-            audioFileName: audioFileName,
-            segments: finishedRecording.segments
-        )
-        context.insert(meeting)
+        if savedMeeting == nil {
+            let saved = Self.savedTitles(draft: title, prefilledDefault: prefilledDefaultTitle)
+            let meeting = Meeting(
+                title: saved.title,
+                defaultTitle: saved.defaultTitle,
+                createdAt: startedAt,
+                duration: duration,
+                audioFileName: audioFileName,
+                segments: []
+            )
+            context.insert(meeting)
+            do {
+                try context.save()
+                savedMeeting = meeting
+            } catch {
+                Self.logger.error("Saving meeting failed: \(error.localizedDescription)")
+                // Cancel only THIS pending insert — a context-wide rollback()
+                // would also destroy unrelated unsaved edits in the shared main
+                // context. Declaring the meeting saved instead would let the next
+                // orphan sweep delete its audio.
+                context.delete(meeting)
+                phase = .failed(
+                    "The meeting couldn't be saved — storage may be full. Free up space and tap Save Recording to try again.",
+                    canOpenSettings: false
+                )
+                return nil
+            }
+        }
+        guard let meeting = savedMeeting else { return nil }
+
+        if pendingSegments == nil {
+            let finalized = await transcription.finish()
+            if didDiscard {
+                // Discarded while the transcript finalized: the row written
+                // above points at audio `discard(in:)` has already deleted, so
+                // it goes with it. Never resurrect a recording the user threw
+                // away, and never leave a meeting pointing at nothing.
+                // `discard(in:)` runs on this actor between our awaits and may
+                // already have removed the row, so ask before removing it
+                // again — a committed delete leaves isDeleted false.
+                if !meeting.isGone {
+                    MeetingStore.delete(meeting, context: context)
+                }
+                savedMeeting = nil
+                return nil
+            }
+            // `saveWithoutTranscript()` may have banked the segments while we
+            // waited — it cancels the engine, which clears the engine's copy.
+            if pendingSegments == nil {
+                pendingSegments = finalized
+            }
+        }
+        guard let segments = pendingSegments else { return nil }
+
+        meeting.segments = segments
         do {
             try context.save()
             didSave = true
-            self.finishedRecording = nil
             phase = .idle
             return meeting
         } catch {
-            Self.logger.error("Saving meeting failed: \(error.localizedDescription)")
-            // Cancel only THIS pending insert — a context-wide rollback()
-            // would also destroy unrelated unsaved edits in the shared main
-            // context. Declaring the meeting saved instead would let the next
-            // orphan sweep delete its audio.
-            context.delete(meeting)
+            Self.logger.error("Saving the transcript failed: \(error.localizedDescription)")
+            // The recording itself is safe — the meeting and its audio were
+            // committed above. Only the transcript is unwritten, so keep the
+            // meeting and let Save Recording retry just this step.
             phase = .failed(
-                "The meeting couldn't be saved — storage may be full. Free up space and tap Save Recording to try again.",
+                "The transcript couldn't be saved — storage may be full. The recording is saved; free up space and tap Save Recording to try again.",
                 canOpenSettings: false
             )
             return nil
@@ -275,16 +328,25 @@ final class RecordingSession: Identifiable {
     }
 
     /// Stops everything and deletes the partial audio file (user discarded).
-    func discard() async {
+    /// Takes the context because `finish(in:)` persists the meeting before the
+    /// transcript is finalized: a discard arriving after that (or after a
+    /// failed transcript save) has a row to remove, and leaving it would keep
+    /// a meeting whose audio this method just deleted.
+    func discard(in context: ModelContext) async {
         didDiscard = true
         transcriptionTask?.cancel()
         recorder.stop()
         await transcription.cancel()
+        if let savedMeeting, !savedMeeting.isGone {
+            MeetingStore.delete(savedMeeting, context: context)
+        }
+        savedMeeting = nil
         if let audioFileName {
             MeetingStore.deleteAudioFile(named: audioFileName)
         }
         audioFileName = nil
-        finishedRecording = nil
+        recordedDuration = nil
+        pendingSegments = nil
         didStartRecording = false
         phase = .idle
     }

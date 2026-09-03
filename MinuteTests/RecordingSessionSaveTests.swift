@@ -88,4 +88,72 @@ struct RecordingSessionSaveTests {
 
         #expect(session.transcription === engine)
     }
+
+    /// The audio file is complete and playable the moment recorder.stop()
+    /// returns, but nothing references it until a Meeting row exists — and the
+    /// launch sweep deletes unreferenced recordings. Finalizing a Whisper tail
+    /// can outlast the ~30 s background assertion, so the row has to be written
+    /// first: a suspension then costs the transcript, not the meeting.
+    @Test func theMeetingIsSavedBeforeTheTranscriptIsFinalized() async throws {
+        let context = try makeContext()
+        let engine = ParkedTranscriptionEngine()
+        engine.finalSegments = [TranscriptSegment(text: "landed after the save", start: 0, end: 1)]
+        let session = RecordingSession(
+            title: "  Board review  ",
+            prefilledDefaultTitle: "Meeting Sep 2, 2026 at 9:30 AM",
+            transcription: engine
+        )
+
+        let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        engine.onFinishEntered = { enteredContinuation.yield(()) }
+        let finishTask = Task { @MainActor in await session.finish(in: context)?.id }
+        var iterator = entered.makeAsyncIterator()
+        _ = await iterator.next()
+
+        // Mid-finalization: the meeting is already on disk, transcript pending.
+        let parked = try context.fetch(FetchDescriptor<Meeting>())
+        #expect(parked.count == 1)
+        #expect(parked.first?.title == "Board review")
+        #expect(parked.first?.segments.isEmpty == true)
+
+        engine.release()
+        let finishedID = await finishTask.value
+        #expect(finishedID != nil)
+
+        // Same row, now carrying the transcript — never a second meeting for
+        // the same audio.
+        let saved = try context.fetch(FetchDescriptor<Meeting>())
+        #expect(saved.count == 1)
+        #expect(saved.first?.id == finishedID)
+        #expect(saved.first?.segments.map(\.text) == ["landed after the save"])
+        #expect(session.phase == .idle)
+    }
+
+    /// Persisting first means a discard arriving mid-finalization has a row to
+    /// clean up: the audio it points at is already gone, and a meeting must
+    /// never survive pointing at deleted audio.
+    @Test func discardingWhileTheTranscriptFinalizesRemovesTheRowItAlreadyWrote() async throws {
+        let context = try makeContext()
+        let engine = ParkedTranscriptionEngine()
+        engine.finalSegments = [TranscriptSegment(text: "never wanted", start: 0, end: 1)]
+        let session = RecordingSession(
+            title: "Throwaway",
+            prefilledDefaultTitle: "Throwaway",
+            transcription: engine
+        )
+
+        let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        engine.onFinishEntered = { enteredContinuation.yield(()) }
+        let finishTask = Task { @MainActor in await session.finish(in: context)?.id }
+        var iterator = entered.makeAsyncIterator()
+        _ = await iterator.next()
+        #expect(try context.fetch(FetchDescriptor<Meeting>()).count == 1)
+
+        await session.discard(in: context)
+        let finishedID = await finishTask.value
+
+        #expect(finishedID == nil)
+        #expect(try context.fetch(FetchDescriptor<Meeting>()).isEmpty)
+        #expect(session.phase == .idle)
+    }
 }
