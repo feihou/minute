@@ -19,6 +19,15 @@ final class WhisperDownloadCenter {
     /// screen is reopened.
     private(set) var finishedCount = 0
 
+    /// variant → a non-failure explanation for a stopped download. iOS ending
+    /// the app's background window is not a failure: the partial files stay
+    /// on disk and Get resumes, so this renders in secondary text while
+    /// `errors` stays red.
+    private(set) var notices: [String: String] = [:]
+
+    /// Shown when iOS ended the background window mid-download.
+    static let backgroundPauseNotice = "Paused when Minute went to the background. Tap Get to resume."
+
     private var tasks: [String: Task<Void, Never>] = [:]
 
     private init() {}
@@ -39,8 +48,22 @@ final class WhisperDownloadCenter {
         // Already in flight — never start a second task on the same folder.
         guard tasks[variant] == nil else { return }
         errors[variant] = nil
+        notices[variant] = nil
         progress[variant] = 0
         tasks[variant] = Task {
+            // A 150-630 MB transfer over an ordinary URLSession dies the
+            // moment iOS suspends the app, which happens seconds after the
+            // user switches away. The token buys the OS-granted window; when
+            // it expires we cancel the transfer ourselves so it ends as a
+            // resumable pause with the partial files kept, instead of a
+            // "the network connection was lost" error the user reads as a
+            // failure of the download itself.
+            let token = BackgroundTaskToken(name: "Whisper model download") { [weak self] in
+                guard let self else { return }
+                self.notices[variant] = Self.backgroundPauseNotice
+                self.tasks[variant]?.cancel()
+            }
+            defer { token.end() }
             do {
                 try await WhisperModelStore.download(variant) { [weak self] fraction in
                     // A straggler callback can land after cleanup below;

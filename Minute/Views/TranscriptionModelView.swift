@@ -130,6 +130,11 @@ struct TranscriptionModelView: View {
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
+                    if let notice = downloads.notices[model.variant] {
+                        Text(notice)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .buttonStyle(.plain)
