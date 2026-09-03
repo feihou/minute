@@ -442,6 +442,12 @@ struct MeetingListView: View {
     /// (`MeetingJobs.onContentChanged`), as does the Brain tab's own `.task`;
     /// nudging now would only make extraction and that summary contend for the
     /// single on-device model.
+    ///
+    /// That second case leans on a fallback: when the selected summary engine
+    /// is unavailable, or the summary throws, no completion nudge ever
+    /// arrives, and the meeting waits for the Brain tab's own `.task` or the
+    /// next scene activation to be read — later than a nudge here, but never
+    /// lost.
     private func nudgeBrain(for meeting: Meeting) {
         guard meeting.hasTranscript, !destinationAutoSummarizes else { return }
         catchUp.nudge(context: context)
