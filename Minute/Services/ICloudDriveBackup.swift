@@ -645,12 +645,7 @@ enum ICloudDriveBackup {
             // removed, would report the run incomplete over folders that are
             // correctly gone.
             if isDeletedSinceSnapshot(item.meetingID) {
-                let movedFrom = parked.removeValue(forKey: item.meetingID)
-                var folders = (owned[item.meetingID] ?? []).filter { $0 != movedFrom }
-                if let current = live.removeValue(forKey: item.meetingID), !folders.contains(current) {
-                    folders.append(current)
-                }
-                for url in folders where !removeMirror(at: url) {
+                if !takeBack(item.meetingID, owned: owned, parked: &parked, live: &live) {
                     outcome = .incomplete
                 }
                 continue
@@ -663,7 +658,13 @@ enum ICloudDriveBackup {
                     into: placed.url,
                     created: placed.created,
                     verifyRecordingContents: (owned[item.meetingID]?.count ?? 0) > 1,
-                    shouldContinue: shouldContinue
+                    // A recording can be hundreds of megabytes and the copy
+                    // runs to completion once started, so this is where a run
+                    // spends nearly all of its time — and where a deletion is
+                    // most likely to land. Let it stop the copy at the next
+                    // check rather than finish writing a meeting that is
+                    // already gone.
+                    shouldContinue: { shouldContinue() && !isDeletedSinceSnapshot(item.meetingID) }
                 )
             } catch {
                 // One unmirrorable meeting still must not block the rest — but
@@ -671,6 +672,17 @@ enum ICloudDriveBackup {
                 // know that before it tells the user everything is safe.
                 outcome = .incomplete
                 logger.error("Mirroring \(item.folderName) failed: \(error.localizedDescription)")
+            }
+            // The check above is minutes old by the time a large recording has
+            // finished copying, so ask again with the folder already written:
+            // otherwise the meeting stays in `chosen`, the sweep below skips
+            // it on that basis, and the run reports a complete backup with a
+            // deleted transcript sitting in iCloud Drive until a later sync.
+            // Failing to write it changes nothing here — a partly written
+            // folder is exactly what has to go.
+            if isDeletedSinceSnapshot(item.meetingID),
+               !takeBack(item.meetingID, owned: owned, parked: &parked, live: &live) {
+                outcome = .incomplete
             }
         }
 
@@ -707,6 +719,39 @@ enum ICloudDriveBackup {
             }
         }
         return outcome
+    }
+
+    /// Removes everything one meeting owns and forgets it, for a meeting the
+    /// user deleted while this run was mirroring it. Deliberately kept out of
+    /// the sweep below, which judges by `chosen`: the sweep cannot see a folder
+    /// this run parked under a staging name, and — handed URLs already removed
+    /// here — would report the run incomplete over folders that are correctly
+    /// gone. Forgetting the meeting in `live` is what stops the duplicate prune
+    /// from looking at it afterwards.
+    ///
+    /// Returns whether every removal succeeded; false means a deleted
+    /// meeting's bytes are still in iCloud Drive, which the caller reports.
+    private nonisolated static func takeBack(
+        _ meetingID: String,
+        owned: [String: [URL]],
+        parked: inout [String: URL],
+        live: inout [String: URL]
+    ) -> Bool {
+        let movedFrom = parked.removeValue(forKey: meetingID)
+        var folders = (owned[meetingID] ?? []).filter { $0 != movedFrom }
+        if let current = live.removeValue(forKey: meetingID), !folders.contains(current) {
+            folders.append(current)
+        }
+        var removed = true
+        for url in folders {
+            // `owned` was read before this run renamed anything, so a folder
+            // it names may since have moved to the name the item asked for —
+            // and removing what is no longer there would count a folder that
+            // is correctly gone as a removal that failed.
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            if !removeMirror(at: url) { removed = false }
+        }
+        return removed
     }
 
     /// Whether the kept folder is safe enough for duplicate copies to go.

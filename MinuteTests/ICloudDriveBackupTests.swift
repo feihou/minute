@@ -314,6 +314,65 @@ struct ICloudDriveBackupTests {
         #expect(outcome == .complete)
     }
 
+    /// The window the pre-write check cannot see: the delete lands while
+    /// `write` is already copying this meeting's recording, which is where a
+    /// run spends nearly all of its time on a real library. The folder stays in
+    /// `chosen`, and `chosen` is what the stale-folder sweep judges by — so
+    /// without a recheck nothing later in the run takes it back, and the run
+    /// reports success over a deleted meeting's transcript and audio.
+    @Test func mirrorTakesBackAMeetingDeletedWhileItsRecordingWasCopying() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+
+        let deletedID = UUID()
+        // A noted deletion lives for the rest of the process, so hand it back
+        // however this test ends — the way MeetingStore does when the delete
+        // turns out not to have committed.
+        defer { ICloudDriveBackup.noteMeetingDeleteFailed(deletedID) }
+
+        let deletedName = "2026-08-03 09.30 Deleted"
+        let keptName = "2026-08-03 10.00 Kept"
+        let kept = item(folderName: keptName, notes: "# kept")
+        let firstTake = try recording(in: documents, bytes: "first take")
+        let deleted = item(
+            id: deletedID.uuidString,
+            folderName: deletedName,
+            notes: "# secret transcript",
+            audio: firstTake
+        )
+        try ICloudDriveBackup.mirror([deleted, kept], into: documents)
+
+        // A re-recording gives the second run something to copy: unchanged
+        // notes and unchanged audio are both skipped, and the run would never
+        // reach the check this test trips.
+        let secondTake = try recording(in: documents, bytes: "second take")
+        let retaken = item(
+            id: deletedID.uuidString,
+            folderName: deletedName,
+            notes: "# secret transcript",
+            audio: secondTake
+        )
+        // Checks: the one before any folder is touched, one per meeting in the
+        // parking pass, the item loop's own — and then the fifth, inside
+        // `write`, with the recording's bytes already on disk.
+        let trip = Trip(from: 5) { ICloudDriveBackup.noteMeetingDeleted(deletedID) }
+        let outcome = try ICloudDriveBackup.mirror(
+            [retaken, kept],
+            into: documents,
+            shouldContinue: { trip.check() }
+        )
+
+        // Nothing of that meeting is left: not the folder an earlier run gave
+        // it, and not the recording that had just landed in it.
+        #expect(!FileManager.default.fileExists(atPath: documents.appendingPathComponent(deletedName).path))
+        // Taking back a meeting the user deleted is the run doing its job, not
+        // failing at it.
+        #expect(outcome == .complete)
+        // And it carried on to the meeting after it.
+        let keptFolder = documents.appendingPathComponent(keptName, isDirectory: true)
+        #expect(try String(contentsOf: keptFolder.appendingPathComponent("notes.md"), encoding: .utf8) == "# kept")
+    }
+
     /// Deleting a meeting is not a one-way door: `MeetingStore.delete` puts
     /// the row back and reports failure when the save throws, and the user is
     /// told the delete did not happen. That meeting still exists, so the note
