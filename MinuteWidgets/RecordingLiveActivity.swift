@@ -12,12 +12,12 @@ struct RecordingLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    StatusBadge(isPaused: context.state.isPaused)
+                    StatusBadge(isPaused: context.state.isPaused, isStale: context.isStale)
                         .font(.callout)
                         .padding(.leading, 6)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    TimerText(state: context.state)
+                    TimerText(state: context.state, isStale: context.isStale)
                         .font(.title3.weight(.medium))
                         .padding(.trailing, 6)
                 }
@@ -30,7 +30,7 @@ struct RecordingLiveActivity: Widget {
             } compactLeading: {
                 StatusIcon(isPaused: context.state.isPaused)
             } compactTrailing: {
-                TimerText(state: context.state)
+                TimerText(state: context.state, isStale: context.isStale)
                     .font(.caption2)
                     .foregroundStyle(context.state.isPaused ? Color.orange : Color.red)
                     .frame(maxWidth: 52)
@@ -66,11 +66,11 @@ private struct LockScreenView: View {
                 Text(context.attributes.title)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
-                StatusBadge(isPaused: context.state.isPaused)
+                StatusBadge(isPaused: context.state.isPaused, isStale: context.isStale)
                     .font(.caption)
             }
             Spacer(minLength: 8)
-            TimerText(state: context.state)
+            TimerText(state: context.state, isStale: context.isStale)
                 .font(.system(size: 30, weight: .medium, design: .rounded))
         }
         .padding(16)
@@ -82,9 +82,12 @@ private struct LockScreenView: View {
 
 private struct TimerText: View {
     let state: RecordingActivityAttributes.ContentState
+    /// A stale card's app is gone: freeze the clock at the last value it sent
+    /// rather than keep counting up over a recording that is not happening.
+    var isStale = false
 
     var body: some View {
-        if state.isPaused {
+        if state.isPaused || isStale {
             Text(Duration.seconds(state.elapsed)
                 .formatted(.time(pattern: state.elapsed >= 3600 ? .hourMinuteSecond : .minuteSecond)))
                 .monospacedDigit()
@@ -100,15 +103,24 @@ private struct TimerText: View {
 
 private struct StatusBadge: View {
     let isPaused: Bool
+    var isStale = false
+
+    private var tint: Color {
+        if isStale { return .secondary }
+        return isPaused ? .orange : .red
+    }
 
     var body: some View {
         HStack(spacing: 5) {
             Circle()
-                .fill(isPaused ? Color.orange : Color.red)
+                .fill(tint)
                 .frame(width: 7, height: 7)
-            Text(isPaused ? "Paused" : "Recording")
+            // The app stopped refreshing this card: it can no longer claim a
+            // recording is running, and saying so is the only cue the user
+            // gets to reopen Minute.
+            Text(isStale ? "Minute isn't running" : (isPaused ? "Paused" : "Recording"))
                 .fontWeight(.semibold)
-                .foregroundStyle(isPaused ? Color.orange : Color.red)
+                .foregroundStyle(tint)
         }
     }
 }

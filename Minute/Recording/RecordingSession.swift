@@ -49,6 +49,10 @@ final class RecordingSession: Identifiable {
     let prefilledDefaultTitle: String
     private var audioFileName: String?
     private var transcriptionTask: Task<Void, Never>?
+    /// Pushes the Live Activity's stale date forward while this session is
+    /// alive. Cancelled the moment recording ends, so a process that dies
+    /// mid-recording simply stops refreshing and the card goes stale.
+    private var activityRefreshTask: Task<Void, Never>?
     private let startedAt = Date()
     /// Captured once when recording stops; kept until a save succeeds so a
     /// failed context.save() can be retried without touching the recorder.
@@ -249,11 +253,14 @@ final class RecordingSession: Identifiable {
             } else {
                 liveActivity.update(isPaused: false, elapsed: recorder.elapsed)
             }
+            startActivityRefresh()
         case .paused:
             liveActivity.update(isPaused: true, elapsed: recorder.elapsed)
+            startActivityRefresh()
         case .idle, .saving, .failed:
             // The recorder has stopped (or never started) in all three —
             // ending is a no-op when no activity was requested.
+            stopActivityRefresh()
             liveActivity.end()
         case .preparing:
             break
@@ -268,6 +275,26 @@ final class RecordingSession: Identifiable {
     /// while the saved meeting is named "Meeting <date>".
     var liveActivityTitle: String {
         Self.savedTitles(draft: title, prefilledDefault: prefilledDefaultTitle).title
+    }
+
+    /// How often the Live Activity's stale date is pushed forward.
+    static let liveActivityRefreshInterval: TimeInterval = 60
+
+    private func startActivityRefresh() {
+        guard activityRefreshTask == nil else { return }
+        activityRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Self.liveActivityRefreshInterval))
+                guard !Task.isCancelled, let self else { return }
+                guard self.phase == .recording || self.phase == .paused else { return }
+                self.liveActivity.update(isPaused: self.phase == .paused, elapsed: self.recorder.elapsed)
+            }
+        }
+    }
+
+    private func stopActivityRefresh() {
+        activityRefreshTask?.cancel()
+        activityRefreshTask = nil
     }
 
     /// `nonisolated` because it touches no session state: that lets it stand
