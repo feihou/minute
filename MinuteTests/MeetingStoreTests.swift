@@ -227,6 +227,9 @@ struct MeetingStoreTests {
     /// install upgraded from the shipped class-B build keeps class B on that
     /// root until something re-stamps it. So both the root and the Preferences
     /// directory are named, for the same reason every other target here is.
+    ///
+    /// Nothing else is: on a container that has never held a snapshot the pass
+    /// stamps what exists and creates no plist for one to be written into.
     @Test func dataProtectionStampsTheAppGroupTheLockedWidgetReads() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("protection-\(UUID().uuidString)", isDirectory: true)
@@ -249,6 +252,47 @@ struct MeetingStoreTests {
             "Recordings",
             group.lastPathComponent,
             "Preferences",
+        ])
+        #expect(Set(applied.map(\.protection)) == [.completeUntilFirstUserAuthentication])
+        #expect(!FileManager.default.fileExists(
+            atPath: preferences.appendingPathComponent("\(WidgetConstants.appGroupIdentifier).plist").path
+        ))
+    }
+
+    /// The upgrade case the Preferences directory alone does not cover.
+    /// `setAttributes` is not recursive, so a snapshot plist written under the
+    /// shipped `.completeUnlessOpen` build keeps that class after the directory
+    /// holding it is re-stamped — and `WidgetSnapshotStore.save` suppresses a
+    /// write whose value has not changed, so a user whose library is stable
+    /// never rewrites the plist and the widget stays blank on the lock screen
+    /// for good. `UserDefaults` names a suite's plist after the suite, which is
+    /// the App Group identifier here, so the pass can name the file directly.
+    @Test func dataProtectionRestampsTheWidgetSnapshotPlistThatAlreadyExists() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("protection-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let group = FileManager.default.temporaryDirectory
+            .appendingPathComponent("group-\(UUID().uuidString)", isDirectory: true)
+        let preferences = group.appendingPathComponent("Library/Preferences", isDirectory: true)
+        try FileManager.default.createDirectory(at: preferences, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: group) }
+        try Data("plist".utf8).write(
+            to: preferences.appendingPathComponent("\(WidgetConstants.appGroupIdentifier).plist")
+        )
+
+        var applied: [(name: String, protection: FileProtectionType)] = []
+        let succeeded = MeetingStore.applyDataProtection(base: base, appGroup: group) { url, protection in
+            applied.append((url.lastPathComponent, protection))
+        }
+
+        #expect(succeeded)
+        #expect(applied.map(\.name) == [
+            base.lastPathComponent,
+            "Recordings",
+            group.lastPathComponent,
+            "Preferences",
+            "group.com.minuteapp.Minute.plist",
         ])
         #expect(Set(applied.map(\.protection)) == [.completeUntilFirstUserAuthentication])
     }

@@ -145,19 +145,25 @@ enum MeetingStore {
     /// current class. The directories are stamped only if they are there; this
     /// pass does not materialise a cache for someone who downloaded no model.
     ///
-    /// The App Group container gets the same treatment: its root, and
-    /// `<group>/Library/Preferences` when it is there — the directory
-    /// `UserDefaults` writes the widget snapshot plist into. The reader that
+    /// The App Group container gets the same treatment, in three targets: its
+    /// root, `<group>/Library/Preferences` when it is there — the directory
+    /// `UserDefaults` writes the widget snapshot plist into — and that plist
+    /// itself, `<group>/Library/Preferences/<app group>.plist`. The reader that
     /// decides this is the widget extension's timeline provider, which runs
     /// while the device is locked; a snapshot it cannot open is a blank widget
-    /// on the lock screen, the same symptom class as the recordings above. And
-    /// the group root is the same upgrade trap once more: an install upgraded
-    /// from the shipped build carries class B there — `setExcludedFromBackup`
-    /// used to stamp it — and keeps it until something re-stamps it, so naming
-    /// the root is what closes the forward path for a plist written later.
-    /// Both are stamped only if they are there; this pass creates nothing in
-    /// the container, and the container itself is nil wherever the entitlement
-    /// is not in force, which is the case the `appGroup` default resolves.
+    /// on the lock screen, the same symptom class as the recordings above. The
+    /// group root is the same upgrade trap as everything else here: an install
+    /// upgraded from the shipped build carries class B there —
+    /// `setExcludedFromBackup` used to stamp it — and keeps it until something
+    /// re-stamps it, so naming the root is what closes the forward path for a
+    /// plist written later. The plist is named for the backward path, because
+    /// stamping the directory does not reach inside it: an existing snapshot
+    /// file keeps class B, and `WidgetSnapshotStore` skips a save whose value
+    /// has not changed, so a library that is not growing never rewrites it.
+    /// All three are stamped only if they are there; this pass creates nothing
+    /// in the container, and the container itself is nil wherever the
+    /// entitlement is not in force, which is the case the `appGroup` default
+    /// resolves.
     ///
     /// `apply` is injected so tests can assert what gets which class: the
     /// simulator accepts `.protectionKey` and then reports it back as nil, so
@@ -231,6 +237,19 @@ enum MeetingStore {
             let preferences = appGroup.appendingPathComponent("Library/Preferences", isDirectory: true)
             if FileManager.default.fileExists(atPath: preferences.path) {
                 targets.append(preferences)
+            }
+            // The plist itself, not only the directory holding it — the same
+            // non-recursive trap the recordings hit. On an install upgraded
+            // from the build that stamped the group `.completeUnlessOpen` the
+            // existing snapshot file keeps that class, and WidgetSnapshotStore
+            // suppresses a write whose value has not changed, so a user whose
+            // library is stable never rewrites it: the widget would stay blank
+            // while locked for good. `UserDefaults` names a suite's plist after
+            // the suite, which is the App Group identifier.
+            let snapshot = preferences
+                .appendingPathComponent("\(WidgetConstants.appGroupIdentifier).plist")
+            if FileManager.default.fileExists(atPath: snapshot.path) {
+                targets.append(snapshot)
             }
         }
         for url in targets {
