@@ -37,6 +37,13 @@ struct SettingsView: View {
     @State private var deleteAllFailed = false
     @State private var backupPolicyFailed = false
     @State private var mirrorTask: Task<Void, Never>?
+    @State private var confirmingStoreReset = false
+    @State private var storeResetFailed = false
+    /// Set once the reset has run. The process keeps the in-memory container
+    /// it opened at launch, so the library only comes back empty-and-working
+    /// after a relaunch — the row says so instead of leaving the user to
+    /// wonder why nothing changed.
+    @State private var didResetStore = false
 
     var body: some View {
         NavigationStack {
@@ -45,11 +52,17 @@ struct SettingsView: View {
                 recordingSection
                 summaryContextSection
                 modelsSection
-                // In fallback mode the usage figure and local deletion promise
-                // would be wrong. Backup controls stay visible because the
-                // device-backup choice still governs old persistent data, and
-                // the user must be able to turn either privacy setting off.
-                if !MeetingStore.useEphemeralStorage {
+                // In fallback mode the usage figure and the local deletion
+                // promise would both be wrong — the usage row counts the
+                // session-only tmp directory, and Delete All Meetings iterates
+                // an empty in-memory library — so that mode gets its own
+                // section, which is also the only way out of it. Backup
+                // controls stay visible in both: the device-backup choice
+                // still governs old persistent data, and the user must be able
+                // to turn either privacy setting off.
+                if MeetingStore.useEphemeralStorage {
+                    fallbackStorageSection
+                } else {
                     storageSection
                 }
                 backupSection
@@ -115,6 +128,23 @@ struct SettingsView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text("Storage may be unavailable. The remaining meetings are still in your library — try again later.")
+            }
+            .confirmationDialog(
+                "Delete stored meetings and start over?",
+                isPresented: $confirmingStoreReset,
+                titleVisibility: .visible
+            ) {
+                Button("Delete and Start Over", role: .destructive) {
+                    resetStoredMeetings()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The unreadable meeting database and every recording still on this iPhone will be permanently deleted. This can't be undone.")
+            }
+            .alert("Couldn't delete the stored meetings", isPresented: $storeResetFailed) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Some files couldn't be removed. Storage may be unavailable — try again later.")
             }
         }
     }
@@ -282,6 +312,34 @@ struct SettingsView: View {
             Text("Storage")
         } footer: {
             Text("Deleting removes every meeting, its audio, transcript, and summary from this iPhone, along with everything Brain learned from it. This can't be undone.")
+        }
+    }
+
+    /// The way out of fallback mode, and the only delete path the on-disk
+    /// audio and transcripts have while it lasts.
+    private var fallbackStorageSection: some View {
+        Section {
+            if let message = AppSettings.persistentStoreFailure {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if didResetStore {
+                Label("Quit and reopen Minute to finish.", systemImage: "checkmark.circle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.green)
+            } else {
+                Button(role: .destructive) {
+                    confirmingStoreReset = true
+                } label: {
+                    settingsLabel("Delete stored meetings and start over", systemImage: "trash", tint: .red)
+                        .foregroundStyle(.red)
+                }
+            }
+        } header: {
+            Text("Storage")
+        } footer: {
+            Text("Minute couldn't open its meeting database, so nothing from this session is being saved. Deleting removes that database and every recording still on this iPhone, and the next launch starts with an empty library. This can't be undone.")
         }
     }
 
@@ -491,6 +549,18 @@ struct SettingsView: View {
         }
         usage = MeetingStore.recordingsUsage()
         deleteAllFailed = !allSucceeded
+    }
+
+    /// Fallback mode only. Deletes the unreadable store and the recordings it
+    /// stranded; the persistent container is only re-created at the next
+    /// launch, so success asks for a relaunch rather than claiming the library
+    /// is back.
+    private func resetStoredMeetings() {
+        if MeetingStore.resetPersistentStore() {
+            didResetStore = true
+        } else {
+            storeResetFailed = true
+        }
     }
 
     /// Everything whose change has to re-run the capability check and re-read
