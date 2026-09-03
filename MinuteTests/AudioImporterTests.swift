@@ -90,4 +90,37 @@ struct AudioImporterTests {
 
         MeetingStore.delete(result.meeting, context: context)
     }
+
+    /// An engine whose model is still loading when the import starts —
+    /// Whisper reports this while Core ML specializes the weights.
+    @MainActor
+    private final class LoadingTranscriptionEngine: TranscriptionEngine {
+        var availability: TranscriptionAvailability = .loadingModel
+        var volatileText = ""
+        var segments: [TranscriptSegment] = []
+        var timestampOffset: TimeInterval = 0
+        func prepare() async {}
+        func start(inputFormat: AVAudioFormat) async -> (@Sendable (AVAudioPCMBuffer) -> Void)? { nil }
+        func finish() async -> [TranscriptSegment] { [] }
+        func cancel() async {}
+        func transcribe(file: AVAudioFile) async throws -> [TranscriptSegment] { [] }
+    }
+
+    @Test func importWhileTheModelIsStillLoadingSaysTheModelWasntReady() async throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let source = try makeWavFixture()
+        defer { try? FileManager.default.removeItem(at: source) }
+
+        let result = try await AudioImporter.importAudio(
+            from: source, context: context, transcription: LoadingTranscriptionEngine()
+        )
+
+        // A loading model is a not-ready model, exactly like a downloading
+        // one: the audio is kept and the note says why there's no transcript.
+        #expect(result.meeting.segments.isEmpty)
+        #expect(result.transcriptionNote == "The audio was imported without a transcript because the speech model wasn't ready.")
+
+        MeetingStore.delete(result.meeting, context: context)
+    }
 }

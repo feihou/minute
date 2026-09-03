@@ -266,14 +266,20 @@ final class WhisperTranscriptionService: TranscriptionEngine {
     private func runLiveLoop(feed: WhisperLiveFeed) async {
         // The model loads HERE, not in prepare(), so the feed is already
         // capturing while Core ML compiles — the backlog decodes on the
-        // first pass and the meeting's opening words aren't lost.
+        // first pass and the meeting's opening words aren't lost. Say so:
+        // prepare() reported .available without loading, and the load can
+        // run for minutes on first use with nothing to show for it.
+        availability = .loadingModel
         guard let whisperKit = await loadedWhisperKit() else {
+            // loadedWhisperKit() has already written the actionable
+            // .unavailable text; leave it there rather than claiming ready.
             // Retire the feed: its only consumer is gone, and the recorder's
             // handler would otherwise keep piling audio into it for the rest
             // of the recording (~230 MB/hour) for nothing.
             feed.stop()
             return
         }
+        availability = .available
         // Cancellation bails; a merely-stopped feed does NOT — a recording
         // finished while the model was still loading must fall through to
         // the final pass below, or everything the feed buffered is discarded
