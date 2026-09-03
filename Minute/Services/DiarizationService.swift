@@ -39,6 +39,13 @@ struct DiarizationService {
             throw DiarizationError.modelUnavailable
         }
 
+        // A cancelled job must be discarded rather than applied: MeetingJobs
+        // stays silent for a CancellationError and turns anything else into a
+        // message. Checked outside the catch above so a Stop tapped during the
+        // download is never reported as "the speaker model couldn't be
+        // downloaded".
+        try Task.checkCancellation()
+
         await onProgress?("Identifying speakers on device…")
         let result: DiarizationResult
         do {
@@ -53,6 +60,10 @@ struct DiarizationService {
             Self.logger.error("Diarization failed: \(error.localizedDescription)")
             throw DiarizationError.processingFailed
         }
+
+        // Same again after the long pass: applying speaker ranges to a meeting
+        // the user stopped working on would renumber its transcript behind them.
+        try Task.checkCancellation()
 
         var indices: [String: Int] = [:]
         return result.segments.map { segment in
