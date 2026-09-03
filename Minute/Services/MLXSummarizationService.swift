@@ -176,6 +176,18 @@ enum MLXModelStore {
         return false
     }
 
+    /// True when a snapshot directory holds enough to be worth certifying:
+    /// weights and the config that describes them. ponytail: presence check,
+    /// not a manifest diff — a partial missing only a tokenizer file slips
+    /// through; read model.safetensors.index.json if that ever bites.
+    static func holdsCompleteSnapshot(at directory: URL) -> Bool {
+        let snapshot = (try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil
+        )) ?? []
+        return snapshot.contains { $0.pathExtension == "safetensors" }
+            && snapshot.contains { $0.lastPathComponent == "config.json" }
+    }
+
     static func delete(_ model: MLXSummaryModel) {
         try? FileManager.default.removeItem(at: repoDirectory(for: model))
     }
@@ -196,21 +208,34 @@ enum MLXModelStore {
         )
     }
 
+    /// Asks Hugging Face where this repo's snapshot lives, fetching whatever
+    /// isn't cached yet. The only call in the app that may touch the network
+    /// for a summary model: the Get button, and — once, for a model
+    /// downloaded before the marker recorded a directory — the load path.
+    /// Both go through here so neither has to spell out the revision and
+    /// downloader the other uses.
+    static func resolveSnapshotDirectory(
+        for model: MLXSummaryModel,
+        progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
+    ) async throws -> URL {
+        try await resolve(
+            configuration: ModelConfiguration(id: model.repoID),
+            from: #hubDownloader(hubClient()),
+            useLatest: false,
+            progressHandler: progressHandler
+        ).modelDirectory
+    }
+
     /// Streams the model (weights + tokenizer) from Hugging Face into the
     /// store; partially downloaded files are kept so a retry resumes.
     static func download(
         _ model: MLXSummaryModel,
         onProgress: @escaping @MainActor (Double) -> Void
     ) async throws {
-        let resolved = try await resolve(
-            configuration: ModelConfiguration(id: model.repoID),
-            from: #hubDownloader(hubClient()),
-            useLatest: false,
-            progressHandler: { progress in
-                let fraction = progress.fractionCompleted
-                Task { @MainActor in onProgress(fraction) }
-            }
-        )
+        let directory = try await resolveSnapshotDirectory(for: model) { progress in
+            let fraction = progress.fractionCompleted
+            Task { @MainActor in onProgress(fraction) }
+        }
         // A cancel can be swallowed downstream: when the repo listing fails,
         // HubClient falls back to ANY cached snapshot directory with a
         // matching file, so a cancelled retry can "succeed" with partial
@@ -219,14 +244,8 @@ enum MLXModelStore {
         // The same fallback fires on a plain network failure too (an offline
         // retry after an interrupted download), where no cancel is pending —
         // so also require the resolved snapshot to actually hold weights and
-        // config before certifying it. ponytail: presence check, not a
-        // manifest diff — a partial missing only a tokenizer file slips
-        // through; read model.safetensors.index.json if that ever bites.
-        let snapshot = (try? FileManager.default.contentsOfDirectory(
-            at: resolved.modelDirectory, includingPropertiesForKeys: nil
-        )) ?? []
-        guard snapshot.contains(where: { $0.pathExtension == "safetensors" }),
-              snapshot.contains(where: { $0.lastPathComponent == "config.json" }) else {
+        // config before certifying it.
+        guard holdsCompleteSnapshot(at: directory) else {
             throw IncompleteSnapshotFailure()
         }
         // Only a fully resolved snapshot earns the marker isDownloaded
@@ -235,7 +254,7 @@ enum MLXModelStore {
         // isDownloaded keeps rejecting the model forever. The marker also
         // records this exact snapshot directory, which is what lets loading
         // stay offline.
-        guard writeCompletionMarker(for: model, snapshotDirectory: resolved.modelDirectory) else {
+        guard writeCompletionMarker(for: model, snapshotDirectory: directory) else {
             throw MarkerWriteFailure()
         }
     }
@@ -498,7 +517,7 @@ final class MLXSummarizationService: SummarizationEngine {
             var skipped = 0
             for (index, chunk) in chunks.enumerated() {
                 try Task.checkCancellation()
-                await onProgress?("Reading part \(index + 1) of \(chunks.count)…")
+                onProgress?("Reading part \(index + 1) of \(chunks.count)…")
                 do {
                     notes.append(try await extractNotes(from: chunk, part: index + 1, of: chunks.count, contextBlock: contextBlock, container: container))
                 } catch is CancellationError {
@@ -513,7 +532,7 @@ final class MLXSummarizationService: SummarizationEngine {
                 throw SummarizerError.generationFailed(Self.unreadableMessage)
             }
             try Task.checkCancellation()
-            await onProgress?("Combining notes…")
+            onProgress?("Combining notes…")
             var summary: MeetingSummary
             do {
                 summary = try await merge(notes, template: template, contextBlock: contextBlock, container: container)
@@ -558,36 +577,44 @@ final class MLXSummarizationService: SummarizationEngine {
     /// a ~60 s stall before the first token on a network where the host is
     /// reachable but dead, and a chance of pulling newly added files
     /// mid-generation. Only the Get button may touch the network.
+    ///
+    /// A model downloaded by a build that recorded no directory is resolved
+    /// the old way ONCE — the same call the download makes, so a cached
+    /// snapshot is found — and recorded so every later load is local.
     private func loadedContainer() async throws -> ModelContainer {
         if let container { return container }
         guard let model = MLXModelCatalog.model(for: AppSettings.localSummaryModel) else {
             throw SummarizerError.unavailable("The selected summary model is no longer offered. Choose another in Settings → Summary Model.")
         }
-        let directory = try await snapshotDirectory(for: model)
+        let recorded = MLXModelStore.snapshotDirectory(for: model)
+        let directory: URL
+        if let recorded {
+            directory = recorded
+        } else {
+            directory = try await MLXModelStore.resolveSnapshotDirectory(for: model)
+        }
         let loaded = try await LLMModelFactory.shared.loadContainer(
             from: directory,
             using: #huggingFaceTokenizerLoader()
         )
+        // Recorded only after the load returned, never beside the resolve
+        // above: every later load opens the recorded directory on nothing but
+        // an existence check, so writing one that hasn't proved itself is
+        // permanent. Offline — the case this fallback exists for — a failed
+        // repo listing makes HubClient hand back ANY cached snapshot
+        // directory with a matching file, which after an interrupted earlier
+        // download can be a partial snapshot; recorded, it would fail every
+        // future load while isDownloaded still called the model fine, and the
+        // only way out would be a delete and a multi-gigabyte re-download.
+        // A load that returned is proof the whole snapshot is there — a
+        // stronger check than the weights-and-config one download() settles
+        // for. Best effort: a marker that can't be written costs one resolve
+        // per load, not a failed summary.
+        if recorded == nil {
+            _ = MLXModelStore.writeCompletionMarker(for: model, snapshotDirectory: directory)
+        }
         container = loaded
         return loaded
-    }
-
-    /// The recorded snapshot directory. A model downloaded by a build that
-    /// didn't record one is resolved the old way ONCE — the same call the
-    /// download makes, so a cached snapshot is found — and the marker is
-    /// rewritten so every later load is local.
-    private func snapshotDirectory(for model: MLXSummaryModel) async throws -> URL {
-        if let recorded = MLXModelStore.snapshotDirectory(for: model) { return recorded }
-        let resolved = try await resolve(
-            configuration: ModelConfiguration(id: model.repoID),
-            from: #hubDownloader(MLXModelStore.hubClient()),
-            useLatest: false,
-            progressHandler: { _ in }
-        )
-        // Best effort: a marker that can't be rewritten costs one resolve per
-        // load, not a failed summary.
-        _ = MLXModelStore.writeCompletionMarker(for: model, snapshotDirectory: resolved.modelDirectory)
-        return resolved.modelDirectory
     }
 
     // MARK: Prompts

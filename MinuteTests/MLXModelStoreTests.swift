@@ -65,6 +65,54 @@ struct MLXModelStoreTests {
         #expect(MLXModelStore.snapshotDirectory(for: model) == nil)
     }
 
+    /// A recorded directory is opened by every later load on nothing but an
+    /// existence check, so the only protection against wedging a model on a
+    /// partial snapshot is refusing to record one. The download proves the
+    /// snapshot with holdsCompleteSnapshot; the load path proves it by
+    /// loading before it writes. This pins the assumption both rest on.
+    @Test("A recorded directory is trusted on sight, however little it holds")
+    func recordedDirectoryIsTrustedOnSight() throws {
+        let model = makeModel()
+        defer { MLXModelStore.delete(model) }
+
+        let partial = MLXModelStore.repoDirectory(for: model)
+            .appending(path: "snapshots/partial", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: partial, withIntermediateDirectories: true)
+        #expect(MLXModelStore.writeCompletionMarker(for: model, snapshotDirectory: partial))
+
+        #expect(!MLXModelStore.holdsCompleteSnapshot(at: partial))
+        #expect(MLXModelStore.snapshotDirectory(for: model)?.standardizedFileURL == partial.standardizedFileURL)
+    }
+
+    @Test("A snapshot needs weights and a config to count as complete")
+    func completeSnapshotNeedsWeightsAndConfig() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // An interrupted download leaves one flushed shard behind. Certifying
+        // that would strand the model: the load fails and never re-resolves.
+        try Data(count: 1).write(to: directory.appending(path: "model.safetensors"))
+        #expect(!MLXModelStore.holdsCompleteSnapshot(at: directory))
+
+        try Data(count: 1).write(to: directory.appending(path: "config.json"))
+        #expect(MLXModelStore.holdsCompleteSnapshot(at: directory))
+    }
+
+    @Test("A config alone, and a directory that isn't there, are incomplete")
+    func configAloneAndMissingDirectoryAreIncomplete() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try Data(count: 1).write(to: directory.appending(path: "config.json"))
+        #expect(!MLXModelStore.holdsCompleteSnapshot(at: directory))
+
+        #expect(!MLXModelStore.holdsCompleteSnapshot(at: directory.appending(path: "nope", directoryHint: .isDirectory)))
+    }
+
     @Test("A snapshot outside the store records nothing")
     func snapshotOutsideTheStoreRecordsNothing() throws {
         let model = makeModel()
