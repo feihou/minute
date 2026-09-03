@@ -127,20 +127,42 @@ enum WhisperModelStore {
         }
     }
 
+    /// True when the Core ML files WhisperKit decodes with are all present.
+    /// ponytail: presence checks, no checksums — a corrupted model fails at
+    /// load time and the fix is delete + re-download.
+    private static func hasModelFiles(_ variant: String) -> Bool {
+        let folder = folder(for: variant)
+        let required = ["AudioEncoder.mlmodelc", "TextDecoder.mlmodelc", "MelSpectrogram.mlmodelc", "config.json"]
+        return required.allSatisfy {
+            FileManager.default.fileExists(atPath: folder.appending(path: $0).path)
+        }
+    }
+
     /// True when the pieces WhisperKit needs to load are all present — Core
     /// ML files AND the tokenizer, because a model without its tokenizer
     /// still needs the network on its first transcription, which is exactly
     /// what "downloaded" is supposed to rule out.
-    /// ponytail: presence checks, no checksums — a corrupted model fails at
-    /// load time and the fix is delete + re-download.
     static func isDownloaded(_ variant: String) -> Bool {
-        let folder = folder(for: variant)
-        let required = ["AudioEncoder.mlmodelc", "TextDecoder.mlmodelc", "MelSpectrogram.mlmodelc", "config.json"]
-        let hasModel = required.allSatisfy {
-            FileManager.default.fileExists(atPath: folder.appending(path: $0).path)
-        }
-        return hasModel && hasTokenizer(variant)
+        hasModelFiles(variant) && hasTokenizer(variant)
     }
+
+    /// The transitional state every install from before the tokenizer counted
+    /// is in exactly once: the hundreds of megabytes are on disk, only the few
+    /// megabytes of tokenizer JSON are missing. Worth its own question because
+    /// the alternative is telling someone who already has the model that it
+    /// "isn't downloaded yet" and offering them a 626 MB Get — which is both
+    /// untrue and a download they don't need.
+    static func needsTokenizerUpdate(_ variant: String) -> Bool {
+        hasModelFiles(variant) && !hasTokenizer(variant)
+    }
+
+    /// What every surface says about that state, in one place so the recording
+    /// screen, the model row, and Settings can't drift apart. Nothing is
+    /// fetched automatically: downloads start at the button the user taps.
+    static let tokenizerUpdateMessage = "The Whisper model needs a small one-time update. Tap Update in Settings → Transcription Model."
+    /// The size line under the model row while it needs that update — the full
+    /// download size would be a lie about what tapping the button costs.
+    static let tokenizerUpdateSizeText = "One-time update (a few MB)."
 
     /// Streams the model and its tokenizer from Hugging Face; partially
     /// downloaded files are kept so a retry resumes instead of starting over.
@@ -207,10 +229,16 @@ enum WhisperModelStore {
     /// Any bytes on disk for this variant — including a cancelled or failed
     /// partial download, which the user must still be able to delete: a
     /// disk-full failure can strand hundreds of megabytes that finishing
-    /// the download could never reclaim.
+    /// the download could never reclaim. The tokenizer folder counts too, or
+    /// a leftover tokenizer (its model download failed, or a delete half
+    /// succeeded) would sit there with no Delete affordance on the row.
     static func hasLocalData(_ variant: String) -> Bool {
-        FileManager.default.fileExists(atPath: folder(for: variant).path)
-            || FileManager.default.fileExists(atPath: downloadCache(for: variant).path)
+        if FileManager.default.fileExists(atPath: folder(for: variant).path)
+            || FileManager.default.fileExists(atPath: downloadCache(for: variant).path) {
+            return true
+        }
+        guard let tokenizer = tokenizerFolder(for: variant) else { return false }
+        return FileManager.default.fileExists(atPath: tokenizer.path)
     }
 }
 
@@ -245,8 +273,14 @@ final class WhisperTranscriptionService: TranscriptionEngine {
     /// Face fetch can't start as a surprise side effect.
     func prepare() async {
         guard WhisperModelStore.isDownloaded(variant) else {
+            // Someone who downloaded this model before the tokenizer counted
+            // as part of it has the model — telling them it "isn't downloaded
+            // yet" contradicts what they did and points them at a 626 MB fetch
+            // they don't need.
             availability = .unavailable(
-                "The Whisper model isn't downloaded yet. Get it in Settings → Transcription Model, or switch back to Apple Speech."
+                WhisperModelStore.needsTokenizerUpdate(variant)
+                    ? WhisperModelStore.tokenizerUpdateMessage
+                    : "The Whisper model isn't downloaded yet. Get it in Settings → Transcription Model, or switch back to Apple Speech."
             )
             return
         }

@@ -14,6 +14,10 @@ struct TranscriptionModelView: View {
     /// Variants with only partial files on disk (cancelled or failed
     /// downloads) — still deletable so the stranded space can be reclaimed.
     @State private var partialVariants: Set<String> = []
+    /// Variants downloaded before the tokenizer counted as part of the model:
+    /// the weights are here, a few megabytes of JSON are not. The row offers
+    /// Update rather than a full Get.
+    @State private var updatableVariants: Set<String> = []
     @State private var deletingModel: WhisperModel?
 
     private var engine: TranscriptionEngineChoice {
@@ -94,7 +98,17 @@ struct TranscriptionModelView: View {
 
     private var modelSection: some View {
         Section {
-            if !downloadedVariants.contains(selectedVariant) {
+            if updatableVariants.contains(selectedVariant) {
+                // The model is here; only its tokenizer is missing. Telling
+                // this user to "download a model" contradicts the download
+                // they already did.
+                Label(
+                    "The Whisper model needs a small one-time update — tap Update below. Until then, meetings are saved without a transcript — you can re-transcribe them later.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.footnote)
+                .foregroundStyle(.orange)
+            } else if !downloadedVariants.contains(selectedVariant) {
                 Label(
                     "Download a model to use Whisper. Until then, meetings are saved without a transcript — you can re-transcribe them later.",
                     systemImage: "exclamationmark.triangle.fill"
@@ -114,6 +128,7 @@ struct TranscriptionModelView: View {
 
     @ViewBuilder private func modelRow(_ model: WhisperModel) -> some View {
         let isDownloaded = downloadedVariants.contains(model.variant)
+        let needsUpdate = updatableVariants.contains(model.variant)
         let isDownloading = downloads.progress[model.variant] != nil
         HStack {
             Button {
@@ -122,7 +137,7 @@ struct TranscriptionModelView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(model.label)
                         .foregroundStyle(.primary)
-                    Text(isDownloaded ? model.detail : "\(model.detail) About \(model.approximateMegabytes) MB.")
+                    Text(sizeDetail(for: model, isDownloaded: isDownloaded, needsUpdate: needsUpdate))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if let error = downloads.errors[model.variant] {
@@ -158,7 +173,11 @@ struct TranscriptionModelView: View {
                         .foregroundStyle(.tint)
                 }
             } else {
-                Button("Get") {
+                // Same action either way — the download resumes over what is
+                // already there and fetches only what is missing — but the
+                // word has to match what it costs: "Get" over a model the user
+                // already downloaded reads as a second 626 MB fetch.
+                Button(needsUpdate ? "Update" : "Get") {
                     downloads.download(model)
                 }
                 .buttonStyle(.bordered)
@@ -178,6 +197,16 @@ struct TranscriptionModelView: View {
         }
     }
 
+    // MARK: - Row copy
+
+    /// The line under a model's name. A model waiting for its tokenizer names
+    /// the size of THAT fetch, not the size of the download it already has.
+    private func sizeDetail(for model: WhisperModel, isDownloaded: Bool, needsUpdate: Bool) -> String {
+        if isDownloaded { return model.detail }
+        if needsUpdate { return "\(model.detail) \(WhisperModelStore.tokenizerUpdateSizeText)" }
+        return "\(model.detail) About \(model.approximateMegabytes) MB."
+    }
+
     // MARK: - Actions
 
     private func refreshDownloaded() {
@@ -187,6 +216,9 @@ struct TranscriptionModelView: View {
         partialVariants = Set(
             WhisperModelCatalog.models.map(\.variant)
                 .filter { !WhisperModelStore.isDownloaded($0) && WhisperModelStore.hasLocalData($0) }
+        )
+        updatableVariants = Set(
+            WhisperModelCatalog.models.map(\.variant).filter(WhisperModelStore.needsTokenizerUpdate)
         )
         // The download center writes the selection key directly when a
         // download finishes; KVO reads the dotted key as a key path, so

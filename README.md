@@ -47,7 +47,7 @@ Meeting audio is some of the most sensitive data on your phone. Most meeting-not
 | Speaker identification is local after setup | FluidAudio's CoreML models download from Hugging Face when first used and are then cached; the request does not include recordings, transcripts, or other meeting content |
 | Delete means delete | Removing a meeting removes its saved audio file, its database row, and the Brain facts extracted from it — including any entity left with nothing else to say, since its name was learned from that meeting too. A fact a surviving meeting also states is re-pointed at that meeting rather than dropped. Orphaned audio and orphaned facts are both swept at launch |
 
-> Network activity is limited to model setup and user-chosen iCloud features: iOS may fetch Apple's on-device speech assets, FluidAudio fetches its speaker-identification models from Hugging Face when you first use that feature, and any Whisper or local summary model you pick in Settings is downloaded from Hugging Face when you tap Get. None of these paths uploads recordings, transcripts, summaries, or other meeting content — they are file downloads.
+> Network activity is limited to model setup and user-chosen iCloud features: iOS may fetch Apple's on-device speech assets, FluidAudio fetches its speaker-identification models from Hugging Face when you first use that feature, and any Whisper or local summary model you pick in Settings is downloaded from Hugging Face when you tap Get (or Update, for a model that only needs its tokenizer). None of these paths uploads recordings, transcripts, summaries, or other meeting content — they are file downloads.
 
 ### Where the two backup options put your data
 

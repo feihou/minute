@@ -579,9 +579,15 @@ struct SettingsView: View {
 
     private func refreshTranscriptionStatus() async {
         if AppSettings.transcriptionEngine == .whisper {
-            transcriptionStatus = WhisperModelStore.isDownloaded(AppSettings.whisperModel)
-                ? "Ready"
-                : "Model not downloaded"
+            if WhisperModelStore.isDownloaded(AppSettings.whisperModel) {
+                transcriptionStatus = "Ready"
+            } else if WhisperModelStore.needsTokenizerUpdate(AppSettings.whisperModel) {
+                // The model is downloaded; only its tokenizer is missing. This
+                // row must not tell someone who has the model that they don't.
+                transcriptionStatus = "Update needed"
+            } else {
+                transcriptionStatus = "Model not downloaded"
+            }
             return
         }
         guard SpeechTranscriber.isAvailable else {

@@ -80,6 +80,50 @@ struct WhisperModelStoreTests {
         #expect(WhisperModelStore.isDownloaded(variant))
     }
 
+    @Test("A model from before the tokenizer counted needs an update, not a download")
+    func modelWithoutItsTokenizerNeedsAnUpdate() throws {
+        let variant = "openai_whisper-small-test-\(UUID().uuidString)"
+        defer { WhisperModelStore.delete(variant) }
+
+        // Nothing on disk: this is a plain "not downloaded", and offering a
+        // few-megabyte update for a model the user doesn't have would be a lie.
+        #expect(!WhisperModelStore.needsTokenizerUpdate(variant))
+
+        let folder = WhisperModelStore.folder(for: variant)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for name in ["AudioEncoder.mlmodelc", "TextDecoder.mlmodelc", "MelSpectrogram.mlmodelc", "config.json"] {
+            try Data("{}".utf8).write(to: folder.appending(path: name))
+        }
+        // Exactly the state every install from before this release is in: the
+        // hundreds of megabytes are there, only the tokenizer is missing.
+        #expect(WhisperModelStore.needsTokenizerUpdate(variant))
+        #expect(!WhisperModelStore.isDownloaded(variant))
+
+        let tokenizer = try #require(WhisperModelStore.tokenizerFolder(for: variant))
+        try FileManager.default.createDirectory(at: tokenizer, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: tokenizer.appending(path: "tokenizer.json"))
+        try Data("{}".utf8).write(to: tokenizer.appending(path: "tokenizer_config.json"))
+        // Complete: nothing left to update.
+        #expect(!WhisperModelStore.needsTokenizerUpdate(variant))
+        #expect(WhisperModelStore.isDownloaded(variant))
+    }
+
+    @Test("A leftover tokenizer folder keeps the model deletable")
+    func tokenizerOnlyLeftoverCountsAsLocalData() throws {
+        let variant = "openai_whisper-tiny-test-\(UUID().uuidString)"
+        defer { WhisperModelStore.delete(variant) }
+
+        let tokenizer = try #require(WhisperModelStore.tokenizerFolder(for: variant))
+        try FileManager.default.createDirectory(at: tokenizer, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: tokenizer.appending(path: "tokenizer.json"))
+
+        // A delete that half-succeeded, or a tokenizer fetched for a model
+        // whose own download then failed: the bytes are real, so the row has
+        // to keep offering Delete.
+        #expect(WhisperModelStore.hasLocalData(variant))
+        #expect(!WhisperModelStore.isDownloaded(variant))
+    }
+
     @Test("Deleting a model removes its tokenizer too")
     func deleteRemovesTheTokenizer() throws {
         let variant = "openai_whisper-tiny-test-\(UUID().uuidString)"
