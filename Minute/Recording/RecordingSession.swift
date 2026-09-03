@@ -132,7 +132,11 @@ final class RecordingSession: Identifiable {
             return
         }
 
-        guard isTranscriptionEnabled else { return }
+        guard isTranscriptionEnabled else {
+            // No engine will attach, so nothing should hold a lead-in for one.
+            recorder.setBufferHandler(nil)
+            return
+        }
         transcriptionTask = Task { [weak self] in
             guard let self else { return }
             await self.transcription.prepare()
@@ -140,10 +144,22 @@ final class RecordingSession: Identifiable {
             guard let format = self.recorder.recordingFormat else { return }
             let handler = await self.transcription.start(inputFormat: format)
             guard !Task.isCancelled, self.phase == .recording || self.phase == .paused else { return }
-            // The analyzer's clock starts at the first buffer it receives, but
-            // the file already contains everything recorded while the model
-            // prepared — offset segment timestamps so taps seek correctly.
-            self.transcription.timestampOffset = self.recorder.elapsed
+            // The analyzer's clock starts at the first buffer it receives, and
+            // that first buffer is now the OLDEST one the recorder held back
+            // while the model prepared — not the one arriving live. So the
+            // offset is the file time where the replay begins, `elapsed`
+            // minus that lead-in, and not `elapsed` itself: offsetting by
+            // `elapsed` would stamp every replayed segment a full lead-in too
+            // late (a second or two here, up to the 30 s cap after a first-run
+            // model download) and could push the last segment past the saved
+            // meeting's duration, which is exactly the wrong-seek defect the
+            // frame-derived clock fixes elsewhere. Read the lead-in BEFORE
+            // installing: `setBufferHandler` drains the queue, so a read
+            // afterwards is always zero. `max(0,)` because a buffer whose disk
+            // write failed is still replayed but was never counted in
+            // `elapsed`.
+            let leadIn = self.recorder.pendingBacklogSeconds
+            self.transcription.timestampOffset = max(0, self.recorder.elapsed - leadIn)
             self.recorder.setBufferHandler(handler)
         }
     }
