@@ -43,6 +43,8 @@ final class MeetingJobs {
     private var running: [UUID: Running] = [:]
     private var statuses: [UUID: String] = [:]
     private var failures: [UUID: Failure] = [:]
+    /// Meetings whose one automatic summary has been requested this run.
+    private var autoSummaryClaimed: Set<UUID> = []
 
     /// Fired on the main actor after any job finishes successfully — the
     /// knowledge catch-up loop's nudge. Optional so tests and previews can
@@ -75,6 +77,20 @@ final class MeetingJobs {
         running[meeting.id]?.task.cancel()
     }
 
+    /// Whether an automatic (post-save) summary may start now. True exactly
+    /// once per meeting while the app runs, and never while that meeting's
+    /// summary failure is showing: the detail view's `.task` re-runs on every
+    /// re-appearance, and an automatic generation must not restart one the
+    /// user stopped or wipe the error from one that failed. An explicit tap
+    /// goes through `summarize` directly and is unaffected.
+    func claimAutoSummary(for meeting: Meeting) -> Bool {
+        guard !autoSummaryClaimed.contains(meeting.id), error(.summary, for: meeting) == nil else {
+            return false
+        }
+        autoSummaryClaimed.insert(meeting.id)
+        return true
+    }
+
     // MARK: - Jobs
 
     @discardableResult
@@ -92,7 +108,11 @@ final class MeetingJobs {
                     self.statuses[id] = status
                 }
             // The meeting may have been deleted while the model was working.
-            guard !meeting.isDeleted else { return }
+            // `isGone` rather than `isDeleted`: by the time a job's await
+            // returns, that delete has committed and SwiftData has cleared
+            // `isDeleted` again on the detached object, so writing here would
+            // resurrect content the user was told was gone.
+            guard !meeting.isGone else { return }
             meeting.summary = summary
             applySuggestedTitleIfDefault(summary, to: meeting)
             try? meeting.modelContext?.save()
@@ -116,20 +136,14 @@ final class MeetingJobs {
             } catch {
                 throw JobMessage(message: "Re-transcription failed: \(error.localizedDescription)")
             }
-            guard !meeting.isDeleted else { return }
+            guard !meeting.isGone else { return }
             // A pass that produced nothing — the device language no longer
             // matching the audio, say — must not be mistaken for "this meeting
-            // has no speech". Replacing a good transcript with it destroys the
-            // only copy the user has.
-            guard !segments.isEmpty || !meeting.hasTranscript else {
-                // Whisper auto-detects the language, so the "device language"
-                // hint only applies to Apple Speech.
-                let hint = AppSettings.transcriptionEngine == .appleSpeech
-                    ? " Check that the iPhone's language matches the language spoken in this meeting."
-                    : ""
-                throw JobMessage(
-                    message: "Re-transcription produced no text, so the existing transcript was kept." + hint
-                )
+            // has no speech". Applying it would either destroy the only copy
+            // the user has, or silently leave a transcript-less meeting
+            // looking exactly as it did before they asked.
+            guard !segments.isEmpty else {
+                throw JobMessage(message: Self.noTextMessage(keptExistingTranscript: meeting.hasTranscript))
             }
             MeetingJobs.applyNewTranscript(segments, to: meeting)
             try? meeting.modelContext?.save()
@@ -143,11 +157,8 @@ final class MeetingJobs {
             let ranges = try await DiarizationService().diarize(audioAt: url) { status in
                 self.statuses[id] = status
             }
-            guard !meeting.isDeleted else { return }
-            meeting.segments = SpeakerAssignment.apply(ranges, to: meeting.segments)
-            // A fresh identification renumbers speakers from scratch, so names
-            // attached to the previous numbering no longer describe anyone.
-            meeting.speakerNames = nil
+            guard !meeting.isGone else { return }
+            try MeetingJobs.applySpeakerIdentification(ranges, to: meeting)
             try? meeting.modelContext?.save()
         }
     }
@@ -177,7 +188,7 @@ final class MeetingJobs {
             } catch is CancellationError {
                 // The user tapped Stop — nothing to report.
             } catch {
-                if !meeting.isDeleted, !Task.isCancelled {
+                if !meeting.isGone, !Task.isCancelled {
                     failures[id] = Failure(kind: kind, message: error.localizedDescription)
                 }
             }
@@ -197,6 +208,45 @@ final class MeetingJobs {
         meeting.segments = segments
         meeting.speakerNames = nil
         meeting.knowledgeExtractedAt = nil
+    }
+
+    /// Applies diarization output: labels segments, drops names attached to
+    /// the previous numbering (a fresh identification renumbers from
+    /// scratch), and resets the extraction cursor so the Brain re-reads the
+    /// meeting with speakers attributed. Throws when nothing was labeled, so
+    /// the user hears that instead of watching the spinner vanish over an
+    /// unchanged transcript.
+    static func applySpeakerIdentification(_ ranges: [SpeakerRange], to meeting: Meeting) throws {
+        let labeled = SpeakerAssignment.apply(ranges, to: meeting.segments)
+        guard labeled.contains(where: { $0.speaker != nil }) else {
+            throw JobMessage(message: "No distinct speakers could be identified in this recording.")
+        }
+        meeting.segments = labeled
+        meeting.speakerNames = nil
+        meeting.knowledgeExtractedAt = nil
+    }
+
+    /// Sets one speaker's display name. The Brain reads the transcript with
+    /// names in it, so a rename resets the extraction cursor: facts about
+    /// "Speaker 2" become facts about the person.
+    static func applySpeakerName(_ name: String, at index: Int, to meeting: Meeting) {
+        var names = meeting.speakerNames ?? []
+        while names.count <= index {
+            names.append("")
+        }
+        names[index] = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        meeting.speakerNames = names
+        meeting.knowledgeExtractedAt = nil
+    }
+
+    /// Why an empty re-transcription is reported instead of applied. The
+    /// language hint only applies to Apple Speech; Whisper auto-detects.
+    static func noTextMessage(keptExistingTranscript: Bool) -> String {
+        let kept = keptExistingTranscript ? ", so the existing transcript was kept" : ""
+        let hint = AppSettings.transcriptionEngine == .appleSpeech
+            ? " Check that the iPhone's language matches the language spoken in this meeting."
+            : ""
+        return "Re-transcription produced no text\(kept)." + hint
     }
 
     /// Adopts the model's title only while the meeting still carries the

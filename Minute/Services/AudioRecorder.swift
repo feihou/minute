@@ -373,10 +373,21 @@ final class AudioRecorder {
 
     func resume() throws {
         guard state == .paused else { return }
+        // Retire interruption ownership only once the resume succeeds. The
+        // notice tells the user to tap Resume, and a tap while the call still
+        // holds the microphone throws below; clearing first would also cancel
+        // the automatic resume the interruption's `.ended` is about to offer,
+        // and the rest of the meeting would silently go uncaptured.
+        let wasInterrupted = pausedByInterruption
         pausedByInterruption = false
         // An interruption deactivates the session; reactivate before
         // restarting the engine or start() throws.
-        try AVAudioSession.sharedInstance().setActive(true)
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            pausedByInterruption = wasInterrupted
+            throw error
+        }
         // Give writes another chance after resume (the user may have freed space).
         didReportWriteError = false
         // The hardware format may have changed while paused (route change) —
@@ -386,6 +397,7 @@ final class AudioRecorder {
             try installTap()
             try engine.start()
         } catch {
+            pausedByInterruption = wasInterrupted
             // Resume failed after the session was reactivated above — release
             // it so other apps' audio isn't left interrupted while we stay
             // paused; the next resume attempt reactivates it.

@@ -180,4 +180,21 @@ struct MeetingStoreTests {
         // directory belongs to someone else and must survive.
         #expect(FileManager.default.fileExists(atPath: notes.path))
     }
+
+    @Test func referencedAudioFileNamesListsEveryStoredMeetingsFile() throws {
+        let container = try ModelContainer(
+            for: Meeting.self,
+            configurations: MeetingStore.modelConfiguration(inMemory: true)
+        )
+        let context = container.mainContext
+        context.insert(Meeting(title: "A", audioFileName: "a.m4a"))
+        context.insert(Meeting(title: "B", audioFileName: "b.wav"))
+        context.insert(Meeting(title: "No audio"))
+        try context.save()
+
+        // The launch sweep deletes every recording NOT in this set, so it
+        // must come from a fetch that can say "I failed" — never from a view
+        // query whose failure reads as an empty library.
+        #expect(MeetingStore.referencedAudioFileNames(context: context) == ["a.m4a", "b.wav"])
+    }
 }

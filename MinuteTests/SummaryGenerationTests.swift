@@ -80,4 +80,42 @@ struct SummaryGenerationTests {
         #expect(jobs.error(.transcription, for: meeting) == nil)
         #expect(jobs.error(.diarization, for: meeting) == nil)
     }
+
+    @Test func autoSummaryIsClaimedOnlyOncePerMeeting() throws {
+        let (container, meeting) = try makeMeeting()
+        defer { _ = container }
+        let jobs = MeetingJobs()
+
+        // The detail view's .task re-runs on every re-appearance (tab switch,
+        // a cover dismissed over it). Automatic generation must not restart
+        // one the user stopped: first ask wins, every later ask is refused.
+        #expect(jobs.claimAutoSummary(for: meeting))
+        #expect(!jobs.claimAutoSummary(for: meeting))
+
+        let other = Meeting(title: "Other")
+        container.mainContext.insert(other)
+        #expect(jobs.claimAutoSummary(for: other))
+    }
+
+    @Test func autoSummaryIsNotClaimedWhileAFailureIsShowing() async throws {
+        let (container, meeting) = try makeMeeting()
+        defer { _ = container }
+        let jobs = MeetingJobs()
+
+        // No transcript: the job fails fast and records an error.
+        await jobs.summarize(meeting, template: .standard, context: "", language: nil)?.value
+        #expect(jobs.error(.summary, for: meeting) != nil)
+
+        // A failed generation is retried only by an explicit tap; restarting
+        // it automatically would also wipe the error the user should read.
+        #expect(!jobs.claimAutoSummary(for: meeting))
+    }
+
+    @Test func noTextMessageSaysWhetherTheOldTranscriptWasKept() {
+        let kept = MeetingJobs.noTextMessage(keptExistingTranscript: true)
+        let fresh = MeetingJobs.noTextMessage(keptExistingTranscript: false)
+        #expect(kept.contains("existing transcript was kept"))
+        #expect(!fresh.contains("kept"))
+        #expect(fresh.hasPrefix("Re-transcription produced no text"))
+    }
 }

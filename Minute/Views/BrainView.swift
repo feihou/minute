@@ -32,6 +32,7 @@ enum BrainSections {
 /// m2a; curation (review, merge, forget) is m2b.
 struct BrainView: View {
     @Environment(KnowledgeCatchUp.self) private var catchUp
+    @Environment(\.modelContext) private var context
     @Query private var entities: [KnowledgeEntity]
 
     private var sections: BrainSections.Groups {
@@ -61,6 +62,10 @@ struct BrainView: View {
             .navigationDestination(for: KnowledgeEntity.self) { entity in
                 EntityDetailView(entity: entity)
             }
+            // Opening the tab is the moment the user wants to see the latest
+            // — refresh the pending count and pick up anything a save left
+            // unread (deleting a meeting, for instance, never nudges).
+            .task { catchUp.nudge(context: context) }
         }
     }
 
@@ -199,7 +204,9 @@ struct BrainView: View {
                     .foregroundStyle(.secondary)
 
                 // A first-run user's earliest visit likely lands mid-extraction —
-                // show that the brain is being built right now.
+                // show that the brain is being built right now, or that work is
+                // waiting (warm phone, model not ready) so the screen never looks
+                // dead while meetings sit unread.
                 if catchUp.isWorking {
                     HStack(spacing: 12) {
                         ProgressView()
@@ -208,6 +215,12 @@ struct BrainView: View {
                             .foregroundStyle(.secondary)
                     }
                     .padding(.top, 28)
+                } else if catchUp.pendingCount > 0 {
+                    Label("\(catchUp.pendingCount) meeting\(catchUp.pendingCount == 1 ? "" : "s") still to read — Minute catches up while it's open.",
+                          systemImage: "clock")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 28)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -251,12 +264,16 @@ struct EntityDetailView: View {
 
     var body: some View {
         Group {
-            if entity.isDeleted {
-                // Reachable now that deleting a meeting removes the entities it
-                // was the only source for: open an entity page, follow a fact to
-                // its source meeting, delete that meeting, come back. Reading any
-                // other property of a deleted model is unsafe, so this branch
-                // must come before the page and before the title.
+            if entity.isGone {
+                // A normal path, not a corner: ingest deletes an entity the
+                // moment its last fact goes (a source meeting deleted, a
+                // re-extraction that drops it), and renaming a speaker retires
+                // the "Speaker 2" page the user may still be looking at.
+                // `isGone`, not `isDeleted` — by the time this page redraws the
+                // delete has committed and `isDeleted` reads false again, so
+                // the page below would render an entity that is no longer
+                // there. Reading any other property of a detached model is
+                // unsafe, so this branch comes before the page and the title.
                 ContentUnavailableView {
                     Label("No Longer Known", systemImage: "brain.head.profile")
                 } description: {
@@ -266,11 +283,11 @@ struct EntityDetailView: View {
                 page
             }
         }
-        .navigationTitle(entity.isDeleted ? "" : entity.name)
+        .navigationTitle(entity.isGone ? "" : entity.name)
         .navigationBarTitleDisplayMode(.large)
         // Re-run when facts arrive while the page is open (catch-up loop).
         .task(id: synthesisTaskID) {
-            guard !entity.isDeleted else { return }
+            guard !entity.isGone else { return }
             synthesisRefreshFailed = false
             synthesisRefreshFailed = await !KnowledgeSynthesisService.refreshIfStale(entity, context: context)
         }
@@ -279,7 +296,7 @@ struct EntityDetailView: View {
     /// Nil once the entity is gone, so the refresh below never runs against a
     /// deleted model.
     private var synthesisTaskID: SynthesisTaskID? {
-        guard !entity.isDeleted else { return nil }
+        guard !entity.isGone else { return nil }
         return SynthesisTaskID(factCount: entity.settledFacts.count, marker: entity.synthesizedFactCount)
     }
 

@@ -2,14 +2,33 @@ import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// The SwiftUI identity of the detail view this list pushes.
+enum MeetingDetailIdentity {
+    /// The meeting's identifier while it exists, nil once it is gone.
+    ///
+    /// The destination closure re-runs on every list update, and the meeting
+    /// it was handed can be deleted by then — the Brain tab pushes a detail of
+    /// its own from a fact's source link, and deleting there invalidates this
+    /// list's query without clearing this stack's destination. `id` still
+    /// answers on a deleted meeting, but with a stale value that would key the
+    /// detail to a meeting that no longer exists, so the key goes to nil and
+    /// the detail's own deleted branch draws the placeholder instead.
+    static func key(for meeting: Meeting) -> UUID? {
+        meeting.isGone ? nil : meeting.id
+    }
+}
+
 struct MeetingListView: View {
     var storeIsEphemeral = false
 
     @Environment(\.modelContext) private var context
+    @Environment(KnowledgeCatchUp.self) private var catchUp
+    @Environment(MeetingJobs.self) private var jobs
     @Query(sort: \Meeting.createdAt, order: .reverse) private var meetings: [Meeting]
 
     @State private var searchText = ""
     @State private var draftTitle = ""
+    @State private var draftDefaultTitle = ""
     @State private var showingNewMeeting = false
     @State private var showingSettings = false
     @State private var activeSession: RecordingSession?
@@ -19,6 +38,9 @@ struct MeetingListView: View {
     /// Home Screen widget must never kick off work the user didn't ask for.
     @State private var destinationAutoSummarizes = false
     @State private var deleteFailed = false
+    /// The meeting a swipe or context menu asked to delete, held until the
+    /// confirmation is answered.
+    @State private var pendingDelete: Meeting?
     @State private var didSweepOrphans = false
     @State private var showingImporter = false
     @State private var importingFileName: String?
@@ -107,7 +129,12 @@ struct MeetingListView: View {
                 }
             }
             .navigationDestination(item: $meetingDestination) { meeting in
+                // Keyed so replacing the destination in place (a widget link
+                // while a detail is up, a recording finishing under one)
+                // builds a fresh view instead of reusing the old one's player,
+                // tab, and auto-summary state for a different meeting.
                 MeetingDetailView(meeting: meeting, autoGenerateSummary: destinationAutoSummarizes)
+                    .id(MeetingDetailIdentity.key(for: meeting))
             }
             // safeAreaBar, not safeAreaInset: the bar reserves its own space and
             // participates in the scroll edge effect, so rows fade out beneath
@@ -125,7 +152,12 @@ struct MeetingListView: View {
             // reference these files may still exist in the real database.
             guard !storeIsEphemeral, !didSweepOrphans else { return }
             didSweepOrphans = true
-            MeetingStore.removeOrphanedAudio(referencedFileNames: Set(meetings.compactMap(\.audioFileName)))
+            // Its own fetch, not the view's @Query: a query whose fetch failed
+            // is silently empty, and an empty referenced set would delete
+            // every recording in the library.
+            if let referenced = MeetingStore.referencedAudioFileNames(context: context) {
+                MeetingStore.removeOrphanedAudio(referencedFileNames: referenced)
+            }
             // Same idea for the knowledge base: drops support left by meetings
             // deleted before this existed, and by any earlier pass whose save
             // failed. Runs on the same guard, so it never touches the fallback
@@ -171,7 +203,7 @@ struct MeetingListView: View {
         #endif
         .sheet(isPresented: $showingNewMeeting) {
             NewMeetingSheet(title: $draftTitle) {
-                activeSession = RecordingSession(title: draftTitle)
+                activeSession = RecordingSession(title: draftTitle, prefilledDefaultTitle: draftDefaultTitle)
             }
         }
         .sheet(isPresented: $showingSettings) {
@@ -183,6 +215,7 @@ struct MeetingListView: View {
                 if let finished {
                     destinationAutoSummarizes = AppSettings.autoSummarizeEnabled
                     meetingDestination = finished
+                    nudgeBrain(for: finished)
                 }
             }
         }
@@ -204,7 +237,7 @@ struct MeetingListView: View {
                         .listRowSeparator(.hidden, edges: .top)
                         .swipeActions(edge: .trailing) {
                             Button(role: .destructive) {
-                                deleteFailed = !MeetingStore.delete(meeting, context: context)
+                                pendingDelete = meeting
                             } label: {
                                 Label("Delete", systemImage: "trash")
                             }
@@ -220,7 +253,7 @@ struct MeetingListView: View {
                             }
                             Divider()
                             Button(role: .destructive) {
-                                deleteFailed = !MeetingStore.delete(meeting, context: context)
+                                pendingDelete = meeting
                             } label: {
                                 Label("Delete Meeting", systemImage: "trash")
                             }
@@ -244,6 +277,22 @@ struct MeetingListView: View {
             if groupedMeetings.isEmpty, !searchText.isEmpty {
                 ContentUnavailableView.search(text: searchText)
             }
+        }
+        .confirmationDialog(
+            "Delete this meeting?",
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingDelete
+        ) { meeting in
+            Button("Delete Meeting", role: .destructive) {
+                deleteMeeting(meeting)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text(MeetingStore.deleteMeetingWarning)
         }
         .alert("This meeting couldn't be deleted", isPresented: $deleteFailed) {
             Button("OK", role: .cancel) {}
@@ -372,8 +421,43 @@ struct MeetingListView: View {
     }
 
     private func beginNewMeeting() {
-        draftTitle = RecordingSession.defaultTitle()
+        draftDefaultTitle = RecordingSession.defaultTitle()
+        draftTitle = draftDefaultTitle
         showingNewMeeting = true
+    }
+
+    /// Lets the Brain read a meeting that has just arrived from a recording or
+    /// an import. The loop is otherwise only nudged by a finished job or a
+    /// scene activation, so with Auto-Summarize off (the default) neither
+    /// happens and the meeting goes unread until the app is backgrounded and
+    /// reopened.
+    ///
+    /// Two cases skip the nudge. A meeting with no transcript (a silent save,
+    /// an import whose transcription failed) has nothing to read, and the loop
+    /// skip-lists it for the rest of the process — spending its one chance, so
+    /// the transcript a later Re-transcribe Audio produces would never be
+    /// extracted. Nothing is lost by waiting there: that job nudges the loop
+    /// itself when it lands. And with Auto-Summarize on, the summary starting
+    /// on the next screen already nudges when it finishes
+    /// (`MeetingJobs.onContentChanged`), as does the Brain tab's own `.task`;
+    /// nudging now would only make extraction and that summary contend for the
+    /// single on-device model.
+    private func nudgeBrain(for meeting: Meeting) {
+        guard meeting.hasTranscript, !destinationAutoSummarizes else { return }
+        catchUp.nudge(context: context)
+    }
+
+    private func deleteMeeting(_ meeting: Meeting) {
+        // Cleared here, not only through the dialog's isPresented setter:
+        // deleting the last meeting swaps `meetingList` — which hosts that
+        // dialog — for `emptyState` in the same update, so the setter may
+        // never run and this would keep holding a detached Meeting that a
+        // later presentation would put back on screen.
+        pendingDelete = nil
+        // A summary or re-transcription still running on this meeting would
+        // keep decoding a deleted file for minutes; stop it first.
+        jobs.cancel(meeting)
+        deleteFailed = !MeetingStore.delete(meeting, context: context)
     }
 
     private func handleDeepLink(_ url: URL) {
@@ -409,6 +493,7 @@ struct MeetingListView: View {
                 // kicks in for imports too.
                 destinationAutoSummarizes = AppSettings.autoSummarizeEnabled
                 meetingDestination = result.meeting
+                nudgeBrain(for: result.meeting)
             } catch is CancellationError {
                 // User cancelled — nothing to report.
             } catch {
@@ -546,5 +631,6 @@ struct NewMeetingSheet: View {
     MeetingListView()
         .modelContainer(MeetingStore.previewContainer())
         .environment(MeetingJobs())
+        .environment(KnowledgeCatchUp())
 }
 #endif

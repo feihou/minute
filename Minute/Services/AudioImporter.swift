@@ -32,14 +32,23 @@ enum AudioImporter {
         let transcriptionNote: String?
     }
 
+    /// Shown when the engine ran and recognized nothing: the meeting is still
+    /// saved, but "no transcript" must not read as "no speech".
+    static let noSpeechNote = "The audio was imported, but no speech was recognized in it. If the recording is in another language, check the iPhone's language or the transcription engine in Settings, then use Re-transcribe Audio."
+
     /// Copies, transcribes (best effort — an import still succeeds without a
     /// transcript, matching how recording behaves when live transcription
     /// can't run), and saves.
+    ///
+    /// `transcription` is injectable for tests; it defaults to nil rather than
+    /// to `TranscriptionEngines.current()` because a default argument is
+    /// evaluated outside this type's main-actor isolation.
     static func importAudio(
         from sourceURL: URL,
-        context: ModelContext
+        context: ModelContext,
+        transcription: (any TranscriptionEngine)? = nil
     ) async throws -> Result {
-        let transcription = TranscriptionEngines.current()
+        let transcription = transcription ?? TranscriptionEngines.current()
         let scoped = sourceURL.startAccessingSecurityScopedResource()
         defer {
             if scoped {
@@ -83,6 +92,9 @@ enum AudioImporter {
         case .available:
             do {
                 segments = try await transcription.transcribe(file: audioFile)
+                if segments.isEmpty {
+                    transcriptionNote = Self.noSpeechNote
+                }
             } catch is CancellationError {
                 // Cancelling leaves the already-copied recording in the
                 // Recordings directory with no Meeting referencing it. Every

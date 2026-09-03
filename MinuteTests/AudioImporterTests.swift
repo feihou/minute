@@ -57,4 +57,37 @@ struct AudioImporterTests {
         let remaining = try context.fetch(FetchDescriptor<Meeting>())
         #expect(remaining.isEmpty)
     }
+
+    /// An engine that is "available" and recognizes nothing — audio in a
+    /// language the device isn't set to, or plain silence.
+    @MainActor
+    private final class EmptyTranscriptionEngine: TranscriptionEngine {
+        var availability: TranscriptionAvailability = .available
+        var volatileText = ""
+        var segments: [TranscriptSegment] = []
+        var timestampOffset: TimeInterval = 0
+        func prepare() async {}
+        func start(inputFormat: AVAudioFormat) async -> (@Sendable (AVAudioPCMBuffer) -> Void)? { nil }
+        func finish() async -> [TranscriptSegment] { [] }
+        func cancel() async {}
+        func transcribe(file: AVAudioFile) async throws -> [TranscriptSegment] { [] }
+    }
+
+    @Test func importWithNoRecognizedSpeechExplainsItself() async throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let source = try makeWavFixture()
+        defer { try? FileManager.default.removeItem(at: source) }
+
+        let result = try await AudioImporter.importAudio(
+            from: source, context: context, transcription: EmptyTranscriptionEngine()
+        )
+
+        // The meeting is kept (the audio is worth having), but the user must
+        // hear that nothing was recognized rather than assume the file is silent.
+        #expect(result.meeting.segments.isEmpty)
+        #expect(result.transcriptionNote == AudioImporter.noSpeechNote)
+
+        MeetingStore.delete(result.meeting, context: context)
+    }
 }

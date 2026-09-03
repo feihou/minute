@@ -29,6 +29,7 @@ struct MeetingDetailView: View {
     @State private var showingEditor = false
     @State private var confirmingDelete = false
     @State private var confirmingRetranscribe = false
+    @State private var confirmingReidentify = false
     @State private var deleteFailed = false
     @State private var renamingSpeaker: Int?
     @State private var renameText = ""
@@ -64,6 +65,59 @@ struct MeetingDetailView: View {
     private var diarizationError: String? { jobs.error(.diarization, for: meeting) }
 
     var body: some View {
+        Group {
+            if meeting.isGone {
+                // The same meeting can be open in two stacks — the Brain tab
+                // pushes a detail from a fact's source link — and deleted from
+                // the other one. Everything below reads a property, and after
+                // the delete those properties are stale leftovers rather than
+                // stored data, so this branch comes before the page, the
+                // title, and the tasks.
+                ContentUnavailableView {
+                    Label("Meeting Deleted", systemImage: "trash")
+                } description: {
+                    Text("This meeting was deleted from this iPhone.")
+                }
+            } else {
+                page
+            }
+        }
+        .navigationTitle(meeting.isGone ? "" : meeting.createdAt.formatted(date: .abbreviated, time: .shortened))
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            guard !meeting.isGone, meeting.summary == nil, meeting.hasTranscript,
+                  SummarizationEngines.availabilityMessage == nil else { return }
+            if autoGenerateSummary, jobs.claimAutoSummary(for: meeting) {
+                generateSummary()
+            } else {
+                // The user will probably tap Generate; start loading the
+                // model now so the tap doesn't pay the model-load wait too.
+                SummarizationEngines.prewarm(language: AppSettings.summaryLanguage)
+            }
+        }
+        .onChange(of: meeting.isGone) { _, gone in
+            // The delete that happened elsewhere — the list's row, or the
+            // Brain tab's copy of this meeting — swaps the page below for the
+            // placeholder, and the placeholder has no transport controls. The
+            // player is `@State` and survives that swap, so without this it
+            // keeps playing a file `deleteAudioFile` has already unlinked, with
+            // nothing on screen to stop it. The detail's own Delete button
+            // stops playback itself and dismisses, so it never reaches here.
+            if gone {
+                player.stop()
+            }
+        }
+        .onDisappear {
+            player.stop()
+            if !meeting.isGone {
+                saveQuietly()
+            }
+        }
+    }
+
+    /// The page for a live meeting: the ScrollView with masthead, brief, and
+    /// tabs, plus the toolbar, sheet, dialogs, and alerts that read the meeting.
+    private var page: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 masthead
@@ -84,8 +138,6 @@ struct MeetingDetailView: View {
         // under the tab bar at the bottom, and a hard cut at either one reads
         // as clipped text rather than as more page below.
         .scrollEdgeEffectStyle(.soft, for: .all)
-        .navigationTitle(meeting.createdAt.formatted(date: .abbreviated, time: .shortened))
-        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
@@ -131,7 +183,11 @@ struct MeetingDetailView: View {
                     }
                     .disabled(MeetingStore.audioURL(for: meeting) == nil || isBusy)
                     Button {
-                        identifySpeakers()
+                        if meeting.hasSpeakers {
+                            confirmingReidentify = true
+                        } else {
+                            identifySpeakers()
+                        }
                     } label: {
                         Label(meeting.hasSpeakers ? "Re-identify Speakers" : "Identify Speakers",
                               systemImage: "person.2.wave.2")
@@ -157,6 +213,9 @@ struct MeetingDetailView: View {
             titleVisibility: .visible
         ) {
             Button("Delete Meeting", role: .destructive) {
+                // A summary or re-transcription still running on this meeting
+                // would keep decoding a deleted file for minutes; stop it first.
+                jobs.cancel(meeting)
                 // Only leave once the delete is actually committed — dismissing
                 // on a failed delete tells the user their meeting is gone while
                 // it is still in the library. Playback is torn down only on
@@ -173,7 +232,7 @@ struct MeetingDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The recording, transcript, summary, and everything Brain learned from this meeting will be permanently deleted from this iPhone.")
+            Text(MeetingStore.deleteMeetingWarning)
         }
         .alert("This meeting couldn't be deleted", isPresented: $deleteFailed) {
             Button("OK", role: .cancel) {}
@@ -192,27 +251,24 @@ struct MeetingDetailView: View {
         } message: {
             Text("The current transcript will be replaced using the on-device speech model. Speaker labels are cleared, and the summary stays until you regenerate it.")
         }
+        .confirmationDialog(
+            "Re-identify speakers?",
+            isPresented: $confirmingReidentify,
+            titleVisibility: .visible
+        ) {
+            Button("Re-identify Speakers") {
+                identifySpeakers()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Speakers are numbered again from scratch, and any names you entered are cleared.")
+        }
         .alert("Rename Speaker", isPresented: isRenamingSpeakerPresented, presenting: renamingSpeaker) { index in
             TextField("Name", text: $renameText)
             Button("Save") { renameSpeaker(index, to: renameText) }
             Button("Cancel", role: .cancel) {}
         } message: { _ in
             Text("Used on this speaker's transcript lines and in newly generated summaries.")
-        }
-        .task {
-            guard meeting.summary == nil, meeting.hasTranscript,
-                  SummarizationEngines.availabilityMessage == nil else { return }
-            if autoGenerateSummary {
-                generateSummary()
-            } else {
-                // The user will probably tap Generate; start loading the
-                // model now so the tap doesn't pay the model-load wait too.
-                SummarizationEngines.prewarm(language: AppSettings.summaryLanguage)
-            }
-        }
-        .onDisappear {
-            player.stop()
-            saveQuietly()
         }
     }
 
@@ -586,13 +642,10 @@ struct MeetingDetailView: View {
     }
 
     private func renameSpeaker(_ index: Int, to name: String) {
-        var names = meeting.speakerNames ?? []
-        while names.count <= index {
-            names.append("")
-        }
-        names[index] = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        meeting.speakerNames = names
+        MeetingJobs.applySpeakerName(name, at: index, to: meeting)
         saveQuietly()
+        // The rename changed the text the Brain reads; let it catch up.
+        jobs.onContentChanged?()
     }
 
     private var isRenamingSpeakerPresented: Binding<Bool> {

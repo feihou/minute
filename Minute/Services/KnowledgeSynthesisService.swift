@@ -107,7 +107,10 @@ struct KnowledgeSynthesisService {
             let snapshot = Self.factsSnapshot(settled)
             do {
                 let narrative = try await synthesize(entity.name, entity.kind, settled.map(\.text))
-                guard !entity.isDeleted else { return true }
+                // `isGone`: the entity may have been deleted and the delete
+                // committed while the model wrote this narrative, and a
+                // committed delete leaves `isDeleted` false again.
+                guard !entity.isGone else { return true }
                 guard Self.factsSnapshot(entity.settledFacts) == snapshot else { continue }
                 entity.synthesis = narrative.isEmpty ? nil : narrative
                 entity.synthesizedFactCount = settled.count

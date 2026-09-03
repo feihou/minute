@@ -49,6 +49,15 @@ enum KnowledgeIngest {
         // cleared below: a re-extraction can swap facts one-for-one, so
         // count-based staleness alone would miss the content change.
         var touched: [UUID: KnowledgeEntity] = [:]
+        // Facts this meeting vouched for before this re-extraction. The
+        // pre-loop strips this meeting from them so the new transcript decides
+        // afresh, which two things below have to undo. A paraphrase of one must
+        // still count as a within-meeting repeat, or it routes to review as a
+        // "cross-meeting" near-duplicate and the entity page shows the same
+        // claim twice; and the entry itself has to come back when the claim
+        // survives, or deleting the other source prunes a fact this transcript
+        // still states.
+        var previouslySupported: Set<UUID> = []
         for fact in allFacts where fact.sourceMeetingIDs.contains(meetingID) {
             if fact.sources.count > 1 {
                 // Other meetings state this too, so the row stays. Whether THIS
@@ -56,6 +65,7 @@ enum KnowledgeIngest {
                 // its entry goes and the loop below re-adds it if the claim
                 // survives — a re-transcribed meeting must stop vouching for
                 // something it no longer says.
+                previouslySupported.insert(fact.id)
                 fact.removeSource(meetingID: meetingID)
                 if let entity = fact.entity { touched[entity.id] = entity }
             } else if fact.status == .suggested {
@@ -97,7 +107,7 @@ enum KnowledgeIngest {
                 // in this same run may have corroborated this row, which makes
                 // a later paraphrase a within-meeting repeat rather than a
                 // cross-meeting one worth sending to review.
-                if existing.sourceMeetingIDs.contains(meetingID) { return true }
+                if existing.sourceMeetingIDs.contains(meetingID) || previouslySupported.contains(existing.id) { return true }
                 crossMeetingNearDuplicate = true
                 return false
             }
@@ -108,16 +118,42 @@ enum KnowledgeIngest {
                 // corroboration, or deleting the first meeting would discard
                 // knowledge this one still supports. Tombstones are excluded:
                 // they exist to keep a rejected claim out, not to hold sources.
-                // Only on evidence as strong as the fact itself: the same
-                // statement token-for-token in order, and a quote that actually
-                // validated against this transcript. A looser match is still a
-                // fair reason to drop the candidate — it is not a reason to let
-                // this meeting inherit the fact once the original source goes.
-                if duplicate.status != .rejected,
-                   let quote = candidate.validatedQuote,
-                   KnowledgeText.statesTheSame(duplicate.originalText, candidate.fact) {
-                    // The restatement brings its own quote now, so the row no
-                    // longer depends on one meeting's phrasing to explain it.
+                //
+                // Two bars, on deliberately different evidence. Inheriting a row
+                // this meeting never sourced takes evidence as strong as the
+                // fact itself: the same statement token-for-token in order, and
+                // a quote that validated against this transcript. Keeping an
+                // entry the pre-loop stripped takes only the match that dropped
+                // the candidate — the meeting already vouched for this and still
+                // does, and demanding more would record its statement nowhere at
+                // all, so deleting the other meeting would prune a fact this
+                // transcript states.
+                //
+                // A reordering is not "still does": `KnowledgeText.statesTheSame`
+                // documents why sorted tokens cannot be read as agreement. The
+                // entry stays revoked rather than going back to a transcript
+                // that says the opposite.
+                let sameStatement = KnowledgeText.statesTheSame(duplicate.originalText, candidate.fact)
+                let isReordering = !sameStatement
+                    && KnowledgeText.normalized(duplicate.originalText) == candidateNormalized
+                let keptItsOwnEntry = previouslySupported.contains(duplicate.id) && !isReordering
+                let inheritsIt = sameStatement && candidate.validatedQuote != nil
+                if duplicate.status != .rejected, keptItsOwnEntry || inheritsIt {
+                    // Only a candidate that states the same thing can ground
+                    // this row. A retained paraphrase — or a reversal wide
+                    // enough to land in the fuzzy band, where `isReordering`
+                    // cannot see it — would otherwise file words saying
+                    // something else as this fact's evidence, and `sourceQuote`
+                    // would display them. Falling back to the entry this meeting
+                    // already has keeps a quote an earlier candidate in the same
+                    // run validated: `addSource` replaces the meeting's entry,
+                    // so without it whichever chunk came out last would decide
+                    // alone. The pre-loop stripped every pre-run entry for a
+                    // `previouslySupported` fact, so that fallback can only see
+                    // this run's own work, never a quote belonging to the
+                    // transcript this one replaced.
+                    let quote = (sameStatement ? candidate.validatedQuote : nil)
+                        ?? duplicate.sources.first { $0.meetingID == meetingID }?.quote
                     let newestBefore = duplicate.capturedAt
                     duplicate.addSource(FactSource(
                         meetingID: meetingID, quote: quote, capturedAt: meeting.createdAt
@@ -167,6 +203,21 @@ enum KnowledgeIngest {
         }
         for entity in touched.values {
             entity.synthesizedFactCount = nil
+        }
+        // A re-extraction can empty an entity: a new entity only ever gets
+        // `.suggested` facts, and this meeting's still-suggested facts were
+        // deleted above. Nothing later would remove it — reconcile only
+        // examines entities whose facts lost a source — so its name (learned
+        // from this meeting) would stay on disk with nothing to show and no
+        // delete path. Remove it now; a merge tombstone pointing at it, or
+        // the Me entity, is left alone.
+        let redirectTargets = Set(known.compactMap(\.redirectTo))
+        for entity in touched.values where entity.kind != .me {
+            guard entity.redirectTo == nil, !redirectTargets.contains(entity.id) else { continue }
+            let remaining = entity.facts.filter { !staleIDs.contains($0.id) }
+            if remaining.isEmpty {
+                context.delete(entity)
+            }
         }
         try context.save()
         return result

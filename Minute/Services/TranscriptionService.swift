@@ -156,7 +156,12 @@ final class TranscriptionService: TranscriptionEngine {
     /// transcript must never mistake a partial result for a complete one.
     func transcribe(file: AVAudioFile) async throws -> [TranscriptSegment] {
         guard availability == .available, let transcriber else {
-            throw CocoaError(.featureUnsupported)
+            if case .unavailable(let message) = availability {
+                throw TranscriptionUnavailableError(message: message)
+            }
+            throw TranscriptionUnavailableError(
+                message: "On-device speech recognition isn't ready yet. Try again in a moment."
+            )
         }
 
         // Collected locally (not via the live path's shared state) so a

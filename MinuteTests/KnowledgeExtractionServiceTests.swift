@@ -44,4 +44,25 @@ struct KnowledgeExtractionServiceTests {
         let empty = KnowledgeCandidateDraft(entityName: "X", entityKind: "person", fact: "   ", supportingQuote: "")
         #expect(KnowledgeExtractionService.candidate(from: empty, transcript: transcript) == nil)
     }
+
+    @Test func speakerPlaceholdersAreNeverCandidates() {
+        let transcript = "[00:01] Speaker 2: I will own the Atlas redesign."
+        let placeholder = KnowledgeCandidateDraft(
+            entityName: "Speaker 2", entityKind: "person",
+            fact: "Speaker 2 owns the Atlas redesign", supportingQuote: "I will own the Atlas redesign"
+        )
+        // Diarization's fallback label is not a person; two meetings' "Speaker 2"
+        // are different people and must not share one Brain page.
+        #expect(KnowledgeExtractionService.candidate(from: placeholder, transcript: transcript) == nil)
+        #expect(KnowledgeExtractionService.isSpeakerPlaceholder("speaker 1"))
+        #expect(KnowledgeExtractionService.isSpeakerPlaceholder(" Speaker  12 "))
+        #expect(!KnowledgeExtractionService.isSpeakerPlaceholder("Speaker Chen"))
+        #expect(!KnowledgeExtractionService.isSpeakerPlaceholder("Sarah"))
+    }
+
+    @Test func paddedEntityKindStillMapsToItsKind() {
+        let transcript = "[00:01] Sarah: hi"
+        let padded = KnowledgeCandidateDraft(entityName: "Sarah", entityKind: " person ", fact: "Sarah spoke", supportingQuote: "")
+        #expect(KnowledgeExtractionService.candidate(from: padded, transcript: transcript)?.entityKind == .person)
+    }
 }

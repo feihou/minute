@@ -230,6 +230,18 @@ struct KnowledgeDeletionTests {
         #expect(try facts(in: context).count == 2)
     }
 
+    @Test func launchReconcileRemovesAnEntityLeftWithNoFacts() throws {
+        let context = try makeContext()
+        // An earlier build could leave this behind: a re-extraction deleted
+        // the entity's only fact and nothing examined the empty entity.
+        context.insert(KnowledgeEntity(name: "Ghost", kind: .person))
+        try context.save()
+
+        #expect(KnowledgeStore.reconcile(context: context))
+
+        #expect(try entities(in: context).isEmpty)
+    }
+
     // MARK: - Facts several meetings support
 
     @Test func aFactAnotherMeetingRestatedIsKeptAndRepointed() throws {

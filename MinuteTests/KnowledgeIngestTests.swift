@@ -401,6 +401,81 @@ struct KnowledgeIngestTests {
         #expect(fact.sourceMeetingIDs == [first.id, second.id])
     }
 
+    @Test func reextractedParaphraseOfAFactTheMeetingCorroboratedIsNotANewDraft() throws {
+        let context = try makeContext()
+        let first = Meeting(title: "A", createdAt: .now.addingTimeInterval(-3600))
+        let second = Meeting(title: "B", createdAt: .now)
+        context.insert(first)
+        context.insert(second)
+        let sarah = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(sarah)
+        let fact = KnowledgeFact(
+            text: "Sarah leads the Atlas redesign", originalText: "Sarah leads the Atlas redesign",
+            status: .autoCaptured, sourceMeetingID: first.id, capturedAt: first.createdAt, entity: sarah
+        )
+        context.insert(fact)
+        // Meeting B stated it too and was recorded as a second source.
+        fact.addSource(FactSource(meetingID: second.id, quote: "Sarah leads the Atlas redesign", capturedAt: second.createdAt))
+        try context.save()
+
+        // B is re-transcribed and re-extracted; the model now paraphrases
+        // (five of six tokens overlap — a near-duplicate, not an exact repeat).
+        let result = try KnowledgeIngest.apply(
+            [candidate("Sarah", "Sarah leads the Atlas redesign work")],
+            from: second, context: context
+        )
+
+        // Dropped as a repeat rather than merged or superseded elsewhere...
+        #expect(result.duplicatesDropped == 1)
+        // ...one fact, not a second near-identical draft beside it...
+        let facts = try context.fetch(FetchDescriptor<KnowledgeFact>())
+        #expect(facts.count == 1)
+        // ...and it is the original row, not a replacement.
+        #expect(facts.first?.originalText == "Sarah leads the Atlas redesign")
+        #expect(facts.first?.status == .autoCaptured)
+        // Dropping the candidate says B still states this, so B has to get back
+        // the source entry the pre-loop stripped. Without it the row is sourced
+        // by A alone and deleting A prunes a claim B's transcript still makes —
+        // a visible duplicate traded for silent evidence loss.
+        #expect(fact.sourceMeetingIDs == [first.id, second.id])
+    }
+
+    @Test func reextractedParaphraseWithoutAQuoteStillKeepsTheMeetingAsASource() throws {
+        let context = try makeContext()
+        let first = Meeting(title: "A", createdAt: .now.addingTimeInterval(-3600))
+        let second = Meeting(title: "B", createdAt: .now)
+        context.insert(first)
+        context.insert(second)
+        let sarah = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(sarah)
+        let fact = KnowledgeFact(
+            text: "Sarah leads the Atlas redesign", originalText: "Sarah leads the Atlas redesign",
+            status: .autoCaptured, sourceMeetingID: first.id, capturedAt: first.createdAt, entity: sarah
+        )
+        context.insert(fact)
+        fact.addSource(FactSource(meetingID: second.id, quote: nil, capturedAt: second.createdAt))
+        try context.save()
+
+        // B is re-transcribed and paraphrases, and this time nothing in the new
+        // transcript validated as a quote. A missing quote is a reason to refuse
+        // a meeting a fact it never stated; it is not a reason to take away one
+        // it already vouched for and still does.
+        let result = try KnowledgeIngest.apply(
+            [candidate("Sarah", "Sarah leads the Atlas redesign work", quote: nil)],
+            from: second, context: context
+        )
+
+        #expect(result.duplicatesDropped == 1)
+        #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).count == 1)
+        #expect(fact.sourceMeetingIDs == [first.id, second.id])
+        // The point of keeping the entry: A goes and the claim stays, because a
+        // live transcript still states it.
+        #expect(MeetingStore.delete(first, context: context))
+        let remaining = try context.fetch(FetchDescriptor<KnowledgeFact>())
+        #expect(remaining.map(\.originalText) == ["Sarah leads the Atlas redesign"])
+        #expect(remaining.first?.sourceMeetingIDs == [second.id])
+    }
+
     @Test func aParaphraseAfterACorroborationInTheSameRunIsStillAWithinMeetingRepeat() throws {
         let context = try makeContext()
         let first = Meeting(title: "first")
@@ -433,6 +508,45 @@ struct KnowledgeIngestTests {
         #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).count == 1)
     }
 
+    @Test func aSecondCandidateInTheSameRunKeepsTheQuoteTheFirstOneValidated() throws {
+        // `addSource` replaces the meeting's entry, so whichever candidate is
+        // applied last decides alone whether B's support is quoted. Both orders
+        // of the same two candidates have to leave the same entry.
+        func quoteRecordedForB(applying candidates: [KnowledgeCandidate]) throws -> String? {
+            let context = try makeContext()
+            let first = Meeting(title: "A", createdAt: .now.addingTimeInterval(-3600))
+            let second = Meeting(title: "B", createdAt: .now)
+            context.insert(first)
+            context.insert(second)
+            let sarah = KnowledgeEntity(name: "Sarah", kind: .person)
+            context.insert(sarah)
+            let fact = KnowledgeFact(
+                text: "Sarah leads the Atlas redesign", originalText: "Sarah leads the Atlas redesign",
+                status: .autoCaptured, sourceMeetingID: first.id, capturedAt: first.createdAt, entity: sarah
+            )
+            context.insert(fact)
+            fact.addSource(FactSource(meetingID: second.id, quote: nil, capturedAt: second.createdAt))
+            try context.save()
+
+            try KnowledgeIngest.apply(candidates, from: second, context: context)
+
+            #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).count == 1)
+            #expect(fact.sourceMeetingIDs == [first.id, second.id])
+            return fact.sources.first { $0.meetingID == second.id }?.quote
+        }
+
+        // Adjacent chunks of B's new transcript emit the claim twice: once word
+        // for word, carrying a phrase that validated against the transcript,
+        // and once paraphrased with nothing quotable.
+        let repeated = candidate("Sarah", "Sarah leads the Atlas redesign", quote: "Sarah leads the Atlas redesign")
+        let paraphrase = candidate("Sarah", "Sarah leads the Atlas redesign work", quote: nil)
+
+        // The paraphrase says nothing new about grounding, so it must not erase
+        // the quote the repeat just validated against this same transcript.
+        #expect(try quoteRecordedForB(applying: [repeated, paraphrase]) == "Sarah leads the Atlas redesign")
+        #expect(try quoteRecordedForB(applying: [paraphrase, repeated]) == "Sarah leads the Atlas redesign")
+    }
+
     @Test func aReorderedRestatementIsDroppedButNotTreatedAsCorroboration() throws {
         let context = try makeContext()
         let first = Meeting(title: "first")
@@ -459,6 +573,80 @@ struct KnowledgeIngestTests {
         // But the second meeting did not say what the first said, so it must
         // not end up owning the first meeting's claim when that meeting goes.
         #expect(existing.sourceMeetingIDs == [first.id])
+    }
+
+    @Test func aReorderedRestatementRevokesTheSourceEntryTheMeetingAlreadyHeld() throws {
+        let context = try makeContext()
+        let first = Meeting(title: "A", createdAt: .now.addingTimeInterval(-3600))
+        let second = Meeting(title: "B", createdAt: .now)
+        context.insert(first)
+        context.insert(second)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        let existing = KnowledgeFact(
+            text: "Sarah assigned Alex to Jordan", originalText: "Sarah assigned Alex to Jordan",
+            status: .autoCaptured, sourceMeetingID: first.id, capturedAt: first.createdAt, entity: entity
+        )
+        context.insert(existing)
+        // B stated it too, so the pre-loop strips B's entry and leaves the new
+        // transcript to decide whether B still vouches for it.
+        existing.addSource(FactSource(
+            meetingID: second.id, quote: "Sarah assigned Alex to Jordan", capturedAt: second.createdAt
+        ))
+        try context.save()
+
+        // B is re-transcribed and the roles come out flipped. Sorted tokens
+        // make that an exact match, so the candidate is dropped either way —
+        // but B's transcript now states the opposite of the row it used to
+        // support, and having once been a source is not a licence to keep
+        // vouching for a claim this transcript contradicts.
+        let result = try KnowledgeIngest.apply(
+            [candidate("Sarah", "Sarah assigned Jordan to Alex", quote: "Sarah assigned Jordan to Alex")],
+            from: second, context: context
+        )
+
+        #expect(result.duplicatesDropped == 1)
+        #expect(existing.sourceMeetingIDs == [first.id])
+        // The visible harm of handing the entry back: an entity page shows the
+        // newest source's quote as this fact's grounding, and B's quote says the
+        // reverse. A alone states this, and A never quoted it.
+        #expect(existing.sourceQuote == nil)
+    }
+
+    @Test func aFuzzyBandReversalKeepsTheSourceButNotItsReversedQuote() throws {
+        let context = try makeContext()
+        let first = Meeting(title: "A", createdAt: .now.addingTimeInterval(-3600))
+        let second = Meeting(title: "B", createdAt: .now)
+        context.insert(first)
+        context.insert(second)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        let existing = KnowledgeFact(
+            text: "Sarah assigned Alex to Jordan", originalText: "Sarah assigned Alex to Jordan",
+            status: .autoCaptured, sourceMeetingID: first.id, sourceQuote: "Sarah assigned Alex to Jordan",
+            capturedAt: first.createdAt, entity: entity
+        )
+        context.insert(existing)
+        existing.addSource(FactSource(meetingID: second.id, quote: nil, capturedAt: second.createdAt))
+        try context.save()
+
+        // B is re-transcribed with the roles flipped AND a word added, so the
+        // sorted forms differ: this reversal lands in the fuzzy band rather
+        // than matching as an exact repeat, where the reordering guard sees it.
+        let reversed = "Sarah quickly assigned Jordan to Alex"
+        let result = try KnowledgeIngest.apply(
+            [candidate("Sarah", reversed, quote: reversed)],
+            from: second, context: context
+        )
+
+        #expect(result.duplicatesDropped == 1)
+        #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).count == 1)
+        // B's transcript is still close enough to keep the row alive on it...
+        #expect(existing.sourceMeetingIDs == [first.id, second.id])
+        // ...but it does not state this claim, so its words must not be filed
+        // as the evidence for it, nor shown as the fact's grounding.
+        #expect(existing.sources.first { $0.meetingID == second.id }?.quote == nil)
+        #expect(existing.sourceQuote != reversed)
     }
 
     @Test func anUngroundedRestatementIsDroppedButNotTreatedAsCorroboration() throws {
@@ -516,4 +704,35 @@ struct KnowledgeIngestTests {
         #expect(entity.synthesizedFactCount == nil)
     }
 
+    @Test func reextractionThatDropsAnEntitysOnlyFactRemovesTheEntity() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "m")
+        context.insert(meeting)
+        try KnowledgeIngest.apply([candidate("Bob", "Bob joined the Atlas team")], from: meeting, context: context)
+        #expect(try context.fetch(FetchDescriptor<KnowledgeEntity>()).count == 1)
+
+        // The re-transcribed meeting no longer mentions Bob. His only fact
+        // was this meeting's still-suggested one, so it goes — and an
+        // entity with nothing left to show must not linger with his name.
+        try KnowledgeIngest.apply([], from: meeting, context: context)
+
+        #expect(try context.fetch(FetchDescriptor<KnowledgeEntity>()).isEmpty)
+        #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).isEmpty)
+    }
+
+    @Test func reextractionKeepsAnEntityThatStillHasFacts() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "m")
+        let other = Meeting(title: "other")
+        context.insert(meeting)
+        context.insert(other)
+        try KnowledgeIngest.apply([candidate("Bob", "Bob joined the Atlas team")], from: meeting, context: context)
+        try KnowledgeIngest.apply([candidate("Bob", "Bob prefers async reviews")], from: other, context: context)
+
+        try KnowledgeIngest.apply([], from: meeting, context: context)
+
+        let entities = try context.fetch(FetchDescriptor<KnowledgeEntity>())
+        #expect(entities.count == 1)
+        #expect(entities[0].facts.count == 1)
+    }
 }

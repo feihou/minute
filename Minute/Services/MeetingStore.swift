@@ -190,6 +190,14 @@ enum MeetingStore {
         return url
     }
 
+    /// What the user is agreeing to when they confirm a delete. Lives here
+    /// rather than in either view because both the list and the detail screen
+    /// ask the same question about the same operation, and a promise about
+    /// what `delete` removes must not drift between the two places it is made.
+    /// "learned only from this meeting" is the literal truth: a fact another
+    /// meeting also states keeps that meeting as a source and survives.
+    static let deleteMeetingWarning = "The recording, transcript, summary, and everything Brain learned only from this meeting will be permanently deleted from this iPhone."
+
     /// Deleting a meeting also removes its audio file so no orphaned data
     /// remains. The database deletion commits FIRST: if it fails, the audio is
     /// untouched (a meeting must never reappear pointing at deleted audio),
@@ -227,6 +235,21 @@ enum MeetingStore {
         _ = meetingID
         KnowledgeStore.reconcile(context: context)
         return true
+    }
+
+    /// The audio files the library still references, or nil when the store
+    /// couldn't be read. The launch sweep deletes everything NOT in this set,
+    /// so a failed read must never be mistaken for an empty library — the
+    /// knowledge sweep already refuses to run on one, and the audio sweep
+    /// must too.
+    static func referencedAudioFileNames(context: ModelContext) -> Set<String>? {
+        do {
+            let meetings = try context.fetch(FetchDescriptor<Meeting>())
+            return Set(meetings.compactMap(\.audioFileName))
+        } catch {
+            logger.error("Could not read the library before sweeping orphaned audio, so nothing was swept: \(error.localizedDescription)")
+            return nil
+        }
     }
 
     /// Removes audio files that no meeting references (e.g. left behind by a
