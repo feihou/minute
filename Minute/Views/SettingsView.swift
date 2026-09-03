@@ -112,14 +112,16 @@ struct SettingsView: View {
             }
             .alert(
                 MeetingStore.useEphemeralStorage
-                    ? "Storage is temporarily unavailable"
+                    ? "Storage isn't available"
                     : "iCloud Drive isn't available",
                 isPresented: $driveUnavailable
             ) {
                 Button("OK", role: .cancel) {}
             } message: {
                 if MeetingStore.useEphemeralStorage {
-                    Text("Minute is using temporary in-memory storage. Try again after the persistent meeting store recovers.")
+                    // Same failure the Storage section describes, so it can't
+                    // promise a recovery that section says only a reset brings.
+                    Text("Minute couldn't open its meeting store and is keeping this session in memory only. The Storage section in Settings explains it and offers the reset.")
                 } else {
                     Text("Sign in to iCloud and turn on iCloud Drive in iOS Settings, then try again. A build signed without iCloud entitlements can't use this.")
                 }
@@ -404,7 +406,12 @@ struct SettingsView: View {
             Text("Backup")
         } footer: {
             if MeetingStore.useEphemeralStorage {
-                Text("The persistent meeting store is temporarily unavailable. iCloud Backup still controls whether existing on-device data is included in future device backups, and either backup option can still be turned off. iCloud Drive Folder can't start a new mirror until storage recovers.")
+                // "Temporarily unavailable" was written before the Storage
+                // section above existed: that section says the store could not
+                // be opened at all and offers the reset that is the only way
+                // out. Two sections about the same failure must not disagree
+                // about whether it passes on its own.
+                Text("Minute couldn't open its meeting store — see the Storage section above. iCloud Backup still controls whether existing on-device data is included in future device backups, and either backup option can still be turned off. iCloud Drive Folder can't start a new mirror until the store opens again.")
             } else {
                 Text("Both are off by default. iCloud Backup includes meeting data in this iPhone's device backup — it comes back only by restoring the iPhone from that backup. iCloud Drive Folder keeps a browsable copy in Files → iCloud Drive → Minute → this iPhone's folder (one folder per meeting with its notes and audio), updated when you leave the app. Turning either off stops future copies; files already in iCloud Drive stay until you delete them in Files. Nothing else is uploaded — there is still no account and no server.")
             }

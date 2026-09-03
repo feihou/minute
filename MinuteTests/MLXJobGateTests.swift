@@ -33,7 +33,11 @@ struct MLXJobGateTests {
         }
     }
 
-    @Test func aSecondJobWaitsForTheFirstAndIsToldWhy() async throws {
+    /// Time-limited like the tests below it: every wait here is on a signal a
+    /// working gate sends, so a gate that never hands the queue over turns this
+    /// into a hang rather than a verdict.
+    @Test(.timeLimit(.minutes(1)))
+    func aSecondJobWaitsForTheFirstAndIsToldWhy() async throws {
         let gate = MLXJobGate()
         let tracker = Tracker()
         // Event-driven, not timed: signals make this deterministic on any
@@ -87,7 +91,10 @@ struct MLXJobGateTests {
         #expect(MLXJobGate.waitingStatus == "Waiting for another local-model job to finish…")
     }
 
-    @Test func aFailedJobStillOpensTheGate() async throws {
+    /// A gate left half-taken by the throwing job would park the second `run`
+    /// below forever; the limit makes that a failure instead of a stuck suite.
+    @Test(.timeLimit(.minutes(1)))
+    func aFailedJobStillOpensTheGate() async throws {
         struct Boom: Error {}
         let gate = MLXJobGate()
 

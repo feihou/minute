@@ -789,6 +789,38 @@ struct KnowledgeCatchUpTests {
         #expect(meeting.knowledgeExtractedAt == nil)
     }
 
+    @Test func coolingDownWhileAJobHoldsTheModelStartsNothing() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("A", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        var calls = 0
+        let catchUp = makeCatchUp { _, _ in
+            calls += 1
+            throw LanguageModelSession.GenerationError.rateLimited(.init(debugDescription: "test"))
+        }
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 1)
+
+        // A phone that cools down while a summary the user is watching holds
+        // the on-device model: the thermal signal says the loop's own guard
+        // lifted, but the job's pause is a separate reason to stay out of the
+        // way — and restarting here is exactly the competition for the model
+        // the pause exists to prevent.
+        catchUp.pauseForWork()
+        catchUp.thermalStateDidChange()
+        await catchUp.waitUntilIdle()
+        #expect(calls == 1)
+        #expect(meeting.knowledgeExtractedAt == nil)
+
+        // The job ending is still what starts it again.
+        catchUp.workEnded(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 2)
+    }
+
     @Test func aRateLimitedLoopRetriesItselfAfterTheDelay() async throws {
         let context = try makeContext()
         let meeting = meetingWithTranscript("A", createdAt: .now)

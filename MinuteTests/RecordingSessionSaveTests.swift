@@ -45,6 +45,7 @@ private final class ParkedTranscriptionEngine: TranscriptionEngine {
         // The real engines clear their own collection here — which is why the
         // session has to bank the segments before cancelling.
         segments = []
+        volatileText = ""
         release()
     }
 
@@ -183,6 +184,9 @@ struct RecordingSessionSaveTests {
         let context = try makeContext()
         let engine = ParkedTranscriptionEngine()
         engine.segments = [TranscriptSegment(text: "heard before the user gave up", start: 0, end: 1)]
+        // The sentence in flight when the user gave up. finish() promotes this
+        // into a segment; the way out must not be the one path that drops it.
+        engine.volatileText = "and the half-said sentence"
         engine.finalSegments = [TranscriptSegment(text: "never finalized", start: 0, end: 1)]
         let session = RecordingSession(
             title: "Long tail",
@@ -203,7 +207,11 @@ struct RecordingSessionSaveTests {
         #expect(engine.didCancel)
         let saved = try context.fetch(FetchDescriptor<Meeting>())
         #expect(saved.count == 1)
-        #expect(saved.first?.segments.map(\.text) == ["heard before the user gave up"])
+        #expect(saved.first?.segments.map(\.text) == ["heard before the user gave up", "and the half-said sentence"])
+        // Promoted the way finish() does it: a zero-length segment at the end
+        // of the last one, so the transcript's timeline stays sane.
+        #expect(saved.first?.segments.last?.start == 1)
+        #expect(saved.first?.segments.last?.end == 1)
         #expect(session.phase == .idle)
     }
 

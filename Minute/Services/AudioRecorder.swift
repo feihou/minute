@@ -241,8 +241,10 @@ final class AudioRecorder {
     /// Smoothed input level in 0...1 for the recording indicator.
     private(set) var level: Float = 0
 
-    /// Called after the system auto-pauses recording (phone call, Siri, or an
-    /// audio route/configuration change), so the owner can reflect it in UI.
+    /// Called after the system auto-pauses recording — a phone call or Siri
+    /// taking the microphone — so the owner can reflect it in UI. A route
+    /// change no longer arrives here: capture restarts in place against the
+    /// new hardware and only a failed restart falls back to this pause.
     var onAutoPause: (() -> Void)?
 
     /// Called when the recorder resumed itself after the system said the
@@ -525,6 +527,9 @@ final class AudioRecorder {
         engine.stop()
         tapHandler.install(nil)
         file = nil
+        // With the file gone, a rate left over from the half-started recording
+        // would let `elapsed` report seconds for frames nothing counted.
+        fileSampleRate = 0
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         } catch {

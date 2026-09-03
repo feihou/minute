@@ -123,7 +123,12 @@ final class RecordingSession: Identifiable {
         recorder.onAutoPause = { [weak self] in
             guard let self, self.phase == .recording else { return }
             self.phase = .paused
-            self.notice = "Recording was paused by the system (a call or audio change). Tap resume to continue."
+            // Names what actually gets here: a call or Siri taking the
+            // microphone. A route change restarts capture in place now, and
+            // the transient "Microphone changed — still recording" notice says
+            // so; blaming an "audio change" here sent people looking at their
+            // headphones for a pause a phone call caused.
+            self.notice = "Recording was paused by the system (a call or Siri). Tap resume to continue."
         }
 
         recorder.onAutoResume = { [weak self] in
@@ -359,7 +364,18 @@ final class RecordingSession: Identifiable {
         guard phase == .saving, pendingSegments == nil else { return }
         // Bank first: cancelling clears the engine's own collection, and the
         // whole point of this action is to keep what it heard.
-        pendingSegments = transcription.segments
+        var banked = transcription.segments
+        // The hypothesis in flight is the most recent thing said — usually the
+        // sentence the user was still speaking when they gave up waiting.
+        // `finish()` promotes it; this path has to as well, or the one action
+        // offered for a stuck finalization is also the one that silently drops
+        // the tail. Zero-length at the last segment's end, exactly like
+        // TranscriptionService.finish, so nothing seeks past the recording.
+        if !transcription.volatileText.isEmpty {
+            let lastEnd = banked.last?.end ?? transcription.timestampOffset
+            banked.append(TranscriptSegment(text: transcription.volatileText, start: lastEnd, end: lastEnd))
+        }
+        pendingSegments = banked
         await transcription.cancel()
     }
 

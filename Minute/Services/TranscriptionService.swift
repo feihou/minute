@@ -121,6 +121,11 @@ final class TranscriptionService: TranscriptionEngine {
                         self.volatileText = text
                     }
                 }
+            } catch is CancellationError {
+                // `cancel()` and the no-analyzer branch of `finish()` cancel
+                // this task on purpose. That is the user discarding, not the
+                // stream dying, and reporting it would put a failure message
+                // on a screen that is closing.
             } catch {
                 // Losing live results is non-fatal for the recording — but
                 // silence here left the panel showing stale segments (or
@@ -130,7 +135,14 @@ final class TranscriptionService: TranscriptionEngine {
                 // `segments` and is still saved.
                 Self.logger.error("Transcriber results stream failed: \(error.localizedDescription)")
                 self?.volatileText = ""
-                self?.availability = .unavailable(Self.liveStoppedMessage(error))
+                // Only over "everything is fine". `start()` writes its own,
+                // more specific message when the analyzer refuses to start —
+                // and it cancels this task right afterwards, so the generic
+                // "live transcription stopped" would land on top of the one
+                // sentence that actually explains what happened.
+                if self?.availability == .available {
+                    self?.availability = .unavailable(Self.liveStoppedMessage(error))
+                }
             }
         }
 
