@@ -20,6 +20,30 @@ private final class Gate: @unchecked Sendable {
     }
 }
 
+/// Allows every check and runs a side effect from the given check onward —
+/// standing in for the user deleting a meeting while the mirror is still
+/// copying an earlier one.
+private final class Trip: @unchecked Sendable {
+    private let lock = NSLock()
+    private var checks = 0
+    private let from: Int
+    private let effect: @Sendable () -> Void
+
+    init(from: Int, effect: @escaping @Sendable () -> Void) {
+        self.from = from
+        self.effect = effect
+    }
+
+    func check() -> Bool {
+        lock.lock()
+        checks += 1
+        let fire = checks >= from
+        lock.unlock()
+        if fire { effect() }
+        return true
+    }
+}
+
 private actor CancellationProbe {
     private var stopped = false
 
@@ -216,6 +240,70 @@ struct ICloudDriveBackupTests {
         try ICloudDriveBackup.mirror([], into: documents)
 
         #expect(!FileManager.default.fileExists(atPath: documents.appendingPathComponent(entry.folderName).path))
+    }
+
+    /// The toggle-on sync snapshots every meeting on the main actor and copies
+    /// them on a Task nothing cancels, so a meeting deleted mid-run is still in
+    /// the snapshot when the loop reaches it — and notes.md carries its whole
+    /// transcript in memory.
+    @Test func mirrorSkipsAndRemovesAMeetingDeletedSinceTheSnapshot() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+
+        let deletedID = UUID()
+        let deleted = item(id: deletedID.uuidString, folderName: "2026-08-03 09.30 Deleted", notes: "# secret transcript")
+        let kept = item(folderName: "2026-08-03 10.00 Kept", notes: "# kept")
+        try ICloudDriveBackup.mirror([deleted, kept], into: documents)
+        #expect(FileManager.default.fileExists(atPath: documents.appendingPathComponent(deleted.folderName).path))
+
+        // The user deletes that meeting while this snapshot is still being
+        // mirrored.
+        ICloudDriveBackup.noteMeetingDeleted(deletedID)
+        try ICloudDriveBackup.mirror([deleted, kept], into: documents)
+
+        // Its folder goes with it, and the rest of the snapshot still lands.
+        #expect(!FileManager.default.fileExists(atPath: documents.appendingPathComponent(deleted.folderName).path))
+        let keptFolder = documents.appendingPathComponent(kept.folderName, isDirectory: true)
+        #expect(try String(contentsOf: keptFolder.appendingPathComponent("notes.md"), encoding: .utf8) == "# kept")
+    }
+
+    @Test func mirrorNeverWritesADeletedMeetingsNotesInTheFirstPlace() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+
+        let deletedID = UUID()
+        let entry = item(id: deletedID.uuidString, folderName: "2026-08-03 09.30 Deleted", notes: "# secret transcript")
+        ICloudDriveBackup.noteMeetingDeleted(deletedID)
+
+        try ICloudDriveBackup.mirror([entry], into: documents)
+
+        // Nothing was ever created: a deleted meeting's transcript must not
+        // reach iCloud Drive even for the seconds until the next sync.
+        #expect(try visibleNames(in: documents).isEmpty)
+    }
+
+    /// The case the snapshot cannot see: the delete lands after `mirror` has
+    /// already started, while the loop is still on an earlier meeting.
+    @Test func mirrorSkipsAMeetingDeletedWhileTheRunIsStillCopying() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+
+        let deletedID = UUID()
+        let first = item(folderName: "2026-08-03 09.30 Kept", notes: "# kept")
+        let second = item(id: deletedID.uuidString, folderName: "2026-08-03 10.00 Deleted", notes: "# secret transcript")
+
+        // From the second shouldContinue check on — the first is the one
+        // `mirror` makes before it touches a folder, so this deletion is
+        // unknowable to anything the run read on entry. On a real library
+        // those checks are minutes apart.
+        let trip = Trip(from: 2) { ICloudDriveBackup.noteMeetingDeleted(deletedID) }
+        let outcome = try ICloudDriveBackup.mirror([first, second], into: documents, shouldContinue: { trip.check() })
+
+        #expect(try visibleNames(in: documents) == [first.folderName])
+        // Skipping a meeting the user deleted is the run doing its job, not
+        // failing at it: an incomplete verdict here would warn about a backup
+        // that is exactly as complete as it should be.
+        #expect(outcome == .complete)
     }
 
     /// The user owns this folder in Files. Nothing without the app's marker

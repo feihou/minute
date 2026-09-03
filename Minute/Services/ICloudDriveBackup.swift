@@ -55,6 +55,29 @@ enum ICloudDriveBackup {
     private static let deviceIdentityKey = "backup.deviceIdentity"
     private static let deviceVendorKey = "backup.deviceVendorID"
 
+    /// Meetings deleted since some snapshot was taken. A snapshot is captured
+    /// on the main actor and mirrored on a background task, so the user can
+    /// delete a meeting while the run is still copying earlier ones — and each
+    /// Item carries that meeting's full notes text in memory. Never emptied: a
+    /// deleted meeting cannot come back, and one UUID per deletion for the life
+    /// of the process is nothing beside writing a deleted transcript to iCloud.
+    private nonisolated(unsafe) static var deletedMeetingIDs: Set<String> = []
+    private static let deletedMeetingLock = NSLock()
+
+    /// Tells any mirror run in flight that this meeting is gone. Safe from any
+    /// thread and at any point around the delete — the mirror only reads.
+    nonisolated static func noteMeetingDeleted(_ id: UUID) {
+        deletedMeetingLock.lock()
+        defer { deletedMeetingLock.unlock() }
+        deletedMeetingIDs.insert(id.uuidString)
+    }
+
+    private nonisolated static func isDeletedSinceSnapshot(_ meetingID: String) -> Bool {
+        deletedMeetingLock.lock()
+        defer { deletedMeetingLock.unlock() }
+        return deletedMeetingIDs.contains(meetingID)
+    }
+
     /// Everything the mirror needs from one meeting, captured on the main
     /// actor so the file work can run in the background.
     struct Item: Sendable {
@@ -597,6 +620,26 @@ enum ICloudDriveBackup {
 
         for item in items {
             guard shouldContinue() else { return Swift.max(outcome, .interrupted) }
+            // The snapshot is minutes old by the time a large library reaches
+            // its last meetings, and every Item still holds that meeting's
+            // whole notes text in memory: a meeting deleted since must not have
+            // it written now, and must lose the folder an earlier sync gave it.
+            // Everything it owns goes here rather than through the sweep below,
+            // which judges by `chosen` and cannot see a folder this run parked
+            // under a staging name — and which, handed URLs this loop already
+            // removed, would report the run incomplete over folders that are
+            // correctly gone.
+            if isDeletedSinceSnapshot(item.meetingID) {
+                let movedFrom = parked.removeValue(forKey: item.meetingID)
+                var folders = (owned[item.meetingID] ?? []).filter { $0 != movedFrom }
+                if let current = live.removeValue(forKey: item.meetingID), !folders.contains(current) {
+                    folders.append(current)
+                }
+                for url in folders where !removeMirror(at: url) {
+                    outcome = .incomplete
+                }
+                continue
+            }
             do {
                 let placed = try place(item, existing: live[item.meetingID], in: documents)
                 live[item.meetingID] = placed.url
