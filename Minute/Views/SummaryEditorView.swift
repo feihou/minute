@@ -146,6 +146,12 @@ struct SummaryEditorView: View {
     }
 
     private func save() {
+        // An untouched editor must not rewrite the summary. Every field would
+        // round-trip through the line parsers, and a list item the model wrote
+        // with an embedded newline in it comes back as two items — for a Save
+        // the user made no edit to. `original` is exactly what `init`
+        // serialized, so this compares the draft against that snapshot.
+        guard hasChanges else { return }
         meeting.summary = MeetingSummary(
             overview: draft.overview.trimmingCharacters(in: .whitespacesAndNewlines),
             keyPoints: Self.parseList(draft.keyPoints),
@@ -188,14 +194,40 @@ struct SummaryEditorView: View {
             .filter { !$0.isEmpty }
     }
 
+    /// The separator `init` writes between the three fields. It carries its
+    /// spaces so a bare "|" inside a field is not a delimiter.
+    static let actionItemSeparator = " | "
+
+    /// Splits one line into at most three fields, on the LAST two separators.
+    /// Everything left of them is the task, however many pipes it contains —
+    /// splitting on every "|" turned a model-written "Compare vendor A |
+    /// vendor B" into a task, an owner and a deadline that all belonged to the
+    /// task, silently and with no undo. A line with a single separator still
+    /// means task + owner, which is what a user typing one row expects.
+    static func splitActionItemLine(_ line: String) -> [String] {
+        var fields: [String] = []
+        var head = Substring(line)
+        while fields.count < 2, let range = head.range(of: actionItemSeparator, options: .backwards) {
+            fields.insert(String(head[range.upperBound...]), at: 0)
+            head = head[..<range.lowerBound]
+        }
+        fields.insert(String(head), at: 0)
+        return fields
+    }
+
     static func parseActionItems(_ text: String) -> [ActionItem] {
         text.split(separator: "\n").compactMap { line in
-            let parts = line.split(separator: "|", omittingEmptySubsequences: false)
+            let fields = splitActionItemLine(String(line))
                 .map { $0.trimmingCharacters(in: .whitespaces) }
-            guard let task = parts.first, !task.isEmpty else { return nil }
-            let owner = parts.count > 1 && !parts[1].isEmpty ? parts[1] : ActionItem.notSpecified
-            let deadline = parts.count > 2 && !parts[2].isEmpty ? parts[2] : ActionItem.notSpecified
-            return ActionItem(task: task, owner: owner, deadline: deadline)
+            guard let task = fields.first, !task.isEmpty else { return nil }
+            // Same normalization generated summaries get, so a hand-typed
+            // "none" reads as the placeholder everywhere instead of appearing
+            // as an owner named none.
+            return ActionItem(
+                task: task,
+                owner: SummarizationService.normalizedField(fields.count > 1 ? fields[1] : ""),
+                deadline: SummarizationService.normalizedField(fields.count > 2 ? fields[2] : "")
+            )
         }
     }
 }
