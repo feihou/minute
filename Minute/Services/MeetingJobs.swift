@@ -43,6 +43,8 @@ final class MeetingJobs {
     private var running: [UUID: Running] = [:]
     private var statuses: [UUID: String] = [:]
     private var failures: [UUID: Failure] = [:]
+    /// Meetings whose one automatic summary has been requested this run.
+    private var autoSummaryClaimed: Set<UUID> = []
 
     /// Fired on the main actor after any job finishes successfully — the
     /// knowledge catch-up loop's nudge. Optional so tests and previews can
@@ -73,6 +75,20 @@ final class MeetingJobs {
 
     func cancel(_ meeting: Meeting) {
         running[meeting.id]?.task.cancel()
+    }
+
+    /// Whether an automatic (post-save) summary may start now. True exactly
+    /// once per meeting while the app runs, and never while that meeting's
+    /// summary failure is showing: the detail view's `.task` re-runs on every
+    /// re-appearance, and an automatic generation must not restart one the
+    /// user stopped or wipe the error from one that failed. An explicit tap
+    /// goes through `summarize` directly and is unaffected.
+    func claimAutoSummary(for meeting: Meeting) -> Bool {
+        guard !autoSummaryClaimed.contains(meeting.id), error(.summary, for: meeting) == nil else {
+            return false
+        }
+        autoSummaryClaimed.insert(meeting.id)
+        return true
     }
 
     // MARK: - Jobs

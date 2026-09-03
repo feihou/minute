@@ -202,7 +202,7 @@ struct MeetingDetailView: View {
         .task {
             guard meeting.summary == nil, meeting.hasTranscript,
                   SummarizationEngines.availabilityMessage == nil else { return }
-            if autoGenerateSummary {
+            if autoGenerateSummary, jobs.claimAutoSummary(for: meeting) {
                 generateSummary()
             } else {
                 // The user will probably tap Generate; start loading the
