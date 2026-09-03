@@ -8,6 +8,7 @@ import UIKit
 /// on-device capability status.
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var context
     @Environment(MeetingJobs.self) private var jobs
     @Query private var meetings: [Meeting]
@@ -70,6 +71,17 @@ struct SettingsView: View {
             // write to the dotted key — re-check on every terminal outcome.
             .task(id: transcriptionStatusKey) { await refreshTranscriptionStatus() }
             .task { usage = MeetingStore.recordingsUsage() }
+            // The background mirror records its verdict with a direct
+            // UserDefaults write, which @AppStorage does not observe on these
+            // dotted keys — so while this sheet stays open across a
+            // background/foreground cycle the warning below is stale in both
+            // directions. Most concretely: the user reads the warning, leaves
+            // to sign in to iCloud (which backgrounds the app and runs a now
+            // successful mirror), comes back, and the warning is still there.
+            .onChange(of: scenePhase) {
+                guard scenePhase == .active else { return }
+                driveLastSyncFailed = AppSettings.iCloudDriveLastSyncFailed
+            }
             .confirmationDialog(
                 "Delete all meetings?",
                 isPresented: $confirmingDeleteAll,
