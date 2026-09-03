@@ -28,8 +28,9 @@ final class RecordingSession: Identifiable {
 
     let recorder = AudioRecorder()
     /// The engine selected in Settings (Apple Speech or Whisper), captured at
-    /// session creation like the settings below.
-    let transcription: any TranscriptionEngine = TranscriptionEngines.current()
+    /// session creation like the settings below — or the one injected by a
+    /// test.
+    let transcription: any TranscriptionEngine
     /// Captured when the session is created so a settings change mid-recording
     /// can't half-apply.
     let isTranscriptionEnabled = AppSettings.liveTranscriptionEnabled
@@ -70,9 +71,17 @@ final class RecordingSession: Identifiable {
     /// second meeting referencing the same audio file.
     private var didSave = false
 
-    init(title: String, prefilledDefaultTitle: String = RecordingSession.defaultTitle()) {
+    /// `transcription` is injectable for tests; it defaults to nil rather than
+    /// to `TranscriptionEngines.current()` because a default argument is
+    /// evaluated outside this type's main-actor isolation.
+    init(
+        title: String,
+        prefilledDefaultTitle: String = RecordingSession.defaultTitle(),
+        transcription: (any TranscriptionEngine)? = nil
+    ) {
         self.title = title
         self.prefilledDefaultTitle = prefilledDefaultTitle
+        self.transcription = transcription ?? TranscriptionEngines.current()
     }
 
     func start() async {
