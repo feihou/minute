@@ -139,16 +139,38 @@ struct KnowledgeExtractionService {
     /// the roster lives in the app, never in the context window (spec §2).
     static let hintCap = 20
 
+    /// Tokens shorter than this ("the" is three, but "of", "a", "b", "q3" are
+    /// not) prove nothing on their own: a roster name is offered only when the
+    /// chunk holds the whole phrase, or every token of it long enough to mean
+    /// something.
+    static let minimumHintTokenLength = 3
+
+    /// Hints in match-strength order — the name spoken in full first, then
+    /// names whose every long token appears — so `hintCap` cuts the weakest
+    /// matches rather than whichever names the fetch happened to return last.
+    /// Without this, twenty roster names sharing an ordinary word with the
+    /// chunk could push out the one name actually said, and the model would
+    /// invent a second spelling that resolution cannot match.
     static func hintNames(for chunk: String, from names: [String]) -> [String] {
-        let haystack = " " + KnowledgeText.normalized(chunk) + " "
-        return Array(
-            names.filter { name in
-                KnowledgeText.normalized(name)
-                    .split(separator: " ")
-                    .contains { haystack.contains(" \($0) ") }
+        let haystack = " " + KnowledgeText.inOrder(chunk) + " "
+        var phrases: [String] = []
+        var partials: [String] = []
+        for name in names {
+            let normalized = KnowledgeText.inOrder(name)
+            guard !normalized.isEmpty else { continue }
+            if haystack.contains(" \(normalized) ") {
+                phrases.append(name)
+                continue
             }
-            .prefix(hintCap)
-        )
+            let tokens = normalized
+                .split(separator: " ")
+                .filter { $0.count >= minimumHintTokenLength }
+            guard !tokens.isEmpty else { continue }
+            if tokens.allSatisfy({ haystack.contains(" \($0) ") }) {
+                partials.append(name)
+            }
+        }
+        return Array((phrases + partials).prefix(hintCap))
     }
 
     /// Diarization labels unnamed voices "Speaker N" (Meeting.speakerName).

@@ -9,12 +9,41 @@ struct KnowledgeExtractionServiceTests {
         let hints = KnowledgeExtractionService.hintNames(for: chunk, from: names)
         #expect(hints.contains("Atlas"))
         #expect(hints.contains("Bob"))
-        // "Sarah Chen": one of its tokens appears — still a valid hint.
-        #expect(hints.contains("Sarah Chen"))
+        // "Chen" is nowhere in this chunk, so "Sarah Chen" is a different name
+        // that happens to share a token. Offering it invites the model to
+        // relabel this meeting's Sarah as someone else.
+        #expect(!hints.contains("Sarah Chen"))
         #expect(!hints.contains("Mercury"))
 
         let many = (0..<50).map { "Sarah \($0)" }
         #expect(KnowledgeExtractionService.hintNames(for: "Sarah spoke", from: many).count == 20)
+    }
+
+    @Test func namesSpokenInFullOutrankPartialMatchesWithinTheCap() {
+        let chunk = "[00:03] Sarah Chen: the Atlas Program ships at the end of Q3."
+        // 25 roster entries whose every long token is in the chunk, and the one
+        // name actually spoken sorted last: truncation alone would drop it and
+        // the model would write "Sarah", which resolution cannot match.
+        let names = (0..<25).map { "Atlas Program \($0)" } + ["Sarah Chen"]
+        let hints = KnowledgeExtractionService.hintNames(for: chunk, from: names)
+
+        #expect(hints.first == "Sarah Chen")
+        #expect(hints.count == 20)
+    }
+
+    @Test func aNameSharingOneCommonTokenIsNotAHint() {
+        let chunk = "[00:03] Sarah Chen: the Atlas Program ships at the end of Q3."
+        // "the" is in every chunk ever spoken; matching on it is what let
+        // common-word entity names crowd out the names actually present.
+        // "state" and "union" are absent, so every-long-token fails too.
+        #expect(KnowledgeExtractionService.hintNames(for: chunk, from: ["State of the Union"]).isEmpty)
+        // Every long token present, in any order: still the same entity.
+        #expect(KnowledgeExtractionService.hintNames(for: "Chen, Sarah joined", from: ["Sarah Chen"]) == ["Sarah Chen"])
+        // "A/B Testing" normalizes to "a b testing", which this chunk does not
+        // contain as a phrase. It is hinted through the token path, where the
+        // one-character "a" and "b" are below the floor and "testing" — its
+        // only token that carries meaning on its own — is present.
+        #expect(KnowledgeExtractionService.hintNames(for: "we ran a testing pass", from: ["A/B Testing"]) == ["A/B Testing"])
     }
 
     @Test func candidateValidatesQuoteAndMapsKind() {
