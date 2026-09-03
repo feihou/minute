@@ -65,6 +65,46 @@ struct MeetingDetailView: View {
     private var diarizationError: String? { jobs.error(.diarization, for: meeting) }
 
     var body: some View {
+        Group {
+            if meeting.isDeleted {
+                // The same meeting can be open in two stacks — the Brain tab
+                // pushes a detail from a fact's source link — and deleted from
+                // the other one. Reading any property of a deleted model is
+                // unsafe, so this branch comes before the page, the title,
+                // and the tasks below.
+                ContentUnavailableView {
+                    Label("Meeting Deleted", systemImage: "trash")
+                } description: {
+                    Text("This meeting was deleted from this iPhone.")
+                }
+            } else {
+                page
+            }
+        }
+        .navigationTitle(meeting.isDeleted ? "" : meeting.createdAt.formatted(date: .abbreviated, time: .shortened))
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            guard !meeting.isDeleted, meeting.summary == nil, meeting.hasTranscript,
+                  SummarizationEngines.availabilityMessage == nil else { return }
+            if autoGenerateSummary, jobs.claimAutoSummary(for: meeting) {
+                generateSummary()
+            } else {
+                // The user will probably tap Generate; start loading the
+                // model now so the tap doesn't pay the model-load wait too.
+                SummarizationEngines.prewarm(language: AppSettings.summaryLanguage)
+            }
+        }
+        .onDisappear {
+            player.stop()
+            if !meeting.isDeleted {
+                saveQuietly()
+            }
+        }
+    }
+
+    /// The page for a live meeting: the ScrollView with masthead, brief, and
+    /// tabs, plus the toolbar, sheet, and dialogs that read the meeting.
+    private var page: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 masthead
@@ -85,8 +125,6 @@ struct MeetingDetailView: View {
         // under the tab bar at the bottom, and a hard cut at either one reads
         // as clipped text rather than as more page below.
         .scrollEdgeEffectStyle(.soft, for: .all)
-        .navigationTitle(meeting.createdAt.formatted(date: .abbreviated, time: .shortened))
-        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
@@ -215,21 +253,6 @@ struct MeetingDetailView: View {
             Button("Cancel", role: .cancel) {}
         } message: { _ in
             Text("Used on this speaker's transcript lines and in newly generated summaries.")
-        }
-        .task {
-            guard meeting.summary == nil, meeting.hasTranscript,
-                  SummarizationEngines.availabilityMessage == nil else { return }
-            if autoGenerateSummary, jobs.claimAutoSummary(for: meeting) {
-                generateSummary()
-            } else {
-                // The user will probably tap Generate; start loading the
-                // model now so the tap doesn't pay the model-load wait too.
-                SummarizationEngines.prewarm(language: AppSettings.summaryLanguage)
-            }
-        }
-        .onDisappear {
-            player.stop()
-            saveQuietly()
         }
     }
 

@@ -109,7 +109,12 @@ struct MeetingListView: View {
                 }
             }
             .navigationDestination(item: $meetingDestination) { meeting in
+                // Keyed so replacing the destination in place (a widget link
+                // while a detail is up, a recording finishing under one)
+                // builds a fresh view instead of reusing the old one's player,
+                // tab, and auto-summary state for a different meeting.
                 MeetingDetailView(meeting: meeting, autoGenerateSummary: destinationAutoSummarizes)
+                    .id(meeting.id)
             }
             // safeAreaBar, not safeAreaInset: the bar reserves its own space and
             // participates in the scroll edge effect, so rows fade out beneath
