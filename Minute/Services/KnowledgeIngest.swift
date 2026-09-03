@@ -49,6 +49,12 @@ enum KnowledgeIngest {
         // cleared below: a re-extraction can swap facts one-for-one, so
         // count-based staleness alone would miss the content change.
         var touched: [UUID: KnowledgeEntity] = [:]
+        // Facts this meeting vouched for before this re-extraction. The
+        // pre-loop strips this meeting from them so the new transcript decides
+        // afresh; a paraphrase of one must still count as a within-meeting
+        // repeat, or it routes to review as a "cross-meeting" near-duplicate
+        // and the entity page shows the same claim twice.
+        var previouslySupported: Set<UUID> = []
         for fact in allFacts where fact.sourceMeetingIDs.contains(meetingID) {
             if fact.sources.count > 1 {
                 // Other meetings state this too, so the row stays. Whether THIS
@@ -56,6 +62,7 @@ enum KnowledgeIngest {
                 // its entry goes and the loop below re-adds it if the claim
                 // survives — a re-transcribed meeting must stop vouching for
                 // something it no longer says.
+                previouslySupported.insert(fact.id)
                 fact.removeSource(meetingID: meetingID)
                 if let entity = fact.entity { touched[entity.id] = entity }
             } else if fact.status == .suggested {
@@ -97,7 +104,7 @@ enum KnowledgeIngest {
                 // in this same run may have corroborated this row, which makes
                 // a later paraphrase a within-meeting repeat rather than a
                 // cross-meeting one worth sending to review.
-                if existing.sourceMeetingIDs.contains(meetingID) { return true }
+                if existing.sourceMeetingIDs.contains(meetingID) || previouslySupported.contains(existing.id) { return true }
                 crossMeetingNearDuplicate = true
                 return false
             }

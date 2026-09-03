@@ -401,6 +401,34 @@ struct KnowledgeIngestTests {
         #expect(fact.sourceMeetingIDs == [first.id, second.id])
     }
 
+    @Test func reextractedParaphraseOfAFactTheMeetingCorroboratedIsNotANewDraft() throws {
+        let context = try makeContext()
+        let first = Meeting(title: "A", createdAt: .now.addingTimeInterval(-3600))
+        let second = Meeting(title: "B", createdAt: .now)
+        context.insert(first)
+        context.insert(second)
+        let sarah = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(sarah)
+        let fact = KnowledgeFact(
+            text: "Sarah leads the Atlas redesign", originalText: "Sarah leads the Atlas redesign",
+            status: .autoCaptured, sourceMeetingID: first.id, capturedAt: first.createdAt, entity: sarah
+        )
+        context.insert(fact)
+        // Meeting B stated it too and was recorded as a second source.
+        fact.addSource(FactSource(meetingID: second.id, quote: "Sarah leads the Atlas redesign", capturedAt: second.createdAt))
+        try context.save()
+
+        // B is re-transcribed and re-extracted; the model now paraphrases
+        // (five of six tokens overlap — a near-duplicate, not an exact repeat).
+        try KnowledgeIngest.apply(
+            [candidate("Sarah", "Sarah leads the Atlas redesign work")],
+            from: second, context: context
+        )
+
+        // One fact, not a second near-identical draft beside it.
+        #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).count == 1)
+    }
+
     @Test func aParaphraseAfterACorroborationInTheSameRunIsStillAWithinMeetingRepeat() throws {
         let context = try makeContext()
         let first = Meeting(title: "first")
