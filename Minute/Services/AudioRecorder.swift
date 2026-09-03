@@ -64,6 +64,26 @@ final class BufferHandlerBox: Sendable {
     }
 }
 
+/// Frames written to the recording file, counted on the realtime audio tap
+/// thread and read on the main actor. A class (not a stored property) so the
+/// tap closure and the recorder share one counter, and a lock so the
+/// cross-thread read is defined rather than a data race.
+final class RecordedFrameCounter: Sendable {
+    private let storage = OSAllocatedUnfairLock<AVAudioFramePosition>(initialState: 0)
+
+    var value: AVAudioFramePosition {
+        storage.withLock { $0 }
+    }
+
+    func add(_ frames: AVAudioFrameCount) {
+        storage.withLock { $0 += AVAudioFramePosition(frames) }
+    }
+
+    func reset() {
+        storage.withLock { $0 = 0 }
+    }
+}
+
 /// Records microphone audio to an AAC file with pause/resume, level metering,
 /// and a live buffer feed for transcription. All audio stays on device.
 @MainActor
@@ -109,17 +129,40 @@ final class AudioRecorder {
     private let engine = AVAudioEngine()
     private let tapHandler = BufferHandlerBox()
     private var file: AVAudioFile?
-    private var accumulatedTime: TimeInterval = 0
-    private var segmentStartedAt: Date?
+    private let frameCounter = RecordedFrameCounter()
+    /// Sample rate of the file's processing format, kept in its own property
+    /// so `stop()` can still convert the frame count after the file is closed.
+    private var fileSampleRate: Double = 0
     /// True only while paused *by* an audio-session interruption, so the
     /// matching "interruption ended" can resume what it interrupted and
     /// nothing else. Cleared by every other route out of `.recording`.
     private var pausedByInterruption = false
     @ObservationIgnored nonisolated(unsafe) private var observerTokens: [any NSObjectProtocol] = []
 
-    /// Total recorded time, excluding paused stretches.
+    /// Total recorded time, excluding paused stretches — derived from the
+    /// frames actually written to the file rather than a `Date()` delta.
+    /// `Date()` is not monotonic: a carrier or NTP correction mid-meeting used
+    /// to stretch (or shrink) the saved duration, the transcript's timestamp
+    /// offset, and the Live Activity's paused clock by the size of the
+    /// correction, while playback still used the file's real length. Frames
+    /// only advance while the tap is running, so pauses bank themselves.
+    ///
+    /// Not observable: `frameCounter` is a `let` and `fileSampleRate` only
+    /// changes at start/stop, so reading this no longer invalidates a SwiftUI
+    /// view on every tick the way the old `Date()` delta did. The one reader
+    /// (`RecordingView`'s elapsed label) is inside a
+    /// `TimelineView(.periodic(from: .now, by: 0.5))` and redraws on its own
+    /// schedule; a plain `Text(recorder.elapsed…)` elsewhere would sit frozen.
     var elapsed: TimeInterval {
-        accumulatedTime + (segmentStartedAt.map { Date().timeIntervalSince($0) } ?? 0)
+        Self.seconds(frames: frameCounter.value, sampleRate: fileSampleRate)
+    }
+
+    /// Seconds of audio a frame count represents. Zero when nothing has been
+    /// written yet (no file, so no sample rate), so a duration can never come
+    /// back infinite or NaN.
+    static func seconds(frames: AVAudioFramePosition, sampleRate: Double) -> TimeInterval {
+        guard frames > 0, sampleRate > 0 else { return 0 }
+        return Double(frames) / sampleRate
     }
 
     /// The stable format buffers are delivered in (the file's processing
@@ -224,17 +267,14 @@ final class AudioRecorder {
         }
     }
 
-    /// Media services reset: stop pretending to record. The elapsed time is
-    /// banked and the file is closed so what was captured stays playable, and
-    /// the state goes to `.captureLost` rather than `.paused` — there is
-    /// nothing left to resume into, so offering Resume would only ever produce
-    /// an error in place of the explanation the user needs.
+    /// Media services reset: stop pretending to record. The recorded time is
+    /// already banked — the frame count stopped when the tap did — and the file
+    /// is closed so what was captured stays playable, and the state goes to
+    /// `.captureLost` rather than `.paused` — there is nothing left to resume
+    /// into, so offering Resume would only ever produce an error in place of
+    /// the explanation the user needs.
     private func handleMediaServicesReset() {
         guard state == .recording || state == .paused else { return }
-        if let startedAt = segmentStartedAt {
-            accumulatedTime += Date().timeIntervalSince(startedAt)
-        }
-        segmentStartedAt = nil
         pausedByInterruption = false
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
@@ -284,13 +324,17 @@ final class AudioRecorder {
             AVNumberOfChannelsKey: format.channelCount,
             AVEncoderAudioQualityKey: quality.rawValue,
         ]
-        file = try AVAudioFile(forWriting: url, settings: settings)
+        let file = try AVAudioFile(forWriting: url, settings: settings)
+        self.file = file
+        // The tap counts frames in the file's processing format; keep its rate
+        // so stop() can convert them after the file is closed.
+        fileSampleRate = file.processingFormat.sampleRate
+        frameCounter.reset()
 
         didReportWriteError = false
         try installTap()
         engine.prepare()
         try engine.start()
-        segmentStartedAt = Date()
         state = .recording
     }
 
@@ -327,12 +371,14 @@ final class AudioRecorder {
         }
 
         let handlerBox = tapHandler
+        let frameCounter = self.frameCounter
         engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: hardwareFormat) { [weak self] buffer, _ in
             // Audio tap thread: normalize format, write to disk, feed the
             // transcriber, meter.
             guard let normalized = converter.convert(buffer) else { return }
             do {
                 try file.write(from: normalized)
+                frameCounter.add(normalized.frameLength)
             } catch {
                 Self.logger.error("Audio write failed: \(error.localizedDescription)")
                 Task { @MainActor [weak self] in
@@ -353,10 +399,6 @@ final class AudioRecorder {
         // immediately afterwards for the one case that is.
         pausedByInterruption = false
         engine.pause()
-        if let startedAt = segmentStartedAt {
-            accumulatedTime += Date().timeIntervalSince(startedAt)
-        }
-        segmentStartedAt = nil
         level = 0
         state = .paused
     }
@@ -408,18 +450,13 @@ final class AudioRecorder {
             }
             throw error
         }
-        segmentStartedAt = Date()
         state = .recording
     }
 
     /// Stops recording, closes the file, and returns the recorded duration.
     @discardableResult
     func stop() -> TimeInterval {
-        guard state != .idle else { return accumulatedTime }
-        if let startedAt = segmentStartedAt {
-            accumulatedTime += Date().timeIntervalSince(startedAt)
-        }
-        segmentStartedAt = nil
+        guard state != .idle else { return 0 }
         pausedByInterruption = false
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
@@ -428,8 +465,10 @@ final class AudioRecorder {
         level = 0
         state = .idle
 
-        let duration = accumulatedTime
-        accumulatedTime = 0
+        // Read before resetting: this is the number the meeting is saved with.
+        let duration = elapsed
+        frameCounter.reset()
+        fileSampleRate = 0
 
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
