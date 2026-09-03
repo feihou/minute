@@ -459,6 +459,12 @@ struct MeetingDetailView: View {
                 }
                 .buttonStyle(.glassProminent)
                 .controlSize(.large)
+                // Same gate as the menu's Generate Summary. This state is
+                // reached during a re-transcription or speaker identification
+                // (no summary, not generating), and MeetingJobs.start returns
+                // the running job for the meeting without starting anything —
+                // so the tap was a silent no-op the user could repeat forever.
+                .disabled(isBusy)
                 .padding(.top, 2)
             }
             .frame(maxWidth: .infinity)
@@ -525,6 +531,17 @@ struct MeetingDetailView: View {
                 Text(isRetranscribing ? "Re-transcribing on device…" : (jobStatus ?? "Identifying speakers on device…"))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                Spacer()
+                // The same escape hatch the summary row has. Both of these
+                // jobs run for many minutes on a long meeting, and every menu
+                // item on this screen is gated on `isBusy` while they do — so
+                // without this, a re-transcription started by mistake locks
+                // the meeting with no way out but force-quitting the app.
+                Button("Stop") {
+                    jobs.cancel(meeting)
+                }
+                .font(.subheadline.weight(.medium))
+                .buttonStyle(.borderless)
             }
             .padding(.top, Layout.sectionGap - 8)
         }
