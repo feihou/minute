@@ -37,12 +37,21 @@ final class KnowledgeCatchUp {
         meeting.timestampedTranscriptText.hashValue
     }
 
-    private func skip(_ meeting: Meeting) {
-        skippedThisSession[meeting.id] = Self.contentKey(for: meeting)
+    /// Skip-lists a meeting under the text that was actually read. `key`
+    /// must be passed wherever an `await` sits between reading the text and
+    /// skipping: a re-transcription landing in that window would otherwise
+    /// skip-list text no extractor has ever seen, which is the very
+    /// wait-for-relaunch this list's content key exists to avoid.
+    private func skip(_ meeting: Meeting, key: Int? = nil) {
+        skippedThisSession[meeting.id] = key ?? Self.contentKey(for: meeting)
     }
 
+    /// Cheap for the common case: only meetings that actually failed pay for
+    /// rebuilding their transcript text, and `nextPending` asks per candidate
+    /// per loop iteration.
     private func isSkipped(_ meeting: Meeting) -> Bool {
-        skippedThisSession[meeting.id] == Self.contentKey(for: meeting)
+        guard let key = skippedThisSession[meeting.id] else { return false }
+        return key == Self.contentKey(for: meeting)
     }
 
     init(
@@ -103,8 +112,11 @@ final class KnowledgeCatchUp {
                 skip(meeting)
                 continue
             }
+            // Read once, before the await: every branch below — the staleness
+            // guard and both skip-listing catches — must reason about the text
+            // the extractor was given, not whatever the meeting holds later.
+            let transcript = meeting.timestampedTranscriptText
             do {
-                let transcript = meeting.timestampedTranscriptText
                 let names = knownEntityNames(context: context)
                 let candidates = try await extract(transcript, names)
                 guard !meeting.isDeleted else { continue }
@@ -126,11 +138,11 @@ final class KnowledgeCatchUp {
                 if case .rateLimited = error { return }
                 // Permanent (refusal, etc.) failures skip for this session
                 // and retry at next launch.
-                skip(meeting)
+                skip(meeting, key: transcript.hashValue)
             } catch {
                 // Non-FoundationModels failures skip for this session and
                 // retry at next launch.
-                skip(meeting)
+                skip(meeting, key: transcript.hashValue)
             }
         }
     }

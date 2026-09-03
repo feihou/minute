@@ -162,6 +162,48 @@ struct KnowledgeCatchUpTests {
         #expect(meeting.knowledgeExtractedAt != nil)
     }
 
+    @Test func failureSkipListsTheTextThatWasReadNotAMidExtractionReplacement() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("Original", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        struct Boom: Error {}
+        var reads: [String] = []
+        let catchUp = makeCatchUp {transcript, _ in
+            reads.append(transcript)
+            if reads.count == 1 {
+                // A re-transcription lands while the model is mid-read; the
+                // attempt then fails on the text it actually read.
+                MeetingJobs.applyNewTranscript(
+                    [TranscriptSegment(text: "replacement line", start: 0, end: 1)],
+                    to: meeting
+                )
+                throw Boom()
+            }
+            return []
+        }
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+
+        // The replacement text was never read, so it must not inherit the
+        // failure's skip — otherwise it waits for a relaunch unread.
+        #expect(reads.count == 2)
+        #expect(reads.last?.contains("replacement line") == true)
+        #expect(meeting.knowledgeExtractedAt != nil)
+
+        // The text that actually failed stays skipped: reverting to it is
+        // not a hot retry.
+        MeetingJobs.applyNewTranscript(
+            [TranscriptSegment(text: "Original transcript line", start: 0, end: 1)],
+            to: meeting
+        )
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(reads.count == 2)
+        #expect(meeting.knowledgeExtractedAt == nil)
+    }
+
     @Test func secondNudgeWhileRunningDoesNotStartASecondLoop() async throws {
         let context = try makeContext()
         context.insert(meetingWithTranscript("Only", createdAt: .now))
