@@ -92,15 +92,71 @@ enum MLXModelStore {
         )
     }
 
+    private static let logger = Logger(subsystem: "com.minuteapp.Minute", category: "MLXModelStore")
+
     /// Written only after download() finishes the whole snapshot. Weights
     /// alone aren't proof of completeness: an interrupted download can leave
     /// one flushed shard behind, and loading such a partial snapshot would
     /// silently fetch the rest over the network mid-generation — which the
     /// Settings copy promises never happens.
+    ///
+    /// Its contents are the snapshot directory's path relative to
+    /// baseDirectory, so the load path can open that exact directory instead
+    /// of asking Hugging Face what revision "main" points at today. Empty
+    /// contents mean a marker written by an older build.
     private static let completionMarkerName = ".minute-download-complete"
 
     static func completionMarker(for model: MLXSummaryModel) -> URL {
         repoDirectory(for: model).appending(path: completionMarkerName)
+    }
+
+    /// The downloaded snapshot directory this marker recorded, or nil when
+    /// the marker predates the format or the directory is gone — either way
+    /// the loader falls back to resolving it once.
+    static func snapshotDirectory(for model: MLXSummaryModel) -> URL? {
+        guard let contents = try? String(contentsOf: completionMarker(for: model), encoding: .utf8) else {
+            return nil
+        }
+        let relativePath = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !relativePath.isEmpty else { return nil }
+        let directory = baseDirectory.appending(path: relativePath, directoryHint: .isDirectory)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return nil }
+        return directory
+    }
+
+    /// Records a finished download and where it landed. False when the file
+    /// couldn't be written (a disk full at the very end), which must fail the
+    /// download: the UI would otherwise report success while isDownloaded
+    /// keeps rejecting the model forever.
+    static func writeCompletionMarker(for model: MLXSummaryModel, snapshotDirectory: URL) -> Bool {
+        FileManager.default.createFile(
+            atPath: completionMarker(for: model).path,
+            contents: Data(relativeSnapshotPath(for: snapshotDirectory).utf8)
+        )
+    }
+
+    /// The snapshot path relative to the store root — the app's container
+    /// path changes between installs, so an absolute path would rot. Empty
+    /// when the directory isn't inside the store, which records nothing and
+    /// leaves the loader on its fallback.
+    ///
+    /// Both sides are symlink-resolved before comparing: standardizedFileURL
+    /// does NOT resolve symlinks, so /var and /private/var spellings of the
+    /// same directory would fail a plain prefix test and silently record
+    /// nothing — F11 undone with no symptom but a slow first token.
+    static func relativeSnapshotPath(for directory: URL) -> String {
+        let root = baseDirectory.resolvingSymlinksInPath().path
+        let path = directory.resolvingSymlinksInPath().path
+        guard path.hasPrefix(root + "/") else {
+            // Not fatal — the loader keeps resolving once per load — but the
+            // offline load is quietly gone, so leave a trace for the on-device
+            // check (visible in the Xcode console while attached).
+            Self.logger.error("Snapshot directory outside the store, recording no path: \(path)")
+            return ""
+        }
+        return String(path.dropFirst(root.count + 1))
     }
 
     /// True when the snapshot completed AND still holds weights. ponytail:
@@ -176,8 +232,10 @@ enum MLXModelStore {
         // Only a fully resolved snapshot earns the marker isDownloaded
         // needs — and a marker that can't be written (disk full at the very
         // end) must fail the download, or the UI reports success while
-        // isDownloaded keeps rejecting the model forever.
-        guard FileManager.default.createFile(atPath: completionMarker(for: model).path, contents: nil) else {
+        // isDownloaded keeps rejecting the model forever. The marker also
+        // records this exact snapshot directory, which is what lets loading
+        // stay offline.
+        guard writeCompletionMarker(for: model, snapshotDirectory: resolved.modelDirectory) else {
             throw MarkerWriteFailure()
         }
     }
