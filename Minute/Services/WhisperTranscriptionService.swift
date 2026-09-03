@@ -142,8 +142,8 @@ enum WhisperModelStore {
         return hasModel && hasTokenizer(variant)
     }
 
-    /// Streams the model from Hugging Face; partially downloaded files are
-    /// kept so a retry resumes instead of starting over.
+    /// Streams the model and its tokenizer from Hugging Face; partially
+    /// downloaded files are kept so a retry resumes instead of starting over.
     static func download(
         _ variant: String,
         onProgress: @escaping @MainActor (Double) -> Void
@@ -153,10 +153,34 @@ enum WhisperModelStore {
             downloadBase: baseDirectory,
             from: repo,
             progressCallback: { progress in
-                let fraction = progress.fractionCompleted
+                // The bar's last percent belongs to the tokenizer fetched
+                // below. Without it a re-Get of an already-complete model —
+                // which every existing install needs once now that the
+                // tokenizer counts — would sit at a full bar for the seconds
+                // that fetch takes and read as a hang.
+                let fraction = progress.fractionCompleted * 0.99
                 Task { @MainActor in onProgress(fraction) }
             }
         )
+        // Don't start a fresh fetch on a cancel that landed at a file
+        // boundary (WhisperKit returns normally from those).
+        try Task.checkCancellation()
+        try await downloadTokenizer(variant)
+        await MainActor.run { onProgress(1) }
+    }
+
+    /// Fetches the variant's tokenizer into the store. WhisperKit would
+    /// otherwise fetch it during the FIRST TRANSCRIPTION — which fails
+    /// offline and reports "the model couldn't be loaded, re-download it",
+    /// sending the user after 630 MB that were never the problem. A few
+    /// megabytes of JSON here makes Get the only network step.
+    /// ponytail: loadTokenizer also builds the tokenizer in memory (there is
+    /// no download-only entry point); that is JSON parsing, no Core ML.
+    private static func downloadTokenizer(_ variant: String) async throws {
+        // An off-catalog variant maps to no Whisper size; hasTokenizer treats
+        // those as satisfied, so there is nothing to fetch.
+        guard let size = tokenizerVariant(for: variant) else { return }
+        _ = try await ModelUtilities.loadTokenizer(for: size, tokenizerFolder: tokenizerBaseDirectory)
     }
 
     /// Where WhisperKit streams in-flight files (as *.incomplete) before
@@ -238,6 +262,11 @@ final class WhisperTranscriptionService: TranscriptionEngine {
         do {
             let config = WhisperKitConfig(
                 modelFolder: WhisperModelStore.folder(for: variant).path,
+                // Without this the tokenizer is looked up in HubApi's default
+                // location (Documents/huggingface) and fetched from Hugging
+                // Face on first use — outside the store, outside Delete, and
+                // impossible offline. The download put it here.
+                tokenizerFolder: WhisperModelStore.tokenizerBaseDirectory,
                 verbose: false,
                 logLevel: .error,
                 load: true,
