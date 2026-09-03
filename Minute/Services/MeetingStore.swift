@@ -107,12 +107,18 @@ enum MeetingStore {
     /// powered-off phone is in — without breaking those reads.
     static let dataProtectionClass = FileProtectionType.completeUntilFirstUserAuthentication
 
-    /// Pins the data protection class on everything Minute keeps in Application
-    /// Support: the directory itself (so new files inherit it), the Recordings
-    /// directory *and every file already inside it*, and the SwiftData store
-    /// files, which `ModelContainer` creates before any policy runs. Call once
-    /// at launch, after the container is open. Returns false when something
-    /// could not be set.
+    /// The Application Support subdirectories the model caches live in.
+    /// `WhisperModelStore.baseDirectory` and `MLXModelStore.baseDirectory`
+    /// build these paths inline, so the names are duplicated here rather than
+    /// shared — rename one there and this needs the same edit.
+    private static let modelDirectoryNames = ["WhisperKitModels", "MLXModels"]
+
+    /// Pins the data protection class on Minute's Application Support tree: the
+    /// directory itself (so new files inherit it), the Recordings directory
+    /// *and every file already inside it*, whichever of the two model-cache
+    /// directories exist, and the SwiftData store files, which `ModelContainer`
+    /// creates before any policy runs. Call once at launch, after the container
+    /// is open. Returns false when something could not be set.
     ///
     /// `setAttributes` on a directory is not recursive and only governs what is
     /// created inside it afterwards, which is why each of these is named. That
@@ -122,6 +128,20 @@ enum MeetingStore {
     /// mirror copies from the background with the phone locked. Stamping only
     /// the directory would fix new recordings and leave the reported failure
     /// in place for everybody who already has meetings.
+    ///
+    /// The model directories are the same trap one level up. Both stores create
+    /// their directory lazily, so on an install upgraded from the class-B build
+    /// a model directory created afterwards inherited class B — and every file
+    /// downloaded into it inherits class B in turn, for as long as that
+    /// directory lives, not just once. Re-stamping the two roots closes that
+    /// forward path, which is the half `dataProtectionClass` names when it says
+    /// re-transcription opens the model files after a wait spent with the phone
+    /// locked. What it does not do is reach the model files already inside:
+    /// walking a downloaded weight tree on the launch path would cost more than
+    /// it buys, and unlike a recording a model is re-downloadable — deleting
+    /// and re-downloading it from Settings rewrites those files under the
+    /// current class. The directories are stamped only if they are there; this
+    /// pass does not materialise a cache for someone who downloaded no model.
     ///
     /// Not covered: the App Group container. Its only content is the widget
     /// snapshot, which goes through `UserDefaults` into
@@ -173,6 +193,15 @@ enum MeetingStore {
         } catch {
             logger.error("Reaching the recordings for the data protection pass failed: \(error.localizedDescription)")
             succeeded = false
+        }
+        // Not created when absent, unlike Recordings: a model directory that is
+        // not there means nothing has been downloaded, and whatever creates it
+        // later will inherit the class from the root stamped above.
+        for name in modelDirectoryNames {
+            let url = root.appendingPathComponent(name, isDirectory: true)
+            if FileManager.default.fileExists(atPath: url.path) {
+                targets.append(url)
+            }
         }
         for name in storeFileNames {
             let url = root.appendingPathComponent(name)

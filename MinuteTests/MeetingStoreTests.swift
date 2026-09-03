@@ -180,6 +180,45 @@ struct MeetingStoreTests {
         #expect(Set(applied.map(\.protection)) == [.completeUntilFirstUserAuthentication])
     }
 
+    /// The other half of the failure `dataProtectionClass` names: the Whisper
+    /// and MLX model trees. Both stores create their directory lazily, so on an
+    /// install upgraded from the build that stamped the Application Support
+    /// root class B, a model directory created afterwards inherited class B —
+    /// and every file downloaded into it inherits class B in turn, for as long
+    /// as the directory lives. Stamping the two roots closes that forward path.
+    ///
+    /// Only the roots. The pass does not walk a model tree on the launch path,
+    /// and it does not create a directory for a user who never downloaded a
+    /// model — a missing one is skipped, exactly like an absent store file.
+    @Test func dataProtectionReachesTheModelDirectoriesWithoutWalkingThem() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("protection-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        // A downloaded Whisper model, in the nested hub layout WhisperKit
+        // writes. MLXModels is deliberately absent: nothing has downloaded a
+        // summary model on this install.
+        let variant = base.appendingPathComponent("WhisperKitModels/models/argmaxinc/tiny", isDirectory: true)
+        try FileManager.default.createDirectory(at: variant, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: variant.appendingPathComponent("config.json"))
+
+        var applied: [(name: String, protection: FileProtectionType)] = []
+        let succeeded = MeetingStore.applyDataProtection(base: base) { url, protection in
+            applied.append((url.lastPathComponent, protection))
+        }
+
+        #expect(succeeded)
+        #expect(applied.map(\.name) == [
+            base.lastPathComponent,
+            "Recordings",
+            "WhisperKitModels",
+        ])
+        #expect(Set(applied.map(\.protection)) == [.completeUntilFirstUserAuthentication])
+        // Not materialised for a user with no MLX model: this pass stamps what
+        // is there, it does not create caches.
+        #expect(!FileManager.default.fileExists(atPath: base.appendingPathComponent("MLXModels").path))
+    }
+
     /// One target the file system refuses must not cost the others their class:
     /// giving up at the first failure would leave the recordings — the files
     /// the locked-phone reads actually need — stamped or not depending on where
