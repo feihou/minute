@@ -143,10 +143,19 @@ enum MeetingStore {
     /// current class. The directories are stamped only if they are there; this
     /// pass does not materialise a cache for someone who downloaded no model.
     ///
-    /// Not covered: the App Group container. Its only content is the widget
-    /// snapshot, which goes through `UserDefaults` into
-    /// `<group>/Library/Preferences` and inherits from that directory rather
-    /// than from the group root.
+    /// The App Group container gets the same treatment: its root, and
+    /// `<group>/Library/Preferences` when it is there — the directory
+    /// `UserDefaults` writes the widget snapshot plist into. The reader that
+    /// decides this is the widget extension's timeline provider, which runs
+    /// while the device is locked; a snapshot it cannot open is a blank widget
+    /// on the lock screen, the same symptom class as the recordings above. And
+    /// the group root is the same upgrade trap once more: an install upgraded
+    /// from the shipped build carries class B there — `setExcludedFromBackup`
+    /// used to stamp it — and keeps it until something re-stamps it, so naming
+    /// the root is what closes the forward path for a plist written later.
+    /// Both are stamped only if they are there; this pass creates nothing in
+    /// the container, and the container itself is nil wherever the entitlement
+    /// is not in force, which is the case the `appGroup` default resolves.
     ///
     /// `apply` is injected so tests can assert what gets which class: the
     /// simulator accepts `.protectionKey` and then reports it back as nil, so
@@ -154,6 +163,9 @@ enum MeetingStore {
     @discardableResult
     static func applyDataProtection(
         base: URL? = nil,
+        appGroup: URL? = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: WidgetConstants.appGroupIdentifier
+        ),
         apply: (URL, FileProtectionType) throws -> Void = { url, protection in
             try FileManager.default.setAttributes([.protectionKey: protection], ofItemAtPath: url.path)
         }
@@ -207,6 +219,16 @@ enum MeetingStore {
             let url = root.appendingPathComponent(name)
             if FileManager.default.fileExists(atPath: url.path) {
                 targets.append(url)
+            }
+        }
+        // Stamped, never created: `UserDefaults` owns the layout inside the
+        // container, and a Preferences directory conjured here would be one it
+        // never asked for.
+        if let appGroup {
+            targets.append(appGroup)
+            let preferences = appGroup.appendingPathComponent("Library/Preferences", isDirectory: true)
+            if FileManager.default.fileExists(atPath: preferences.path) {
+                targets.append(preferences)
             }
         }
         for url in targets {

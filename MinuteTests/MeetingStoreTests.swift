@@ -219,6 +219,83 @@ struct MeetingStoreTests {
         #expect(!FileManager.default.fileExists(atPath: base.appendingPathComponent("MLXModels").path))
     }
 
+    /// The App Group container, which the earlier round left with no class at
+    /// all. The reader that matters is the widget's timeline provider: it runs
+    /// while the device is locked and reads the snapshot plist `UserDefaults`
+    /// writes into `<group>/Library/Preferences`. A class-B plist there is a
+    /// blank widget on the lock screen — the same symptom class as F34 — and an
+    /// install upgraded from the shipped class-B build keeps class B on that
+    /// root until something re-stamps it. So both the root and the Preferences
+    /// directory are named, for the same reason every other target here is.
+    @Test func dataProtectionStampsTheAppGroupTheLockedWidgetReads() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("protection-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let group = FileManager.default.temporaryDirectory
+            .appendingPathComponent("group-\(UUID().uuidString)", isDirectory: true)
+        let preferences = group.appendingPathComponent("Library/Preferences", isDirectory: true)
+        try FileManager.default.createDirectory(at: preferences, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: group) }
+
+        var applied: [(name: String, protection: FileProtectionType)] = []
+        let succeeded = MeetingStore.applyDataProtection(base: base, appGroup: group) { url, protection in
+            applied.append((url.lastPathComponent, protection))
+        }
+
+        #expect(succeeded)
+        #expect(applied.map(\.name) == [
+            base.lastPathComponent,
+            "Recordings",
+            group.lastPathComponent,
+            "Preferences",
+        ])
+        #expect(Set(applied.map(\.protection)) == [.completeUntilFirstUserAuthentication])
+    }
+
+    /// The container is nil wherever the App Group entitlement is not in force
+    /// — the unsigned test host, for one. Nothing extra may be stamped then,
+    /// and nothing may be created: a Preferences directory this pass conjured
+    /// would be a directory `UserDefaults` never asked for.
+    @Test func dataProtectionStampsNothingExtraWithoutAnAppGroup() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("protection-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        var applied: [String] = []
+        let succeeded = MeetingStore.applyDataProtection(base: base, appGroup: nil) { url, _ in
+            applied.append(url.lastPathComponent)
+        }
+
+        #expect(succeeded)
+        #expect(applied == [base.lastPathComponent, "Recordings"])
+    }
+
+    /// A group container whose `Library/Preferences` does not exist yet — the
+    /// first launch, before anything has published a snapshot. The root still
+    /// gets the class so what `UserDefaults` creates there inherits it, and the
+    /// absent directory is skipped rather than materialised.
+    @Test func dataProtectionSkipsAnAppGroupPreferencesDirectoryThatIsAbsent() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("protection-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let group = FileManager.default.temporaryDirectory
+            .appendingPathComponent("group-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: group, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: group) }
+
+        var applied: [String] = []
+        let succeeded = MeetingStore.applyDataProtection(base: base, appGroup: group) { url, _ in
+            applied.append(url.lastPathComponent)
+        }
+
+        #expect(succeeded)
+        #expect(applied == [base.lastPathComponent, "Recordings", group.lastPathComponent])
+        #expect(!FileManager.default.fileExists(atPath: group.appendingPathComponent("Library").path))
+    }
+
     /// One target the file system refuses must not cost the others their class:
     /// giving up at the first failure would leave the recordings — the files
     /// the locked-phone reads actually need — stamped or not depending on where
