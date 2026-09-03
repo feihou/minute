@@ -19,10 +19,23 @@ struct MinuteApp: App {
     private let storeIsEphemeral: Bool
 
     init() {
-        if let persistent = try? ModelContainer(
-            for: Meeting.self, KnowledgeEntity.self, KnowledgeFact.self,
-            configurations: MeetingStore.modelConfiguration()
-        ) {
+        var persistent: ModelContainer?
+        var failure: String?
+        do {
+            persistent = try ModelContainer(
+                for: Meeting.self, KnowledgeEntity.self, KnowledgeFact.self,
+                configurations: MeetingStore.modelConfiguration()
+            )
+        } catch {
+            // Recorded, not swallowed. This is the one failure the user can
+            // neither see nor act on, and the same open is retried identically
+            // at every launch — so a deterministic cause (a lightweight
+            // migration that cannot run, the case KnowledgeFact documents)
+            // strands the store and every recording forever. Settings reads
+            // this to say what went wrong and to offer the reset.
+            failure = error.localizedDescription
+        }
+        if let persistent {
             container = persistent
             storeIsEphemeral = false
         } else if let inMemory = try? ModelContainer(
@@ -36,6 +49,9 @@ struct MinuteApp: App {
         } else {
             fatalError("Unable to create a SwiftData container")
         }
+        // Written on every launch, success included, so a store that recovers
+        // retires the message and the reset button with it.
+        AppSettings.persistentStoreFailure = failure
         // In fallback mode, route new audio to a session-only directory; wipe
         // whatever a previous fallback session left there — no meeting can
         // reference those files anymore.
