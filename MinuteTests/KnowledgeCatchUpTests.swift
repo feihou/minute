@@ -699,6 +699,30 @@ struct KnowledgeCatchUpTests {
         #expect(meeting.knowledgeExtractedAt == nil)
     }
 
+    @Test func deletingAPartlyRefusedMeetingRetiresItsRefusedParts() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("Health Review", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        let catchUp = makeCatchUp { _, _ in
+            KnowledgeExtractionResult(candidates: [], refusedChunkCount: 3)
+        }
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(catchUp.skippedChunksByMeeting[meeting.id] == 3)
+
+        // The refusal is remembered per meeting for the session, but the
+        // meeting itself can go — and the Brain tab must not keep counting
+        // parts of a recording the user deleted.
+        #expect(MeetingStore.delete(meeting, context: context))
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+
+        #expect(catchUp.skippedChunksByMeeting.isEmpty)
+        #expect(catchUp.pendingCount == 0)
+    }
+
     @Test func aFullyReadMeetingRecordsNoSkippedChunks() async throws {
         let context = try makeContext()
         let meeting = meetingWithTranscript("Standup", createdAt: .now)

@@ -377,14 +377,28 @@ final class KnowledgeCatchUp {
         return unstamped.filter(\.hasTranscript)
     }
 
-    private func nextPending(context: ModelContext) -> Meeting? {
+    /// The pending list, with the refused-parts record pruned to it. A meeting
+    /// leaves `pendingMeetings` when it is deleted or finally read through, and
+    /// a refusal recorded before that would otherwise sit in the Brain tab's
+    /// row for the rest of the session — telling the user that parts of a
+    /// meeting they deleted are still waiting to be read. Every read of the
+    /// queue goes through here, so the record can't outlive its subject.
+    private func livePendingMeetings(context: ModelContext) -> [Meeting] {
         let pending = pendingMeetings(context: context)
+        guard !skippedChunksByMeeting.isEmpty else { return pending }
+        let ids = Set(pending.map(\.id))
+        skippedChunksByMeeting = skippedChunksByMeeting.filter { ids.contains($0.key) }
+        return pending
+    }
+
+    private func nextPending(context: ModelContext) -> Meeting? {
+        let pending = livePendingMeetings(context: context)
         pendingCount = pending.count
         return pending.first { !isSkipped($0) }
     }
 
     private func refreshPendingCount(context: ModelContext) {
-        pendingCount = pendingMeetings(context: context).count
+        pendingCount = livePendingMeetings(context: context).count
     }
 
     private func knownEntityNames(context: ModelContext) -> [String] {
