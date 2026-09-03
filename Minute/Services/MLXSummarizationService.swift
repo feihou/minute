@@ -306,8 +306,13 @@ final class MLXSummarizationService: SummarizationEngine {
                 // overview, title, or template sections) instead of
                 // destroying it, the same finish line the Apple engine
                 // protects.
+                // MLX has no typed cancellation, so a cancel that landed
+                // inside the generation can arrive here as an ordinary
+                // error — folding it would save a summary the user just
+                // asked not to have.
+                try Task.checkCancellation()
                 Self.logger.error("Local merge failed, combining notes in code: \(error.localizedDescription)")
-                summary = Self.mechanicalSummary(from: notes)
+                summary = try Self.degradedSummary(from: notes)
             }
             if skipped > 0 {
                 summary.skippedParts = skipped
@@ -665,6 +670,17 @@ final class MLXSummarizationService: SummarizationEngine {
             suggestedTitle: nil,
             speakerPerspectives: (combined.speakerPerspectives ?? []).normalized()
         )
+    }
+
+    /// The fold is only a rescue when there is something in it to rescue.
+    /// Explicitly empty arrays are a valid "nothing noteworthy in this part",
+    /// so every part can succeed and still leave nothing to combine — and a
+    /// summary with no content at all would replace the meeting's Generate
+    /// empty-state with blank notes. Same guard as a model-written summary:
+    /// an empty fold rethrows the unreadable-merge error instead of saving
+    /// over the affordance the user needs to try again.
+    static func degradedSummary(from notes: [LocalChunkNotes]) throws -> MeetingSummary {
+        try validated(mechanicalSummary(from: notes))
     }
 
     // MARK: JSON handling

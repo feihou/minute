@@ -224,4 +224,30 @@ struct MLXMechanicalFallbackTests {
         ])
         #expect(summary.speakerPerspectives == nil)
     }
+
+    @MainActor
+    @Test("Notes that fold to nothing fail instead of blanking the meeting")
+    func emptyFoldStillFails() {
+        // Explicitly empty arrays are an honest "nothing noteworthy in this
+        // part", so every part can succeed and still leave nothing to fold.
+        // Saving that would replace the meeting's Generate empty-state with
+        // blank notes, so the unreadable-merge error has to survive.
+        #expect(throws: SummarizerError.self) {
+            _ = try MLXSummarizationService.degradedSummary(from: [
+                notes(keyPoints: [], decisions: [], actionItems: [], openQuestions: [], speakerPerspectives: []),
+                notes(keyPoints: [], decisions: [], actionItems: [], openQuestions: [], speakerPerspectives: []),
+            ])
+        }
+    }
+
+    @MainActor
+    @Test("A fold that rescued something is kept")
+    func foldWithContentIsReturned() throws {
+        let summary = try MLXSummarizationService.degradedSummary(from: [
+            notes(keyPoints: ["Pricing is behind"]),
+            notes(keyPoints: [], decisions: [], actionItems: [], openQuestions: []),
+        ])
+        #expect(summary.keyPoints == ["Pricing is behind"])
+        #expect(summary.overview.isEmpty)
+    }
 }
