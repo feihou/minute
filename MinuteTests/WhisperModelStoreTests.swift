@@ -44,4 +44,52 @@ struct WhisperModelStoreTests {
         #expect(!WhisperModelStore.hasLocalData(variant))
         #expect(!FileManager.default.fileExists(atPath: cache.path))
     }
+
+    @Test("Tokenizer folders live inside the store, one per Whisper size")
+    func tokenizerFolderMatchesTheHubLayout() throws {
+        let large = try #require(WhisperModelStore.tokenizerFolder(for: "openai_whisper-large-v3-v20240930_626MB"))
+        #expect(large.path.hasSuffix("WhisperKitModels/tokenizers/models/openai/whisper-large-v3"))
+        let base = try #require(WhisperModelStore.tokenizerFolder(for: "openai_whisper-base"))
+        #expect(base.path.hasSuffix("WhisperKitModels/tokenizers/models/openai/whisper-base"))
+        // A name that isn't a Whisper size has no tokenizer repo, and must
+        // not be able to make an otherwise complete model look missing.
+        #expect(WhisperModelStore.tokenizerFolder(for: "nonexistent-model-variant") == nil)
+    }
+
+    @Test("A model without its tokenizer is not downloaded")
+    func tokenizerIsRequiredForADownloadedModel() throws {
+        // A variant name that maps to a size the catalog never offers, so a
+        // real download on this machine can't collide with the fixture.
+        let variant = "openai_whisper-medium-test-\(UUID().uuidString)"
+        defer { WhisperModelStore.delete(variant) }
+
+        let folder = WhisperModelStore.folder(for: variant)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for name in ["AudioEncoder.mlmodelc", "TextDecoder.mlmodelc", "MelSpectrogram.mlmodelc", "config.json"] {
+            try Data("{}".utf8).write(to: folder.appending(path: name))
+        }
+        // Every Core ML file is there, but the first transcription would
+        // still have to reach Hugging Face for the tokenizer.
+        #expect(!WhisperModelStore.isDownloaded(variant))
+
+        let tokenizer = try #require(WhisperModelStore.tokenizerFolder(for: variant))
+        try FileManager.default.createDirectory(at: tokenizer, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: tokenizer.appending(path: "tokenizer.json"))
+        #expect(!WhisperModelStore.isDownloaded(variant))   // tokenizer_config.json still missing
+        try Data("{}".utf8).write(to: tokenizer.appending(path: "tokenizer_config.json"))
+        #expect(WhisperModelStore.isDownloaded(variant))
+    }
+
+    @Test("Deleting a model removes its tokenizer too")
+    func deleteRemovesTheTokenizer() throws {
+        let variant = "openai_whisper-tiny-test-\(UUID().uuidString)"
+        defer { WhisperModelStore.delete(variant) }
+
+        let tokenizer = try #require(WhisperModelStore.tokenizerFolder(for: variant))
+        try FileManager.default.createDirectory(at: tokenizer, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: tokenizer.appending(path: "tokenizer.json"))
+
+        WhisperModelStore.delete(variant)
+        #expect(!FileManager.default.fileExists(atPath: tokenizer.path))
+    }
 }

@@ -75,15 +75,71 @@ enum WhisperModelStore {
         baseDirectory.appending(path: "models/\(repo)/\(variant)", directoryHint: .isDirectory)
     }
 
-    /// True when the pieces WhisperKit needs to load are all present.
+    /// Where the tokenizers live: a sibling of the model folders inside the
+    /// store, so baseDirectory's backup exclusion covers them and delete can
+    /// reclaim them. WhisperKit treats this URL as a Hub download base and
+    /// resolves each tokenizer to <base>/models/openai/whisper-<size>
+    /// (HubApiWrapper.localRepoLocation → HubApi.swift:350-352).
+    static var tokenizerBaseDirectory: URL {
+        baseDirectory.appending(path: "tokenizers", directoryHint: .isDirectory)
+    }
+
+    /// Whisper sizes, most specific name first: "large-v3" must win over
+    /// "large", and "base.en" over "base".
+    private static let tokenizerVariants: [ModelVariant] = [
+        .largev3, .largev2, .large, .mediumEn, .medium, .smallEn, .small, .baseEn, .base, .tinyEn, .tiny,
+    ]
+
+    /// The Whisper size a catalog folder name belongs to
+    /// ("openai_whisper-large-v3-v20240930_626MB" → .largev3), or nil when
+    /// the name is not a Whisper model at all.
+    static func tokenizerVariant(for variant: String) -> ModelVariant? {
+        tokenizerVariants.first { variant.contains($0.description) }
+    }
+
+    /// The folder holding one size's tokenizer files, or nil when the variant
+    /// name maps to no Whisper size. The path is built, not asked for:
+    /// HubApiWrapper's initializer starts an NWPathMonitor on a fresh queue
+    /// (HubApi.swift:75, 114, 810-830), and isDownloaded calls this once per
+    /// catalog row on every Settings refresh.
+    /// ponytail: mirrors the hub layout (<base>/models/<repo>) and rebuilds
+    /// the repo name ("openai/whisper-" + size) because WhisperKit's
+    /// tokenizerNameForVariant is internal — the same bet folder(for:)
+    /// already makes; revisit both if WhisperKit changes its layout.
+    static func tokenizerFolder(for variant: String) -> URL? {
+        guard let size = tokenizerVariant(for: variant) else { return nil }
+        return tokenizerBaseDirectory.appending(
+            path: "models/openai/whisper-\(size.description)",
+            directoryHint: .isDirectory
+        )
+    }
+
+    /// True when the tokenizer WhisperKit loads is in the store. Both files
+    /// are needed: tokenizer.json is the vocabulary and tokenizer_config.json
+    /// picks the tokenizer class, and a folder holding only one of them sends
+    /// the load back to Hugging Face. A variant with no mapped size reports
+    /// true so an off-catalog model never looks missing over a tokenizer that
+    /// was never meant to exist.
+    static func hasTokenizer(_ variant: String) -> Bool {
+        guard let folder = tokenizerFolder(for: variant) else { return true }
+        return ["tokenizer.json", "tokenizer_config.json"].allSatisfy {
+            FileManager.default.fileExists(atPath: folder.appending(path: $0).path)
+        }
+    }
+
+    /// True when the pieces WhisperKit needs to load are all present — Core
+    /// ML files AND the tokenizer, because a model without its tokenizer
+    /// still needs the network on its first transcription, which is exactly
+    /// what "downloaded" is supposed to rule out.
     /// ponytail: presence checks, no checksums — a corrupted model fails at
     /// load time and the fix is delete + re-download.
     static func isDownloaded(_ variant: String) -> Bool {
         let folder = folder(for: variant)
         let required = ["AudioEncoder.mlmodelc", "TextDecoder.mlmodelc", "MelSpectrogram.mlmodelc", "config.json"]
-        return required.allSatisfy {
+        let hasModel = required.allSatisfy {
             FileManager.default.fileExists(atPath: folder.appending(path: $0).path)
         }
+        return hasModel && hasTokenizer(variant)
     }
 
     /// Streams the model from Hugging Face; partially downloaded files are
@@ -117,6 +173,11 @@ enum WhisperModelStore {
     static func delete(_ variant: String) {
         try? FileManager.default.removeItem(at: folder(for: variant))
         try? FileManager.default.removeItem(at: downloadCache(for: variant))
+        // Safe to take the whole tokenizer folder: no two catalog models
+        // share a Whisper size, so this can't strand another model.
+        if let tokenizer = tokenizerFolder(for: variant) {
+            try? FileManager.default.removeItem(at: tokenizer)
+        }
     }
 
     /// Any bytes on disk for this variant — including a cancelled or failed
