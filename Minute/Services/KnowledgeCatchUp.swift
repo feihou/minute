@@ -156,11 +156,21 @@ final class KnowledgeCatchUp {
                 try context.save()
             } catch is CancellationError {
                 return
+            } catch let error as SummarizerError {
+                // The model went away mid-loop (the per-meeting check inside
+                // the extractor caught it). Not a verdict on this meeting:
+                // stop without skip-listing, exactly like the availability
+                // guard at the top of run(), and let the next nudge retry.
+                if case .unavailable = error { return }
+                skip(meeting, key: transcript.hashValue)
             } catch let error as LanguageModelSession.GenerationError {
                 // Rate limiting is the device saying "not now", not a verdict
                 // on this meeting: stop without skip-listing (spec §5
                 // pause-and-resume) — the next nudge retries from here.
                 if case .rateLimited = error { return }
+                // Assets being evicted mid-loop is the same kind of "not now":
+                // the model is gone, not this meeting's fault.
+                if case .assetsUnavailable = error { return }
                 // Permanent (refusal, etc.) failures skip for this session
                 // and retry at next launch.
                 skip(meeting, key: transcript.hashValue)

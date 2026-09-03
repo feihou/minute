@@ -499,4 +499,29 @@ struct KnowledgeCatchUpTests {
         #expect(calls == 2)
         #expect(meeting.knowledgeExtractedAt != nil)
     }
+
+    @Test func modelGoingUnavailableMidLoopLeavesTheQueueUntouched() async throws {
+        let context = try makeContext()
+        context.insert(meetingWithTranscript("A", createdAt: .now))
+        context.insert(meetingWithTranscript("B", createdAt: .now.addingTimeInterval(-60)))
+        try context.save()
+
+        var available = false
+        var calls = 0
+        let catchUp = makeCatchUp { _, _ in
+            calls += 1
+            guard available else { throw SummarizerError.unavailable("Apple Intelligence isn't ready.") }
+            return []
+        }
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        // Not this meeting's fault: stop, don't march on skip-listing B too.
+        #expect(calls == 1)
+
+        available = true
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        // Neither meeting was skip-listed, so both are read on the next nudge.
+        #expect(calls == 3)
+    }
 }
