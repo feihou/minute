@@ -113,12 +113,14 @@ enum MeetingStore {
     /// shared — rename one there and this needs the same edit.
     private static let modelDirectoryNames = ["WhisperKitModels", "MLXModels"]
 
-    /// Pins the data protection class on Minute's Application Support tree: the
-    /// directory itself (so new files inherit it), the Recordings directory
-    /// *and every file already inside it*, whichever of the two model-cache
-    /// directories exist, and the SwiftData store files, which `ModelContainer`
-    /// creates before any policy runs. Call once at launch, after the container
-    /// is open. Returns false when something could not be set.
+    /// Pins the data protection class on Minute's Application Support tree and
+    /// the App Group container: the Application Support directory itself (so
+    /// new files inherit it), the Recordings directory *and every file already
+    /// inside it*, whichever of the two model-cache directories exist, the
+    /// SwiftData store files, which `ModelContainer` creates before any policy
+    /// runs, and the group container's root and Preferences directory. Call
+    /// once at launch, after the container is open. Returns false when
+    /// something could not be set.
     ///
     /// `setAttributes` on a directory is not recursive and only governs what is
     /// created inside it afterwards, which is why each of these is named. That

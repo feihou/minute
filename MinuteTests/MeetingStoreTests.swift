@@ -128,7 +128,7 @@ struct MeetingStoreTests {
         try Data("wal".utf8).write(to: base.appendingPathComponent("default.store-wal"))
 
         var applied: [(name: String, protection: FileProtectionType)] = []
-        let succeeded = MeetingStore.applyDataProtection(base: base) { url, protection in
+        let succeeded = MeetingStore.applyDataProtection(base: base, appGroup: nil) { url, protection in
             applied.append((url.lastPathComponent, protection))
         }
 
@@ -165,7 +165,7 @@ struct MeetingStoreTests {
         try Data("third".utf8).write(to: recordings.appendingPathComponent("imported.mp3"))
 
         var applied: [(name: String, protection: FileProtectionType)] = []
-        let succeeded = MeetingStore.applyDataProtection(base: base) { url, protection in
+        let succeeded = MeetingStore.applyDataProtection(base: base, appGroup: nil) { url, protection in
             applied.append((url.lastPathComponent, protection))
         }
 
@@ -203,7 +203,7 @@ struct MeetingStoreTests {
         try Data("{}".utf8).write(to: variant.appendingPathComponent("config.json"))
 
         var applied: [(name: String, protection: FileProtectionType)] = []
-        let succeeded = MeetingStore.applyDataProtection(base: base) { url, protection in
+        let succeeded = MeetingStore.applyDataProtection(base: base, appGroup: nil) { url, protection in
             applied.append((url.lastPathComponent, protection))
         }
 
@@ -311,7 +311,7 @@ struct MeetingStoreTests {
         try Data("db".utf8).write(to: base.appendingPathComponent("default.store"))
 
         var applied: [String] = []
-        let succeeded = MeetingStore.applyDataProtection(base: base) { url, _ in
+        let succeeded = MeetingStore.applyDataProtection(base: base, appGroup: nil) { url, _ in
             if url.lastPathComponent == "Recordings" {
                 throw CocoaError(.fileWriteNoPermission)
             }
