@@ -151,14 +151,27 @@ struct KnowledgeExtractionService {
         )
     }
 
+    /// Diarization labels unnamed voices "Speaker N" (Meeting.speakerName).
+    /// The transcript the extractor reads carries those labels, and the model
+    /// dutifully reports facts about "Speaker 1" — but that is a different
+    /// person in every meeting, so it must never resolve to a shared entity.
+    ///
+    /// Matched with a case-insensitive regex rather than KnowledgeText.normalized,
+    /// which sorts tokens ("Speaker 2" → "2 speaker") and so cannot anchor the
+    /// label to the front.
+    static func isSpeakerPlaceholder(_ name: String) -> Bool {
+        name.range(of: #"^\s*speaker\s+\d+\s*$"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
     /// Trims, maps the kind (unknown → .topic), validates the quote against
-    /// the transcript, and drops empty facts.
+    /// the transcript, and drops empty facts and placeholder speakers.
     static func candidate(from draft: KnowledgeCandidateDraft, transcript: String) -> KnowledgeCandidate? {
         let name = draft.entityName.trimmingCharacters(in: .whitespacesAndNewlines)
         let fact = draft.fact.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, !fact.isEmpty else { return nil }
+        guard !name.isEmpty, !fact.isEmpty, !isSpeakerPlaceholder(name) else { return nil }
         let quote = draft.supportingQuote.trimmingCharacters(in: .whitespacesAndNewlines)
-        let kind = EntityKind(rawValue: draft.entityKind.lowercased()) ?? .topic
+        let rawKind = draft.entityKind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let kind = EntityKind(rawValue: rawKind) ?? .topic
         return KnowledgeCandidate(
             entityName: name,
             entityKind: kind == .me ? .topic : kind,
