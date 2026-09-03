@@ -2,6 +2,20 @@ import SwiftData
 import SwiftUI
 import UIKit
 
+extension Meeting {
+    /// Whether this meeting is no longer in the store.
+    ///
+    /// `isDeleted` alone does not answer that: SwiftData reports it only while
+    /// the delete is still pending and clears it again once the save commits,
+    /// leaving the object alive with its last-known values and no context. The
+    /// committed case is the one that reaches a view — the stack that did not
+    /// do the deleting redraws after the save, not during it — so both halves
+    /// have to be asked about.
+    var isGone: Bool {
+        isDeleted || modelContext == nil
+    }
+}
+
 /// Everything about one meeting: playback, summary, transcript, and
 /// edit/copy/share/delete — laid out as a single reading surface rather than a
 /// stack of cards, so the notes read like a document instead of a form.
@@ -66,12 +80,13 @@ struct MeetingDetailView: View {
 
     var body: some View {
         Group {
-            if meeting.isDeleted {
+            if meeting.isGone {
                 // The same meeting can be open in two stacks — the Brain tab
                 // pushes a detail from a fact's source link — and deleted from
-                // the other one. Reading any property of a deleted model is
-                // unsafe, so this branch comes before the page, the title,
-                // and the tasks below.
+                // the other one. Everything below reads a property, and after
+                // the delete those properties are stale leftovers rather than
+                // stored data, so this branch comes before the page, the
+                // title, and the tasks.
                 ContentUnavailableView {
                     Label("Meeting Deleted", systemImage: "trash")
                 } description: {
@@ -81,10 +96,10 @@ struct MeetingDetailView: View {
                 page
             }
         }
-        .navigationTitle(meeting.isDeleted ? "" : meeting.createdAt.formatted(date: .abbreviated, time: .shortened))
+        .navigationTitle(meeting.isGone ? "" : meeting.createdAt.formatted(date: .abbreviated, time: .shortened))
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            guard !meeting.isDeleted, meeting.summary == nil, meeting.hasTranscript,
+            guard !meeting.isGone, meeting.summary == nil, meeting.hasTranscript,
                   SummarizationEngines.availabilityMessage == nil else { return }
             if autoGenerateSummary, jobs.claimAutoSummary(for: meeting) {
                 generateSummary()
@@ -96,14 +111,14 @@ struct MeetingDetailView: View {
         }
         .onDisappear {
             player.stop()
-            if !meeting.isDeleted {
+            if !meeting.isGone {
                 saveQuietly()
             }
         }
     }
 
     /// The page for a live meeting: the ScrollView with masthead, brief, and
-    /// tabs, plus the toolbar, sheet, and dialogs that read the meeting.
+    /// tabs, plus the toolbar, sheet, dialogs, and alerts that read the meeting.
     private var page: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {

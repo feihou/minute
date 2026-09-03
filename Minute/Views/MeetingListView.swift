@@ -2,6 +2,22 @@ import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// The SwiftUI identity of the detail view this list pushes.
+enum MeetingDetailIdentity {
+    /// The meeting's identifier while it exists, nil once it is gone.
+    ///
+    /// The destination closure re-runs on every list update, and the meeting
+    /// it was handed can be deleted by then — the Brain tab pushes a detail of
+    /// its own from a fact's source link, and deleting there invalidates this
+    /// list's query without clearing this stack's destination. `id` still
+    /// answers on a deleted meeting, but with a stale value that would key the
+    /// detail to a meeting that no longer exists, so the key goes to nil and
+    /// the detail's own deleted branch draws the placeholder instead.
+    static func key(for meeting: Meeting) -> UUID? {
+        meeting.isGone ? nil : meeting.id
+    }
+}
+
 struct MeetingListView: View {
     var storeIsEphemeral = false
 
@@ -114,7 +130,7 @@ struct MeetingListView: View {
                 // builds a fresh view instead of reusing the old one's player,
                 // tab, and auto-summary state for a different meeting.
                 MeetingDetailView(meeting: meeting, autoGenerateSummary: destinationAutoSummarizes)
-                    .id(meeting.id)
+                    .id(MeetingDetailIdentity.key(for: meeting))
             }
             // safeAreaBar, not safeAreaInset: the bar reserves its own space and
             // participates in the scroll edge effect, so rows fade out beneath
