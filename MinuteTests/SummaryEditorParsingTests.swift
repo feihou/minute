@@ -50,6 +50,36 @@ struct SummaryEditorParsingTests {
         #expect(SummaryEditorView.splitActionItemLine("a | b") == ["a", "b"])
     }
 
+    /// F52 again: "task | | deadline" is how a row with a deadline but no owner
+    /// gets typed, and the two separators there share the single space between
+    /// their pipes. Consuming the second one took that shared space with it, so
+    /// the first no longer matched " | " — the deadline slid into the owner and
+    /// the task kept a dangling "|". The two-space form happened to parse, so
+    /// the corruption turned on an invisible character. Same silent field shift
+    /// this task exists to remove, and there is no undo.
+    @Test func splitActionItemLineReadsAnEmptyOwnerBetweenTwoSeparators() {
+        #expect(SummaryEditorView.splitActionItemLine("Ship it | | Friday") == ["Ship it", "", "Friday"])
+        #expect(SummaryEditorView.splitActionItemLine("Ship it |  | Friday") == ["Ship it", "", "Friday"])
+    }
+
+    @Test func parseActionItemsTreatsAnEmptyOwnerAsNotSpecified() {
+        let parsed = SummaryEditorView.parseActionItems("Ship it | | Friday")
+        #expect(parsed == [ActionItem(task: "Ship it", owner: "Not specified", deadline: "Friday")])
+    }
+
+    /// A whole separator outranks a borrowed space, or an owner that is itself a
+    /// bare "|" — which the editor writes as "task | | | deadline" — would come
+    /// back as an empty owner and a task carrying the pipe, breaking the round
+    /// trip in the very shape the borrowed space was added to read.
+    @Test func splitActionItemLinePrefersAWholeSeparatorOverABorrowedSpace() {
+        let serialized = SummaryEditorView.serializeActionItems([
+            ActionItem(task: "Ship it", owner: "|", deadline: "Friday"),
+        ])
+
+        #expect(serialized == "Ship it | | | Friday")
+        #expect(SummaryEditorView.splitActionItemLine(serialized) == ["Ship it", "|", "Friday"])
+    }
+
     /// "\r\n" is a single Swift `Character`, so splitting on "\n" never split a
     /// CRLF paste at all: an entire pasted list collapsed into one action item
     /// whose owner and deadline were swallowed by the next row's text.

@@ -222,12 +222,30 @@ struct SummaryEditorView: View {
     /// vendor B" into a task, an owner and a deadline that all belonged to the
     /// task, silently and with no undo. A line with a single separator still
     /// means task + owner, which is what a user typing one row expects.
+    ///
+    /// Two adjacent separators share the one space between their pipes, which
+    /// is how "task | | deadline" — a row with a deadline and no owner — is
+    /// typed. Taking the second separator takes that shared space with it, so
+    /// what is left of the first is a " |" at the very end of `head`, matching
+    /// no whole separator: the deadline slid into the owner and the task kept a
+    /// dangling pipe, while the two-space form parsed fine. So once a separator
+    /// has been consumed, its leading space is lent back and a trailing " |"
+    /// closes a separator too. A whole separator is still preferred, or an owner
+    /// that is itself a bare "|" ("task | | | deadline") would read as an empty
+    /// one.
     static func splitActionItemLine(_ line: String) -> [String] {
         var fields: [String] = []
         var head = Substring(line)
-        while fields.count < 2, let range = head.range(of: actionItemSeparator, options: .backwards) {
-            fields.insert(String(head[range.upperBound...]), at: 0)
-            head = head[..<range.lowerBound]
+        while fields.count < 2 {
+            if let range = head.range(of: actionItemSeparator, options: .backwards) {
+                fields.insert(String(head[range.upperBound...]), at: 0)
+                head = head[..<range.lowerBound]
+            } else if !fields.isEmpty, head.hasSuffix(" |") {
+                fields.insert("", at: 0)
+                head = head.dropLast(2)
+            } else {
+                break
+            }
         }
         fields.insert(String(head), at: 0)
         return fields
