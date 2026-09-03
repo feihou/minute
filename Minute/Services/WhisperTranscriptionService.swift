@@ -263,6 +263,10 @@ final class WhisperTranscriptionService: TranscriptionEngine {
     private var whisperKit: WhisperKit?
     private var liveFeed: WhisperLiveFeed?
     private var liveTask: Task<Void, Never>?
+    /// What `finish()` waits on — opened when the live loop exits, and opened
+    /// early by `cancel()` so a finisher is never stuck behind a decode that
+    /// cancellation cannot interrupt.
+    private var liveGate: LiveLoopGate?
 
     /// Checks the model is downloaded — deliberately WITHOUT loading it.
     /// Loading takes seconds (Core ML compiles on first use), and the live
@@ -341,10 +345,15 @@ final class WhisperTranscriptionService: TranscriptionEngine {
 
         let feed = WhisperLiveFeed()
         liveFeed = feed
+        // Handed to the loop rather than read back off the instance: a
+        // cancelled pass can still be unwinding when the next recording starts,
+        // and it must open the gate it was born with, never the new session's.
+        let gate = LiveLoopGate()
+        liveGate = gate
         // weak: the task must not keep a dropped service (and its loaded
         // model) alive — matching TranscriptionService's resultsTask.
         liveTask = Task { [weak self] in
-            await self?.runLiveLoop(feed: feed)
+            await self?.runLiveLoop(feed: feed, gate: gate)
         }
 
         return { @Sendable buffer in
@@ -358,8 +367,15 @@ final class WhisperTranscriptionService: TranscriptionEngine {
     /// complete segment list.
     func finish() async -> [TranscriptSegment] {
         liveFeed?.stop()
-        await liveTask?.value
+        // The gate, not the task: WhisperKit checks cancellation only between
+        // stages, so a load or a decode can run for minutes yet, and awaiting
+        // the task would hold the screen on "Finishing transcript…" for all of
+        // it. `cancel()` opens the gate, which is how the Save-without-
+        // transcript button gets out of exactly this wait — and whatever
+        // `segments` holds by then is what the user keeps.
+        await liveGate?.wait()
         liveTask = nil
+        liveGate = nil
         liveFeed = nil
         // The final pass normally clears this; only its failure path leaves
         // a hypothesis behind, kept rather than lost.
@@ -367,7 +383,8 @@ final class WhisperTranscriptionService: TranscriptionEngine {
         return segments
     }
 
-    /// Abandons the session without waiting for results (user discarded).
+    /// Abandons the session without waiting for results (user discarded, or
+    /// asked to save with whatever the engine already heard).
     /// Deliberately does NOT await the loop: an in-flight decode can't be
     /// preempted mid-window (WhisperKit only checks cancellation between
     /// stages), and Discard must not freeze the screen for those seconds.
@@ -376,7 +393,13 @@ final class WhisperTranscriptionService: TranscriptionEngine {
     func cancel() async {
         liveFeed?.stop()
         liveTask?.cancel()
+        // A `finish()` already suspended on the gate has to be let go here for
+        // the same reason: cancelling the task does not stop the stage it is
+        // inside, so waiting for it is the very wait "Save without transcript"
+        // is offered to escape.
+        liveGate?.open()
         liveTask = nil
+        liveGate = nil
         liveFeed = nil
         volatileText = ""
         segments = []
@@ -387,7 +410,11 @@ final class WhisperTranscriptionService: TranscriptionEngine {
     /// only cheap bookkeeping between awaits touches main. Mirrors WhisperKit's
     /// AudioStreamTranscriber algorithm (decode the unconfirmed tail, confirm
     /// all but the trailing segments) without its microphone ownership.
-    private func runLiveLoop(feed: WhisperLiveFeed) async {
+    private func runLiveLoop(feed: WhisperLiveFeed, gate: LiveLoopGate) async {
+        // However this loop ends — the model failing to load, cancellation, or
+        // the final pass returning — a `finish()` waiting on it has to be let
+        // go, and every early return below is one more way to strand it.
+        defer { gate.open() }
         // The model loads HERE, not in prepare(), so the feed is already
         // capturing while Core ML compiles — the backlog decodes on the
         // first pass and the meeting's opening words aren't lost. Say so:
