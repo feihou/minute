@@ -32,6 +32,7 @@ enum BrainSections {
 /// m2a; curation (review, merge, forget) is m2b.
 struct BrainView: View {
     @Environment(KnowledgeCatchUp.self) private var catchUp
+    @Environment(\.modelContext) private var context
     @Query private var entities: [KnowledgeEntity]
 
     private var sections: BrainSections.Groups {
@@ -61,6 +62,10 @@ struct BrainView: View {
             .navigationDestination(for: KnowledgeEntity.self) { entity in
                 EntityDetailView(entity: entity)
             }
+            // Opening the tab is the moment the user wants to see the latest
+            // — refresh the pending count and pick up anything a save left
+            // unread (deleting a meeting, for instance, never nudges).
+            .task { catchUp.nudge(context: context) }
         }
     }
 
@@ -199,7 +204,9 @@ struct BrainView: View {
                     .foregroundStyle(.secondary)
 
                 // A first-run user's earliest visit likely lands mid-extraction —
-                // show that the brain is being built right now.
+                // show that the brain is being built right now, or that work is
+                // waiting (warm phone, model not ready) so the screen never looks
+                // dead while meetings sit unread.
                 if catchUp.isWorking {
                     HStack(spacing: 12) {
                         ProgressView()
@@ -208,6 +215,12 @@ struct BrainView: View {
                             .foregroundStyle(.secondary)
                     }
                     .padding(.top, 28)
+                } else if catchUp.pendingCount > 0 {
+                    Label("\(catchUp.pendingCount) meeting\(catchUp.pendingCount == 1 ? "" : "s") still to read — Minute catches up while it's open.",
+                          systemImage: "clock")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 28)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

@@ -126,17 +126,10 @@ final class KnowledgeCatchUp {
             guard thermal == .nominal || thermal == .fair else { return }
 
             // pendingCount is owned by nextPending, which sets it from the
-            // unfiltered fetch on every call — it only reaches 0 when the
-            // fetch itself is empty, not merely when everything left is
+            // pre-skip-list fetch on every call — it only reaches 0 when
+            // that fetch itself is empty, not merely when everything left is
             // skip-listed.
             guard let meeting = nextPending(context: context) else { return }
-            guard meeting.hasTranscript else {
-                // Mid-transcription or genuinely silent: leave unstamped so a
-                // transcript arriving later gets extracted; skip this session
-                // so an empty import doesn't spin the loop.
-                skip(meeting)
-                continue
-            }
             // Read once, before the await: every branch below — the staleness
             // guard and both skip-listing catches — must reason about the text
             // the extractor was given, not whatever the meeting holds later.
@@ -182,21 +175,28 @@ final class KnowledgeCatchUp {
         }
     }
 
-    private func nextPending(context: ModelContext) -> Meeting? {
+    /// Unstamped meetings the loop can actually read. `segments` can't be
+    /// predicated, so the transcript filter runs in memory.
+    private func pendingMeetings(context: ModelContext) -> [Meeting] {
         let descriptor = FetchDescriptor<Meeting>(
             predicate: #Predicate { $0.knowledgeExtractedAt == nil },
             sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
         )
-        let pending = (try? context.fetch(descriptor)) ?? []
+        let unstamped = (try? context.fetch(descriptor)) ?? []
+        // A meeting with no transcript is deliberately left unstamped (text
+        // may arrive later), but it is not "still to read" — counting it
+        // shows the Brain tab a number that never goes down.
+        return unstamped.filter(\.hasTranscript)
+    }
+
+    private func nextPending(context: ModelContext) -> Meeting? {
+        let pending = pendingMeetings(context: context)
         pendingCount = pending.count
         return pending.first { !isSkipped($0) }
     }
 
     private func refreshPendingCount(context: ModelContext) {
-        let descriptor = FetchDescriptor<Meeting>(
-            predicate: #Predicate { $0.knowledgeExtractedAt == nil }
-        )
-        pendingCount = (try? context.fetchCount(descriptor)) ?? pendingCount
+        pendingCount = pendingMeetings(context: context).count
     }
 
     private func knownEntityNames(context: ModelContext) -> [String] {

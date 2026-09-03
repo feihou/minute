@@ -102,6 +102,22 @@ struct KnowledgeCatchUpTests {
         #expect(silent.knowledgeExtractedAt == nil)
     }
 
+    @Test func meetingWithoutTranscriptIsNotCountedAsPending() async throws {
+        let context = try makeContext()
+        context.insert(Meeting(title: "No transcript"))
+        context.insert(meetingWithTranscript("Readable", createdAt: .now))
+        try context.save()
+
+        let catchUp = makeCatchUp { _, _ in [] }
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+
+        // The Brain tab renders pendingCount as "N meetings still to read —
+        // Minute catches up while it's open". A meeting that will never be
+        // read (nothing to read) must not sit in that number forever.
+        #expect(catchUp.pendingCount == 0)
+    }
+
     @Test func reTranscribedMeetingIsReadAgainInTheSameSession() async throws {
         let context = try makeContext()
         let silent = Meeting(title: "Silent")
