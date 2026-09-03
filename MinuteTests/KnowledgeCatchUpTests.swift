@@ -102,6 +102,66 @@ struct KnowledgeCatchUpTests {
         #expect(silent.knowledgeExtractedAt == nil)
     }
 
+    @Test func reTranscribedMeetingIsReadAgainInTheSameSession() async throws {
+        let context = try makeContext()
+        let silent = Meeting(title: "Silent")
+        context.insert(silent)
+        try context.save()
+
+        var calls = 0
+        let catchUp = makeCatchUp { _, _ in calls += 1; return [] }
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 0)   // no transcript: skipped for now
+
+        // Re-transcription lands text and resets the cursor (MeetingJobs does
+        // exactly this); the same session must read the meeting now, not
+        // wait for a relaunch.
+        MeetingJobs.applyNewTranscript(
+            [TranscriptSegment(text: "now there is text", start: 0, end: 1)],
+            to: silent
+        )
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+
+        #expect(calls == 1)
+        #expect(silent.knowledgeExtractedAt != nil)
+    }
+
+    @Test func failedMeetingIsRetriedOnceItsTranscriptChanges() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("Flaky", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        struct Boom: Error {}
+        var calls = 0
+        let catchUp = makeCatchUp { _, _ in
+            calls += 1
+            if calls == 1 { throw Boom() }
+            return []
+        }
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 1)
+        #expect(meeting.knowledgeExtractedAt == nil)
+
+        // Same transcript: still skip-listed, no hot retry.
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 1)
+
+        // New transcript: a different meeting as far as the skip-list cares.
+        MeetingJobs.applyNewTranscript(
+            [TranscriptSegment(text: "re-transcribed line", start: 0, end: 1)],
+            to: meeting
+        )
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 2)
+        #expect(meeting.knowledgeExtractedAt != nil)
+    }
+
     @Test func secondNudgeWhileRunningDoesNotStartASecondLoop() async throws {
         let context = try makeContext()
         context.insert(meetingWithTranscript("Only", createdAt: .now))

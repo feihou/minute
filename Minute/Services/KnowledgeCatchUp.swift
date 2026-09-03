@@ -23,10 +23,27 @@ final class KnowledgeCatchUp {
     private let availabilityMessage: @MainActor () -> String?
     private let extract: Extractor
     private var running: Task<Void, Never>?
-    /// Meetings that failed or were empty this session — skipped, not
-    /// retried hot, so one permanently-refusing meeting can't
-    /// head-of-line-block the queue. Cleared naturally at next launch.
-    private var skippedThisSession: Set<UUID> = []
+    /// Meetings that failed or were empty this session, keyed by the
+    /// transcript they had at the time. Skipped, not retried hot, so one
+    /// permanently-refusing meeting can't head-of-line-block the queue —
+    /// but a re-transcription changes the key, so the meeting is read again
+    /// in this session instead of waiting for the next launch. Cleared
+    /// naturally at next launch.
+    private var skippedThisSession: [UUID: Int] = [:]
+
+    /// What the skip-list remembers a meeting by: identity plus the text
+    /// the extractor would read, so new text means a new attempt.
+    static func contentKey(for meeting: Meeting) -> Int {
+        meeting.timestampedTranscriptText.hashValue
+    }
+
+    private func skip(_ meeting: Meeting) {
+        skippedThisSession[meeting.id] = Self.contentKey(for: meeting)
+    }
+
+    private func isSkipped(_ meeting: Meeting) -> Bool {
+        skippedThisSession[meeting.id] == Self.contentKey(for: meeting)
+    }
 
     init(
         availabilityMessage: @escaping @MainActor () -> String? = { KnowledgeExtractionService.availabilityMessage },
@@ -83,7 +100,7 @@ final class KnowledgeCatchUp {
                 // Mid-transcription or genuinely silent: leave unstamped so a
                 // transcript arriving later gets extracted; skip this session
                 // so an empty import doesn't spin the loop.
-                skippedThisSession.insert(meeting.id)
+                skip(meeting)
                 continue
             }
             do {
@@ -109,11 +126,11 @@ final class KnowledgeCatchUp {
                 if case .rateLimited = error { return }
                 // Permanent (refusal, etc.) failures skip for this session
                 // and retry at next launch.
-                skippedThisSession.insert(meeting.id)
+                skip(meeting)
             } catch {
                 // Non-FoundationModels failures skip for this session and
                 // retry at next launch.
-                skippedThisSession.insert(meeting.id)
+                skip(meeting)
             }
         }
     }
@@ -125,7 +142,7 @@ final class KnowledgeCatchUp {
         )
         let pending = (try? context.fetch(descriptor)) ?? []
         pendingCount = pending.count
-        return pending.first { !skippedThisSession.contains($0.id) }
+        return pending.first { !isSkipped($0) }
     }
 
     private func refreshPendingCount(context: ModelContext) {
