@@ -235,7 +235,7 @@ final class RecordingSession: Identifiable {
         switch phase {
         case .recording:
             if oldPhase == .preparing {
-                liveActivity.start(title: title)
+                liveActivity.start(title: liveActivityTitle)
             } else {
                 liveActivity.update(isPaused: false, elapsed: recorder.elapsed)
             }
@@ -248,6 +248,16 @@ final class RecordingSession: Identifiable {
         case .preparing:
             break
         }
+    }
+
+    /// The title the Live Activity is started with. `ActivityAttributes` are
+    /// immutable for the life of the activity, so this is the only title the
+    /// lock screen ever shows — take it through the same trim-and-fall-back
+    /// the save uses, or clearing the title field in the New Meeting sheet
+    /// leaves the card (and the expanded Dynamic Island) with a blank line
+    /// while the saved meeting is named "Meeting <date>".
+    var liveActivityTitle: String {
+        Self.savedTitles(draft: title, prefilledDefault: prefilledDefaultTitle).title
     }
 
     /// `nonisolated` because it touches no session state: that lets it stand
