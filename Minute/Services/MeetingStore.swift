@@ -107,16 +107,26 @@ enum MeetingStore {
     /// powered-off phone is in — without breaking those reads.
     static let dataProtectionClass = FileProtectionType.completeUntilFirstUserAuthentication
 
-    /// Pins the data protection class on everything Minute writes: the
-    /// Application Support directory (so new files inherit it), the Recordings
-    /// directory (which on an install upgraded from before the policy shipped
-    /// already exists and keeps whatever class it was created with, so new
-    /// audio inherits the wrong one), and the SwiftData store files, which
-    /// `ModelContainer` creates before any policy runs and which a directory
-    /// attribute therefore never reaches. `setAttributes` on a directory is not
-    /// recursive and only governs what is created inside it afterwards, which
-    /// is why each of these is named. Call once at launch, after the container
-    /// is open. Returns false when something could not be set.
+    /// Pins the data protection class on everything Minute keeps in Application
+    /// Support: the directory itself (so new files inherit it), the Recordings
+    /// directory *and every file already inside it*, and the SwiftData store
+    /// files, which `ModelContainer` creates before any policy runs. Call once
+    /// at launch, after the container is open. Returns false when something
+    /// could not be set.
+    ///
+    /// `setAttributes` on a directory is not recursive and only governs what is
+    /// created inside it afterwards, which is why each of these is named. That
+    /// is the whole point for audio: an install upgraded from the build that
+    /// set class B carries a library of recordings a stamp on the directory
+    /// would never reach, and those are exactly the files the iCloud Drive
+    /// mirror copies from the background with the phone locked. Stamping only
+    /// the directory would fix new recordings and leave the reported failure
+    /// in place for everybody who already has meetings.
+    ///
+    /// Not covered: the App Group container. Its only content is the widget
+    /// snapshot, which goes through `UserDefaults` into
+    /// `<group>/Library/Preferences` and inherits from that directory rather
+    /// than from the group root.
     ///
     /// `apply` is injected so tests can assert what gets which class: the
     /// simulator accepts `.protectionKey` and then reports it back as nil, so
@@ -128,34 +138,55 @@ enum MeetingStore {
             try FileManager.default.setAttributes([.protectionKey: protection], ofItemAtPath: url.path)
         }
     ) -> Bool {
-        var succeeded = true
+        let root: URL
         do {
-            let root = try base ?? FileManager.default.url(
+            root = try base ?? FileManager.default.url(
                 for: .applicationSupportDirectory,
                 in: .userDomainMask,
                 appropriateFor: nil,
                 create: true
             )
-            let recordings = root.appendingPathComponent(recordingsDirectoryName, isDirectory: true)
-            try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
-            var targets = [root, recordings]
-            for name in storeFileNames {
-                let url = root.appendingPathComponent(name)
-                if FileManager.default.fileExists(atPath: url.path) {
-                    targets.append(url)
-                }
-            }
-            for url in targets {
-                do {
-                    try apply(url, dataProtectionClass)
-                } catch {
-                    logger.error("Pinning the data protection class on \(url.lastPathComponent) failed: \(error.localizedDescription)")
-                    succeeded = false
-                }
-            }
         } catch {
             logger.error("Applying data protection failed: \(error.localizedDescription)")
+            return false
+        }
+        var succeeded = true
+        var targets = [root]
+        // Scoped so a failure reaching the audio — a stray file where the
+        // directory should be, a full disk — costs only the audio and still
+        // leaves the store files stamped, which is the other half of the fix.
+        do {
+            let recordings = root.appendingPathComponent(recordingsDirectoryName, isDirectory: true)
+            try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+            targets.append(recordings)
+            // The directory is flat by construction — one file per recording —
+            // so a shallow listing is the whole library, and this runs once per
+            // launch. Sorted only to make the order deterministic: the file
+            // system's is not, and a test that asserts what gets stamped needs
+            // one.
+            let existing = try FileManager.default.contentsOfDirectory(
+                at: recordings,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+            targets.append(contentsOf: existing.sorted { $0.lastPathComponent < $1.lastPathComponent })
+        } catch {
+            logger.error("Reaching the recordings for the data protection pass failed: \(error.localizedDescription)")
             succeeded = false
+        }
+        for name in storeFileNames {
+            let url = root.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: url.path) {
+                targets.append(url)
+            }
+        }
+        for url in targets {
+            do {
+                try apply(url, dataProtectionClass)
+            } catch {
+                logger.error("Pinning the data protection class on \(url.lastPathComponent) failed: \(error.localizedDescription)")
+                succeeded = false
+            }
         }
         return succeeded
     }

@@ -144,6 +144,68 @@ struct MeetingStoreTests {
         #expect(FileManager.default.fileExists(atPath: base.appendingPathComponent("Recordings").path))
     }
 
+    /// The upgrade case F34 is actually about. A library recorded under the
+    /// shipped class-B build already sits in Recordings, and `setAttributes` on
+    /// a directory is not recursive — stamping the directory fixes only audio
+    /// written afterwards, while every existing `.m4a` keeps class B and the
+    /// background iCloud Drive mirror still fails to copy it with the phone
+    /// locked. So the pass names each recording that is already there, in a
+    /// deterministic order (the file system's own is not).
+    @Test func dataProtectionReachesRecordingsThatAlreadyExist() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("protection-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let recordings = base.appendingPathComponent("Recordings", isDirectory: true)
+        try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+        // Written out of order, and one is an imported container rather than a
+        // recording — every byte in there needs the class, not just `.m4a`.
+        try Data("second".utf8).write(to: recordings.appendingPathComponent("b-meeting.m4a"))
+        try Data("first".utf8).write(to: recordings.appendingPathComponent("a-meeting.m4a"))
+        try Data("third".utf8).write(to: recordings.appendingPathComponent("imported.mp3"))
+
+        var applied: [(name: String, protection: FileProtectionType)] = []
+        let succeeded = MeetingStore.applyDataProtection(base: base) { url, protection in
+            applied.append((url.lastPathComponent, protection))
+        }
+
+        #expect(succeeded)
+        #expect(applied.map(\.name) == [
+            base.lastPathComponent,
+            "Recordings",
+            "a-meeting.m4a",
+            "b-meeting.m4a",
+            "imported.mp3",
+        ])
+        #expect(Set(applied.map(\.protection)) == [.completeUntilFirstUserAuthentication])
+    }
+
+    /// One target the file system refuses must not cost the others their class:
+    /// giving up at the first failure would leave the recordings — the files
+    /// the locked-phone reads actually need — stamped or not depending on where
+    /// in the list the failure happened to fall.
+    @Test func dataProtectionKeepsGoingAfterOneTargetFails() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("protection-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let recordings = base.appendingPathComponent("Recordings", isDirectory: true)
+        try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+        try Data("audio".utf8).write(to: recordings.appendingPathComponent("meeting.m4a"))
+        try Data("db".utf8).write(to: base.appendingPathComponent("default.store"))
+
+        var applied: [String] = []
+        let succeeded = MeetingStore.applyDataProtection(base: base) { url, _ in
+            if url.lastPathComponent == "Recordings" {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+            applied.append(url.lastPathComponent)
+        }
+
+        #expect(!succeeded)
+        #expect(applied == [base.lastPathComponent, "meeting.m4a", "default.store"])
+    }
+
     @Test func ephemeralModeRoutesAudioToTemporaryDirectoryAndWipesIt() throws {
         MeetingStore.useEphemeralStorage = true
         defer { MeetingStore.useEphemeralStorage = false }
