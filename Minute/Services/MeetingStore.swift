@@ -408,6 +408,12 @@ enum MeetingStore {
     /// can tell the user instead of silently claiming success.
     @discardableResult
     static func delete(_ meeting: Meeting, context: ModelContext) -> Bool {
+        // A foreground mirror started from the Settings toggle may still be
+        // walking its snapshot; it must not write this meeting's notes to
+        // iCloud Drive after the user deleted it. Captured before the delete:
+        // the id has to survive into the rollback path below.
+        let meetingID = meeting.id
+        ICloudDriveBackup.noteMeetingDeleted(meetingID)
         let audioFileName = meeting.audioFileName
         context.delete(meeting)
         do {
@@ -422,6 +428,10 @@ enum MeetingStore {
             // context-wide rollback(), which would also discard unrelated
             // unsaved edits in the shared main context.
             context.insert(meeting)
+            // The delete didn't commit, so the note above was a prediction that
+            // turned out wrong: retract it, or the mirror would skip a meeting
+            // the user still has for the rest of the process.
+            ICloudDriveBackup.noteMeetingDeleteFailed(meetingID)
             return false
         }
         if let audioFileName {
