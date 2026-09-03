@@ -471,16 +471,18 @@ struct MeetingListView: View {
     /// the transcript a later Re-transcribe Audio produces would never be
     /// extracted. Nothing is lost by waiting there: that job nudges the loop
     /// itself when it lands. And with Auto-Summarize on, the summary starting
-    /// on the next screen already nudges when it finishes
-    /// (`MeetingJobs.onContentChanged`), as does the Brain tab's own `.task`;
-    /// nudging now would only make extraction and that summary contend for the
-    /// single on-device model.
+    /// on the next screen nudges the loop when it ends, however it ends:
+    /// `MeetingJobs.onWorkEnded` fires on success, on the cancel a Stop tap
+    /// produces, and on failure alike, and `KnowledgeCatchUp.workEnded(context:)`
+    /// starts reading again once the last outstanding job is gone. Nudging now
+    /// would only make extraction and that summary contend for the single
+    /// on-device model.
     ///
-    /// That second case leans on a fallback: when the selected summary engine
-    /// is unavailable, or the summary throws, no completion nudge ever
-    /// arrives, and the meeting waits for the Brain tab's own `.task` or the
-    /// next scene activation to be read — later than a nudge here, but never
-    /// lost.
+    /// The gap left in that second case is a summary that never starts at all
+    /// — the selected engine is unavailable, or the auto-summary was already
+    /// claimed — since no job means no end to nudge from. The meeting then
+    /// waits for the Brain tab's own `.task` or the next scene activation to be
+    /// read: later than a nudge here, but never lost.
     private func nudgeBrain(for meeting: Meeting) {
         guard meeting.hasTranscript, !destinationAutoSummarizes else { return }
         catchUp.nudge(context: context)

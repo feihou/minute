@@ -387,7 +387,13 @@ final class KnowledgeCatchUp {
         let pending = pendingMeetings(context: context)
         guard !skippedChunksByMeeting.isEmpty else { return pending }
         let ids = Set(pending.map(\.id))
-        skippedChunksByMeeting = skippedChunksByMeeting.filter { ids.contains($0.key) }
+        let kept = skippedChunksByMeeting.filter { ids.contains($0.key) }
+        // Assigned only when the filter actually dropped something: this runs
+        // on every loop iteration, and reassigning an `@Observable` property
+        // invalidates BrainView even when nothing about it changed.
+        if kept.count != skippedChunksByMeeting.count {
+            skippedChunksByMeeting = kept
+        }
         return pending
     }
 

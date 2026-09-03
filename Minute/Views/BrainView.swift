@@ -152,7 +152,7 @@ struct BrainView: View {
         if !catchUp.skippedChunksByMeeting.isEmpty {
             let parts = catchUp.skippedChunksByMeeting.values.reduce(0, +)
             Section {
-                Label("\(parts) part\(parts == 1 ? "" : "s") of a meeting couldn't be read yet — Minute will try them again.",
+                Label("\(parts) part\(parts == 1 ? "" : "s") of your meetings couldn't be read yet — Minute will try them again.",
                       systemImage: "exclamationmark.triangle")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
