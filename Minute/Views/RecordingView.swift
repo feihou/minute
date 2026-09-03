@@ -1,5 +1,6 @@
 import SwiftData
 import SwiftUI
+import UIKit
 
 /// Full-screen recording studio: title, status, elapsed time, live waveform,
 /// live transcript, and pause/resume/stop controls on a dark backdrop.
@@ -92,13 +93,24 @@ struct RecordingView: View {
         case .saving:
             ProgressView("Finishing transcript…")
                 .padding(.vertical, 20)
-        case .failed(let message):
+        case .failed(let message, let canOpenSettings):
             VStack(spacing: 12) {
                 Label(message, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.red)
                     .font(.callout)
                     .multilineTextAlignment(.center)
                 HStack(spacing: 12) {
+                    if canOpenSettings {
+                        // The only failure the user can fix without leaving
+                        // the meeting behind — don't make them hunt through
+                        // iOS Settings by hand on every attempt.
+                        Button("Open Settings") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) {
+                                UIApplication.shared.open(url)
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
                     if session.didStartRecording {
                         // Never force the user to throw away captured audio.
                         Button("Save Recording") {

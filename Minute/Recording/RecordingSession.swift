@@ -17,7 +17,11 @@ final class RecordingSession: Identifiable {
         case recording
         case paused
         case saving
-        case failed(String)
+        /// `canOpenSettings` is true only for the microphone-permission
+        /// failure: it is the one failure the user fixes in iOS Settings, and
+        /// the recording screen puts an Open Settings button on screen for it
+        /// instead of leaving them to navigate there by hand.
+        case failed(String, canOpenSettings: Bool)
     }
 
     private static let logger = Logger(subsystem: "com.minuteapp.Minute", category: "RecordingSession")
@@ -68,7 +72,10 @@ final class RecordingSession: Identifiable {
         phase = .preparing
 
         guard await AudioRecorder.requestPermission() else {
-            phase = .failed("Microphone access is off. Enable it in Settings › Privacy & Security › Microphone.")
+            phase = .failed(
+                "Microphone access is off. Enable it in Settings › Privacy & Security › Microphone.",
+                canOpenSettings: true
+            )
             return
         }
 
@@ -92,7 +99,7 @@ final class RecordingSession: Identifiable {
             // set, so the failed state offers Save Recording / Discard — which
             // is exactly the choice the user has left.
             self.notice = nil
-            self.phase = .failed(message)
+            self.phase = .failed(message, canOpenSettings: false)
         }
 
         recorder.onWriteError = { [weak self] _ in
@@ -117,7 +124,7 @@ final class RecordingSession: Identifiable {
             // The session may already be active — release it so other apps'
             // audio isn't left interrupted by a recording that never began.
             recorder.cleanupAfterFailedStart()
-            phase = .failed("Recording couldn't start: \(error.localizedDescription)")
+            phase = .failed("Recording couldn't start: \(error.localizedDescription)", canOpenSettings: false)
             return
         }
 
@@ -208,7 +215,10 @@ final class RecordingSession: Identifiable {
             // context. Declaring the meeting saved instead would let the next
             // orphan sweep delete its audio.
             context.delete(meeting)
-            phase = .failed("The meeting couldn't be saved — storage may be full. Free up space and tap Save Recording to try again.")
+            phase = .failed(
+                "The meeting couldn't be saved — storage may be full. Free up space and tap Save Recording to try again.",
+                canOpenSettings: false
+            )
             return nil
         }
     }
