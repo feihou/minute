@@ -42,6 +42,14 @@ final class RecordingSession: Identifiable {
     }
     /// True once audio capture began — a later failure should offer to keep it.
     private(set) var didStartRecording = false
+    /// True while a discard's delete refuses to commit. The meeting is still in
+    /// the library pointing at its own audio and nothing is half-deleted, so
+    /// the recording screen is free to close on it: this flag is what tells it
+    /// to offer that escape next to the retry. Without one the sheet — which
+    /// can't be swiped away — has no control left that doesn't retry the same
+    /// failing delete, and the storage that delete is waiting on does not free
+    /// itself while the user is held there.
+    private(set) var discardFailed = false
     /// Transient, user-visible explanation (e.g. why recording auto-paused).
     private(set) var notice: String?
     var title: String
@@ -352,9 +360,11 @@ final class RecordingSession: Identifiable {
     /// so the meeting is still in the library, and removing its audio here
     /// would leave exactly the wreck MeetingStore refuses to create — a meeting
     /// whose recording is gone, its playback and Re-transcribe both dead. The
-    /// session enters `.failed` instead, keeping the meeting so the caller can
-    /// retry the same delete rather than dismissing on a discard that did not
-    /// happen.
+    /// session enters `.failed` and sets `discardFailed` instead, keeping the
+    /// meeting so the caller can retry the same delete. Returning false says
+    /// the discard didn't happen — NOT that the caller has to stay: the row and
+    /// its audio are consistent, so closing the screen on them is safe, and
+    /// `discardFailed` is there so the screen offers exactly that.
     func discard(in context: ModelContext) async -> Bool {
         // A meeting that already saved is the library's, not this session's:
         // the caller has it and the screen is closing on it. The toolbar
@@ -368,16 +378,19 @@ final class RecordingSession: Identifiable {
         recorder.stop()
         await transcription.cancel()
         if let savedMeeting, !savedMeeting.isGone, !deleteMeeting(savedMeeting, context) {
+            // Say what is true — the meeting and the audio it points at both
+            // survived, together — and mark the state that lets the screen
+            // offer a way out beside the retry. The user is not trapped in
+            // here waiting for storage to free itself: they can leave the
+            // meeting in the library and delete it from the list later.
+            discardFailed = true
             phase = .failed(
-                "The recording couldn't be discarded — storage may be full. It's still saved in your library. Free up space and tap Close to try again.",
+                "The recording couldn't be discarded — storage may be full. It's still saved in your library: keep it there and delete it from the list later, or free up space and try again.",
                 canOpenSettings: false
             )
-            // The user asked to throw this recording away, so stop offering to
-            // keep it: `.failed` would otherwise put Save Recording on screen,
-            // and finish() refuses to run once a discard has begun.
-            didStartRecording = false
             return false
         }
+        discardFailed = false
         savedMeeting = nil
         if let audioFileName {
             MeetingStore.deleteAudioFile(named: audioFileName)

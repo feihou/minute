@@ -182,7 +182,8 @@ struct RecordingSessionSaveTests {
     /// MeetingStore is written to prevent: a visible meeting whose recording is
     /// gone, with playback and Re-transcribe both dead. So a discard that can't
     /// remove the row keeps the recording, says so, and holds the meeting for a
-    /// retry.
+    /// retry — while flagging that the screen may still be left, since the row
+    /// and its audio came through the failure consistent with each other.
     @Test func aDiscardWhoseDeleteDoesNotCommitKeepsTheRecordingAndReportsFailure() async throws {
         let context = try makeContext()
         let engine = ParkedTranscriptionEngine()
@@ -215,8 +216,12 @@ struct RecordingSessionSaveTests {
         } else {
             Issue.record("Expected a failed phase after the delete didn't commit, got \(session.phase)")
         }
-        // Audio the user threw away is never something to offer to save again.
-        #expect(session.didStartRecording == false)
+        // Nothing here is half-deleted, so the screen has to stay escapable:
+        // this flag is what puts "Keep in Library" beside the retry. Without
+        // it the recording sheet — which can't be swiped away — has no control
+        // left that doesn't retry the same failing delete, and storage does
+        // not free itself while the user is held there.
+        #expect(session.discardFailed)
 
         // The meeting handle survived, so the retry finishes the discard
         // instead of leaving a row nothing can reach.
@@ -224,6 +229,7 @@ struct RecordingSessionSaveTests {
         let retried = await session.discard(in: context)
 
         #expect(retried)
+        #expect(session.discardFailed == false)
         #expect(try context.fetch(FetchDescriptor<Meeting>()).isEmpty)
         #expect(session.phase == .idle)
     }

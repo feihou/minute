@@ -61,8 +61,9 @@ struct RecordingView: View {
                     Task {
                         // false = the meeting row couldn't be deleted, so it is
                         // still in the library with its audio; the session goes
-                        // to .failed and this screen stays put for a retry
-                        // instead of dismissing on a discard that didn't happen.
+                        // to .failed rather than dismissing on a discard that
+                        // didn't happen. That state offers Keep in Library and
+                        // Try Again, so staying put is never a dead end.
                         if await session.discard(in: context) {
                             onFinish(nil)
                         }
@@ -116,37 +117,60 @@ struct RecordingView: View {
                         }
                         .buttonStyle(.borderedProminent)
                     }
-                    if session.didStartRecording {
-                        // Never force the user to throw away captured audio.
-                        Button("Save Recording") {
+                    if session.discardFailed {
+                        // The way out, and prominent for the same reason Save
+                        // Recording is: it's the choice that keeps data. This
+                        // sheet can't be swiped away and the failure is storage
+                        // that won't free itself while the user is held here,
+                        // so without this button every remaining control
+                        // retries the same failing delete and the only escape
+                        // is force-quitting. Leaving is safe — the delete
+                        // didn't commit, so the meeting and the audio it points
+                        // at both survived together, and the meeting is
+                        // deletable from the list whenever they like.
+                        Button("Keep in Library") { onFinish(nil) }
+                            .buttonStyle(.borderedProminent)
+                        Button("Try Again", role: .destructive) {
                             Task {
-                                // nil = save failed; the session stays in
-                                // .failed so this screen remains for a retry.
-                                if let meeting = await session.finish(in: context) {
-                                    onFinish(meeting)
-                                }
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                    Button(session.didStartRecording ? "Discard" : "Close", role: .destructive) {
-                        if session.didStartRecording {
-                            // Captured audio deserves the same confirmation the
-                            // toolbar Discard has; this button sits 12pt from
-                            // Save Recording.
-                            confirmingDiscard = true
-                        } else {
-                            Task {
-                                // Also the retry after a discard whose delete
-                                // didn't commit: only dismiss once the row is
-                                // actually gone.
+                                // Dismiss only once the row is really gone.
                                 if await session.discard(in: context) {
                                     onFinish(nil)
                                 }
                             }
                         }
+                        .buttonStyle(.bordered)
+                    } else {
+                        if session.didStartRecording {
+                            // Never force the user to throw away captured audio.
+                            Button("Save Recording") {
+                                Task {
+                                    // nil = save failed; the session stays in
+                                    // .failed so this screen remains for a retry.
+                                    if let meeting = await session.finish(in: context) {
+                                        onFinish(meeting)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                        Button(session.didStartRecording ? "Discard" : "Close", role: .destructive) {
+                            if session.didStartRecording {
+                                // Captured audio deserves the same confirmation
+                                // the toolbar Discard has; this button sits 12pt
+                                // from Save Recording.
+                                confirmingDiscard = true
+                            } else {
+                                Task {
+                                    // Nothing was captured, so there is nothing
+                                    // to delete and this always dismisses.
+                                    if await session.discard(in: context) {
+                                        onFinish(nil)
+                                    }
+                                }
+                            }
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.bordered)
                 }
             }
             .padding(.horizontal)
