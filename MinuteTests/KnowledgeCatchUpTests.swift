@@ -676,6 +676,57 @@ struct KnowledgeCatchUpTests {
         #expect(catchUp.pendingCount == 1)
     }
 
+    /// A refusal is per chunk, and which chunks a pass refuses is not fixed:
+    /// the next launch reads the meeting again and may well refuse a different
+    /// one. If the retry's candidates were taken as the meeting's whole
+    /// extraction, the facts the first pass found in the passage this one never
+    /// reached would be deleted — and since the meeting stays unstamped, that
+    /// happens again on every launch until nothing is left.
+    @Test func aPartialRetryKeepsFactsFromChunksItNeverReached() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("Health Review", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        let fromFirstChunk = KnowledgeCandidate(
+            entityName: "Sarah", entityKind: .person, fact: "Sarah owns Atlas", validatedQuote: nil
+        )
+        let fromSecondChunk = KnowledgeCandidate(
+            entityName: "Dana", entityKind: .person, fact: "Dana runs the migration", validatedQuote: nil
+        )
+
+        // This launch reads the first chunk and is refused the second.
+        let firstLaunch = makeCatchUp { _, _ in
+            KnowledgeExtractionResult(candidates: [fromFirstChunk], refusedChunkCount: 1)
+        }
+        firstLaunch.nudge(context: context)
+        await firstLaunch.waitUntilIdle()
+
+        // The next launch — a fresh instance, so the session skip-list is
+        // empty — is refused the other one.
+        let secondLaunch = makeCatchUp { _, _ in
+            KnowledgeExtractionResult(candidates: [fromSecondChunk], refusedChunkCount: 1)
+        }
+        secondLaunch.nudge(context: context)
+        await secondLaunch.waitUntilIdle()
+
+        let texts = try context.fetch(FetchDescriptor<KnowledgeFact>()).map(\.originalText).sorted()
+        #expect(texts == ["Dana runs the migration", "Sarah owns Atlas"])
+        // Still partial, so still not retired.
+        #expect(meeting.knowledgeExtractedAt == nil)
+
+        // A pass that was refused nothing does speak for the whole meeting:
+        // it is the extraction, so the claim it no longer makes goes.
+        let fullLaunch = makeCatchUp { _, _ in
+            KnowledgeExtractionResult(candidates: [fromSecondChunk])
+        }
+        fullLaunch.nudge(context: context)
+        await fullLaunch.waitUntilIdle()
+
+        #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).map(\.originalText) == ["Dana runs the migration"])
+        #expect(meeting.knowledgeExtractedAt != nil)
+    }
+
     @Test func aPartlyRefusedMeetingIsNotRetriedHotInTheSameSession() async throws {
         let context = try makeContext()
         let meeting = meetingWithTranscript("Health Review", createdAt: .now)

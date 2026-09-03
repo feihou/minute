@@ -5,7 +5,8 @@ import SwiftData
 /// code (the prompt's hint list is only a hint — spec §2), dedups against
 /// everything already seen including tombstones, assigns trust status
 /// (spec §3), and replaces the meeting's still-suggested facts so
-/// re-extraction is idempotent.
+/// re-extraction is idempotent — unless the caller says this pass read only
+/// part of the transcript, in which case it can only add.
 @MainActor
 enum KnowledgeIngest {
     /// At or above: same fact, drop. (spec §3)
@@ -19,11 +20,23 @@ enum KnowledgeIngest {
         var duplicatesDropped = 0
     }
 
+    /// - Parameter replacingExisting: whether these candidates are the
+    ///   meeting's whole extraction. True — every fully read transcript —
+    ///   makes this a replacement, so a re-read decides afresh and repeated
+    ///   extraction is idempotent. False is for a pass the guardrails refused
+    ///   part of: it speaks only for what it read, so it may only add. A retry
+    ///   that is refused a *different* chunk would otherwise delete the facts
+    ///   an earlier pass found in the passage this one never reached — and a
+    ///   partly read meeting is never stamped, so that trimming would repeat
+    ///   on every launch until nothing was left. Merging is safe because the
+    ///   dedup loop already reads an exact repeat of a fact this meeting still
+    ///   supports as a within-meeting duplicate.
     @discardableResult
     static func apply(
         _ candidates: [KnowledgeCandidate],
         from meeting: Meeting,
-        context: ModelContext
+        context: ModelContext,
+        replacingExisting: Bool = true
     ) throws -> Result {
         var result = Result()
         let meetingID = meeting.id
@@ -31,14 +44,6 @@ enum KnowledgeIngest {
         // a name mentioned twice in one meeting lands on one entity.
         var known = try context.fetch(FetchDescriptor<KnowledgeEntity>())
 
-        // Idempotent re-run: this meeting's unreviewed statements are wholly
-        // superseded by this extraction (spec §2), and so is its support for
-        // anything another meeting also states. Both fall out of one pass now
-        // that support is a single list.
-        //
-        // ponytail: fetch-all then filter in memory — #Predicate cannot look
-        // inside a codable array.
-        let allFacts = try context.fetch(FetchDescriptor<KnowledgeFact>())
         // context.delete doesn't save immediately, so deleted-but-unsaved facts
         // stay visible in entity.facts until try context.save() below.
         // Dedup/contradiction scans over entity.facts must skip these IDs or a
@@ -58,23 +63,34 @@ enum KnowledgeIngest {
         // survives, or deleting the other source prunes a fact this transcript
         // still states.
         var previouslySupported: Set<UUID> = []
-        for fact in allFacts where fact.sourceMeetingIDs.contains(meetingID) {
-            if fact.sources.count > 1 {
-                // Other meetings state this too, so the row stays. Whether THIS
-                // meeting still states it is decided by its new transcript, so
-                // its entry goes and the loop below re-adds it if the claim
-                // survives — a re-transcribed meeting must stop vouching for
-                // something it no longer says.
-                previouslySupported.insert(fact.id)
-                fact.removeSource(meetingID: meetingID)
-                if let entity = fact.entity { touched[entity.id] = entity }
-            } else if fact.status == .suggested {
-                staleIDs.insert(fact.id)
-                if let entity = fact.entity { touched[entity.id] = entity }
-                context.delete(fact)
+        // Idempotent re-run: this meeting's unreviewed statements are wholly
+        // superseded by this extraction (spec §2), and so is its support for
+        // anything another meeting also states. Both fall out of one pass now
+        // that support is a single list. Skipped entirely for a partial pass,
+        // which has no standing to supersede anything: see `replacingExisting`.
+        //
+        // ponytail: fetch-all then filter in memory — #Predicate cannot look
+        // inside a codable array.
+        if replacingExisting {
+            let allFacts = try context.fetch(FetchDescriptor<KnowledgeFact>())
+            for fact in allFacts where fact.sourceMeetingIDs.contains(meetingID) {
+                if fact.sources.count > 1 {
+                    // Other meetings state this too, so the row stays. Whether
+                    // THIS meeting still states it is decided by its new
+                    // transcript, so its entry goes and the loop below re-adds
+                    // it if the claim survives — a re-transcribed meeting must
+                    // stop vouching for something it no longer says.
+                    previouslySupported.insert(fact.id)
+                    fact.removeSource(meetingID: meetingID)
+                    if let entity = fact.entity { touched[entity.id] = entity }
+                } else if fact.status == .suggested {
+                    staleIDs.insert(fact.id)
+                    if let entity = fact.entity { touched[entity.id] = entity }
+                    context.delete(fact)
+                }
+                // An approved or auto-captured row this meeting alone states
+                // survives re-extraction untouched (spec §2).
             }
-            // An approved or auto-captured row this meeting alone states
-            // survives re-extraction untouched (spec §2).
         }
 
         for candidate in candidates {

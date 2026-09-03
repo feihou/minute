@@ -308,7 +308,19 @@ final class KnowledgeCatchUp {
                 // unstamped and un-skipped, so this same loop picks it up again
                 // with the fresh transcript.
                 guard meeting.timestampedTranscriptText == transcript else { continue }
-                try KnowledgeIngest.apply(result.candidates, from: meeting, context: context)
+                // Only a pass that read the whole transcript speaks for the
+                // meeting. A partial one may add but never replace: which
+                // chunks the guardrails refuse can differ between reads, so
+                // taking a retry's candidates as the meeting's whole extraction
+                // would delete the facts an earlier pass found in the passage
+                // this one never reached — every launch, since a partly read
+                // meeting is never stamped, until nothing was left.
+                try KnowledgeIngest.apply(
+                    result.candidates,
+                    from: meeting,
+                    context: context,
+                    replacingExisting: result.refusedChunkCount == 0
+                )
                 if result.refusedChunkCount > 0 {
                     // Stamping would retire the meeting with those passages
                     // never read — and the meetings richest in durable facts
