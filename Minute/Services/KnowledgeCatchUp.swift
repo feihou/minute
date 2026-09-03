@@ -23,6 +23,13 @@ final class KnowledgeCatchUp {
     private let availabilityMessage: @MainActor () -> String?
     private let extract: Extractor
     private var running: Task<Void, Never>?
+    /// A nudge that arrived while a cancelled loop was still unwinding.
+    /// `pause()` cancels the task but the task clears `running` itself when
+    /// it finishes, and cancellation is only noticed between chunks — so a
+    /// quick scene flicker (Notification Center, a call banner) would
+    /// otherwise hand the restart nudge to a task that is about to exit,
+    /// and nothing would run again until the next scene transition.
+    private var restartRequested: ModelContext?
     /// Meetings that failed or were empty this session, keyed by the
     /// transcript they had at the time. Skipped, not retried hot, so one
     /// permanently-refusing meeting can't head-of-line-block the queue —
@@ -64,14 +71,6 @@ final class KnowledgeCatchUp {
         self.extract = extract
     }
 
-    /// A nudge that arrived while a cancelled loop was still unwinding.
-    /// `pause()` cancels the task but the task clears `running` itself when
-    /// it finishes, and cancellation is only noticed between chunks — so a
-    /// quick scene flicker (Notification Center, a call banner) would
-    /// otherwise hand the restart nudge to a task that is about to exit,
-    /// and nothing would run again until the next scene transition.
-    private var restartRequested: ModelContext?
-
     /// Starts the loop if it isn't running. Cheap to call often.
     func nudge(context: ModelContext) {
         if let running {
@@ -93,8 +92,14 @@ final class KnowledgeCatchUp {
     }
 
     /// Stops after the in-flight meeting. Call when the scene deactivates.
+    /// Also disarms any restart a mid-teardown nudge queued: that nudge
+    /// belonged to a foreground moment this pause has already ended, and
+    /// consuming it later would start an uncancelled loop while the app is
+    /// inactive — burning rate-limited FoundationModels calls and
+    /// skip-listing every meeting they fail on until the next launch.
     func pause() {
         running?.cancel()
+        restartRequested = nil
     }
 
     /// Test hook: resolves when the loop (and any restart it queued) has

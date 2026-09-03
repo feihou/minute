@@ -302,7 +302,8 @@ struct KnowledgeCatchUpTests {
 
     @Test func nudgeWhileAPausedLoopIsStillUnwindingRestartsTheLoop() async throws {
         let context = try makeContext()
-        context.insert(meetingWithTranscript("Only", createdAt: .now))
+        let meeting = meetingWithTranscript("Only", createdAt: .now)
+        context.insert(meeting)
         try context.save()
 
         var calls = 0
@@ -327,7 +328,86 @@ struct KnowledgeCatchUpTests {
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
 
+        // Not just "the restart entered the extractor": the restarted loop
+        // has to carry the meeting all the way to a stamp, or the user is
+        // still waiting for a relaunch.
         #expect(calls == 2)
+        #expect(meeting.knowledgeExtractedAt != nil)
+        #expect(!catchUp.isWorking)
+    }
+
+    @Test func pauseAfterAMidTeardownNudgeLeavesTheLoopStopped() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("Only", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        var calls = 0
+        let (firstCallStarted, startedContinuation) = AsyncStream.makeStream(of: Void.self)
+        let catchUp = makeCatchUp { _, _ in
+            calls += 1
+            if calls == 1 {
+                startedContinuation.yield(())
+                // Parks until pause() cancels it: an extraction that notices
+                // cancellation only when the model call returns.
+                try await Task.sleep(for: .seconds(60))
+            }
+            return []
+        }
+        catchUp.nudge(context: context)
+        var started = firstCallStarted.makeAsyncIterator()
+        _ = await started.next()
+        // active → inactive → active → inactive, all inside one teardown
+        // window: the queued restart belongs to a foreground moment that is
+        // already over by the time the loop unwinds.
+        catchUp.pause()
+        catchUp.nudge(context: context)
+        catchUp.pause()
+        await catchUp.waitUntilIdle()
+
+        // The scene is inactive, so the loop stays stopped (spec §5,
+        // foreground-only). A background pass would burn rate-limited
+        // FoundationModels calls and skip-list what it failed on.
+        #expect(calls == 1)
+        #expect(meeting.knowledgeExtractedAt == nil)
+        #expect(!catchUp.isWorking)
+    }
+
+    @Test func nudgeWhileAHealthyLoopIsRunningQueuesNoSecondPass() async throws {
+        let context = try makeContext()
+        context.insert(meetingWithTranscript("Only", createdAt: .now))
+        try context.save()
+
+        // One availability check per run() pass — the honest way to count
+        // passes from outside, since a redundant pass over an
+        // already-stamped queue never reaches the extractor at all.
+        var passes = 0
+        var calls = 0
+        let (firstCallStarted, startedContinuation) = AsyncStream.makeStream(of: Void.self)
+        let (extractMayFinish, finishContinuation) = AsyncStream.makeStream(of: Void.self)
+        let catchUp = KnowledgeCatchUp(
+            availabilityMessage: { passes += 1; return nil },
+            extract: { _, _ in
+                calls += 1
+                if calls == 1 {
+                    startedContinuation.yield(())
+                    var mayFinish = extractMayFinish.makeAsyncIterator()
+                    _ = await mayFinish.next()
+                }
+                return []
+            }
+        )
+        catchUp.nudge(context: context)
+        var started = firstCallStarted.makeAsyncIterator()
+        _ = await started.next()
+        // A healthy loop, not a teardown: this nudge is already served by the
+        // pass in flight and must queue nothing.
+        catchUp.nudge(context: context)
+        finishContinuation.yield(())
+        await catchUp.waitUntilIdle()
+
+        #expect(calls == 1)
+        #expect(passes == 1)
     }
 
     @Test func unavailableModelLeavesQueueUntouchedForALaterNudge() async throws {
