@@ -154,10 +154,7 @@ final class MeetingJobs {
                 self.statuses[id] = status
             }
             guard !meeting.isDeleted else { return }
-            meeting.segments = SpeakerAssignment.apply(ranges, to: meeting.segments)
-            // A fresh identification renumbers speakers from scratch, so names
-            // attached to the previous numbering no longer describe anyone.
-            meeting.speakerNames = nil
+            try MeetingJobs.applySpeakerIdentification(ranges, to: meeting)
             try? meeting.modelContext?.save()
         }
     }
@@ -206,6 +203,35 @@ final class MeetingJobs {
     static func applyNewTranscript(_ segments: [TranscriptSegment], to meeting: Meeting) {
         meeting.segments = segments
         meeting.speakerNames = nil
+        meeting.knowledgeExtractedAt = nil
+    }
+
+    /// Applies diarization output: labels segments, drops names attached to
+    /// the previous numbering (a fresh identification renumbers from
+    /// scratch), and resets the extraction cursor so the Brain re-reads the
+    /// meeting with speakers attributed. Throws when nothing was labeled, so
+    /// the user hears that instead of watching the spinner vanish over an
+    /// unchanged transcript.
+    static func applySpeakerIdentification(_ ranges: [SpeakerRange], to meeting: Meeting) throws {
+        let labeled = SpeakerAssignment.apply(ranges, to: meeting.segments)
+        guard labeled.contains(where: { $0.speaker != nil }) else {
+            throw JobMessage(message: "No distinct speakers could be identified in this recording.")
+        }
+        meeting.segments = labeled
+        meeting.speakerNames = nil
+        meeting.knowledgeExtractedAt = nil
+    }
+
+    /// Sets one speaker's display name. The Brain reads the transcript with
+    /// names in it, so a rename resets the extraction cursor: facts about
+    /// "Speaker 2" become facts about the person.
+    static func applySpeakerName(_ name: String, at index: Int, to meeting: Meeting) {
+        var names = meeting.speakerNames ?? []
+        while names.count <= index {
+            names.append("")
+        }
+        names[index] = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        meeting.speakerNames = names
         meeting.knowledgeExtractedAt = nil
     }
 

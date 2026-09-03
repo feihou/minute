@@ -29,6 +29,7 @@ struct MeetingDetailView: View {
     @State private var showingEditor = false
     @State private var confirmingDelete = false
     @State private var confirmingRetranscribe = false
+    @State private var confirmingReidentify = false
     @State private var deleteFailed = false
     @State private var renamingSpeaker: Int?
     @State private var renameText = ""
@@ -131,7 +132,11 @@ struct MeetingDetailView: View {
                     }
                     .disabled(MeetingStore.audioURL(for: meeting) == nil || isBusy)
                     Button {
-                        identifySpeakers()
+                        if meeting.hasSpeakers {
+                            confirmingReidentify = true
+                        } else {
+                            identifySpeakers()
+                        }
                     } label: {
                         Label(meeting.hasSpeakers ? "Re-identify Speakers" : "Identify Speakers",
                               systemImage: "person.2.wave.2")
@@ -191,6 +196,18 @@ struct MeetingDetailView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("The current transcript will be replaced using the on-device speech model. Speaker labels are cleared, and the summary stays until you regenerate it.")
+        }
+        .confirmationDialog(
+            "Re-identify speakers?",
+            isPresented: $confirmingReidentify,
+            titleVisibility: .visible
+        ) {
+            Button("Re-identify Speakers") {
+                identifySpeakers()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Speakers are numbered again from scratch, and any names you entered are cleared.")
         }
         .alert("Rename Speaker", isPresented: isRenamingSpeakerPresented, presenting: renamingSpeaker) { index in
             TextField("Name", text: $renameText)
@@ -586,13 +603,10 @@ struct MeetingDetailView: View {
     }
 
     private func renameSpeaker(_ index: Int, to name: String) {
-        var names = meeting.speakerNames ?? []
-        while names.count <= index {
-            names.append("")
-        }
-        names[index] = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        meeting.speakerNames = names
+        MeetingJobs.applySpeakerName(name, at: index, to: meeting)
         saveQuietly()
+        // The rename changed the text the Brain reads; let it catch up.
+        jobs.onContentChanged?()
     }
 
     private var isRenamingSpeakerPresented: Binding<Bool> {

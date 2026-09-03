@@ -89,3 +89,55 @@ struct SpeakerNamingTests {
         #expect(!Meeting(title: "empty").hasSpeakers)
     }
 }
+
+@MainActor
+struct SpeakerJobApplicationTests {
+    private func meeting() -> Meeting {
+        let meeting = Meeting(
+            title: "m",
+            segments: [
+                TranscriptSegment(text: "one", start: 0, end: 2),
+                TranscriptSegment(text: "two", start: 2, end: 4),
+            ]
+        )
+        meeting.speakerNames = ["Priya", "Diego"]
+        meeting.knowledgeExtractedAt = .now
+        return meeting
+    }
+
+    @Test func identificationLabelsSegmentsClearsNamesAndResetsTheExtractionCursor() throws {
+        let meeting = meeting()
+        try MeetingJobs.applySpeakerIdentification(
+            [SpeakerRange(speaker: 7, start: 0, end: 2), SpeakerRange(speaker: 3, start: 2, end: 4)],
+            to: meeting
+        )
+        #expect(meeting.segments.map(\.speaker) == [0, 1])
+        // A fresh identification renumbers from scratch, so old names no
+        // longer describe anyone.
+        #expect(meeting.speakerNames == nil)
+        // The Brain reads speaker labels; it must re-read this meeting.
+        #expect(meeting.knowledgeExtractedAt == nil)
+    }
+
+    @Test func identificationThatLabelsNothingThrowsAndLeavesTheMeetingAlone() {
+        let meeting = meeting()
+        #expect(throws: MeetingJobs.JobMessage.self) {
+            try MeetingJobs.applySpeakerIdentification([SpeakerRange(speaker: 0, start: 100, end: 101)], to: meeting)
+        }
+        #expect(meeting.speakerNames == ["Priya", "Diego"])
+        #expect(meeting.knowledgeExtractedAt != nil)
+    }
+
+    @Test func renamingASpeakerTrimsTheNameAndResetsTheExtractionCursor() {
+        let meeting = meeting()
+        MeetingJobs.applySpeakerName("  Sarah Chen ", at: 1, to: meeting)
+        #expect(meeting.speakerNames == ["Priya", "Sarah Chen"])
+        #expect(meeting.knowledgeExtractedAt == nil)
+    }
+
+    @Test func renamingPadsMissingEntries() {
+        let meeting = Meeting(title: "m")
+        MeetingJobs.applySpeakerName("Mei", at: 2, to: meeting)
+        #expect(meeting.speakerNames == ["", "", "Mei"])
+    }
+}
