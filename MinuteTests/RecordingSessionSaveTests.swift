@@ -176,6 +176,37 @@ struct RecordingSessionSaveTests {
         #expect(session.phase == .idle)
     }
 
+    /// `.saving` is otherwise unbounded — a Whisper final pass over a long tail
+    /// runs for minutes on an older device, with Discard disabled and both
+    /// controls greyed out. The way out keeps what the engine already heard.
+    @Test func saveWithoutTranscriptStopsWaitingAndKeepsWhatWasHeard() async throws {
+        let context = try makeContext()
+        let engine = ParkedTranscriptionEngine()
+        engine.segments = [TranscriptSegment(text: "heard before the user gave up", start: 0, end: 1)]
+        engine.finalSegments = [TranscriptSegment(text: "never finalized", start: 0, end: 1)]
+        let session = RecordingSession(
+            title: "Long tail",
+            prefilledDefaultTitle: "Long tail",
+            transcription: engine
+        )
+
+        let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        engine.onFinishEntered = { enteredContinuation.yield(()) }
+        let finishTask = Task { @MainActor in await session.finish(in: context)?.id }
+        var iterator = entered.makeAsyncIterator()
+        _ = await iterator.next()
+
+        await session.saveWithoutTranscript()
+        let finishedID = await finishTask.value
+
+        #expect(finishedID != nil)
+        #expect(engine.didCancel)
+        let saved = try context.fetch(FetchDescriptor<Meeting>())
+        #expect(saved.count == 1)
+        #expect(saved.first?.segments.map(\.text) == ["heard before the user gave up"])
+        #expect(session.phase == .idle)
+    }
+
     /// A delete that doesn't commit is undone by MeetingStore, so the meeting
     /// is still in the library. Deleting its audio anyway — or reporting the
     /// discard as done and letting the screen dismiss — produces the one state

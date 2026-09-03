@@ -349,6 +349,20 @@ final class RecordingSession: Identifiable {
         }
     }
 
+    /// Stops waiting for the transcript and finishes the save with whatever the
+    /// engine has already produced. Nothing bounds a finalization — Whisper's
+    /// final pass covers up to five minutes of retained tail, and Apple Speech
+    /// waits on its results stream — while `.saving` disables Discard and both
+    /// controls, so without this the user has no way out of a recording that is
+    /// already safely on disk.
+    func saveWithoutTranscript() async {
+        guard phase == .saving, pendingSegments == nil else { return }
+        // Bank first: cancelling clears the engine's own collection, and the
+        // whole point of this action is to keep what it heard.
+        pendingSegments = transcription.segments
+        await transcription.cancel()
+    }
+
     /// Stops everything and deletes the partial audio file (user discarded).
     /// Takes the context because `finish(in:)` persists the meeting before the
     /// transcript is finalized: a discard arriving after that (or after a

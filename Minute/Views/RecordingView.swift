@@ -97,8 +97,18 @@ struct RecordingView: View {
             ProgressView("Preparing…")
                 .padding(.vertical, 20)
         case .saving:
-            ProgressView("Finishing transcript…")
-                .padding(.vertical, 20)
+            VStack(spacing: 12) {
+                ProgressView("Finishing transcript…")
+                // The final pass is unbounded and everything else on this
+                // screen is disabled while it runs. Never leave the user
+                // without a way to finish a recording that is already saved.
+                Button("Save without transcript") {
+                    Task { await session.saveWithoutTranscript() }
+                }
+                .buttonStyle(.bordered)
+                .font(.footnote)
+            }
+            .padding(.vertical, 20)
         case .failed(let message, let canOpenSettings):
             VStack(spacing: 12) {
                 Label(message, systemImage: "exclamationmark.triangle")
