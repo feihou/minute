@@ -55,6 +55,15 @@ final class KnowledgeCatchUp {
     /// (thermal, rate limit) can restart itself without waiting for the next
     /// scene transition. Every caller nudges with the same main-actor context.
     private var lastContext: ModelContext?
+    /// How long a loop the device stopped waits before nudging itself. A rate
+    /// limit and an unready model are both "not now", not "never" — and
+    /// nothing else asks again while the app stays in the foreground.
+    /// Injectable so tests don't wait a minute.
+    private let retryDelay: Duration
+    /// At most one delayed retry outstanding: the loop's own guards are cheap,
+    /// but a timer per stalled pass would pile up.
+    private var retryTask: Task<Void, Never>?
+    @ObservationIgnored nonisolated(unsafe) private var observerTokens: [any NSObjectProtocol] = []
     /// Meetings that failed or were empty this session, keyed by the
     /// transcript they had at the time. Skipped, not retried hot, so one
     /// permanently-refusing meeting can't head-of-line-block the queue —
@@ -96,12 +105,62 @@ final class KnowledgeCatchUp {
 
     init(
         availabilityMessage: @escaping @MainActor () -> String? = { KnowledgeExtractionService.availabilityMessage },
+        retryDelay: Duration = .seconds(60),
         extract: @escaping Extractor = { transcript, names in
             try await KnowledgeExtractionService().extract(transcript: transcript, knownEntityNames: names)
         }
     ) {
         self.availabilityMessage = availabilityMessage
+        self.retryDelay = retryDelay
         self.extract = extract
+        observerTokens.append(NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.thermalStateDidChange()
+            }
+        })
+    }
+
+    deinit {
+        for token in observerTokens {
+            NotificationCenter.default.removeObserver(token)
+        }
+    }
+
+    /// The device cooled back to nominal or fair: the only signal that the
+    /// loop's thermal guard no longer holds. Tests call this directly — the
+    /// notification itself cannot be provoked, and the observer above is one
+    /// line of wiring.
+    func thermalStateDidChange() {
+        let thermal = ProcessInfo.processInfo.thermalState
+        guard thermal == .nominal || thermal == .fair else { return }
+        guard !isPaused, let lastContext else { return }
+        nudge(context: lastContext)
+    }
+
+    /// One delayed re-nudge after the device said "not now". Weak, so a
+    /// discarded loop is not kept alive by a pending timer.
+    private func scheduleRetry() {
+        guard retryTask == nil, !isPaused, lastContext != nil else { return }
+        let delay = retryDelay
+        retryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            retryTask = nil
+            guard !isPaused, let lastContext else { return }
+            // The loop that armed this retry may still be unwinding —
+            // scheduleRetry() runs inside run(), before the task that owns it
+            // clears `running` — and a nudge into a live loop arms nothing.
+            // Hand that loop a restart instead; its tail consumes it.
+            if running != nil {
+                restartRequested = lastContext
+                return
+            }
+            nudge(context: lastContext)
+        }
     }
 
     /// Starts the loop if it isn't running. Cheap to call often.
@@ -121,6 +180,10 @@ final class KnowledgeCatchUp {
             }
             return
         }
+        // A loop is starting now, so a timer waiting to start one is spent —
+        // and leaving it armed would block the next retry the loop needs.
+        retryTask?.cancel()
+        retryTask = nil
         running = Task { [self] in
             isWorking = true
             await run(context: context)
@@ -141,6 +204,8 @@ final class KnowledgeCatchUp {
     private func stopLoop() {
         running?.cancel()
         restartRequested = nil
+        retryTask?.cancel()
+        retryTask = nil
     }
 
     /// The scene left `.active`. Call from the scene-phase handler; only
@@ -179,7 +244,10 @@ final class KnowledgeCatchUp {
         // Not a per-meeting failure: when the model isn't ready, leave the
         // queue untouched and wait for a later nudge (mirrors the thermal
         // guard's return-without-consuming semantics).
-        guard availabilityMessage() == nil else { return }
+        guard availabilityMessage() == nil else {
+            scheduleRetry()
+            return
+        }
 
         while !Task.isCancelled {
             // Sustained ANE work on a warm phone throttles everything; wait
@@ -243,11 +311,18 @@ final class KnowledgeCatchUp {
             } catch let error as LanguageModelSession.GenerationError {
                 // Rate limiting is the device saying "not now", not a verdict
                 // on this meeting: stop without skip-listing (spec §5
-                // pause-and-resume) — the next nudge retries from here.
-                if case .rateLimited = error { return }
+                // pause-and-resume), and ask again after a delay — while the
+                // app stays open nothing else would.
+                if case .rateLimited = error {
+                    scheduleRetry()
+                    return
+                }
                 // Assets being evicted mid-loop is the same kind of "not now":
                 // the model is gone, not this meeting's fault.
-                if case .assetsUnavailable = error { return }
+                if case .assetsUnavailable = error {
+                    scheduleRetry()
+                    return
+                }
                 // Permanent (refusal, etc.) failures skip for this session
                 // and retry at next launch.
                 skip(meeting, key: Self.contentKey(for: transcript))

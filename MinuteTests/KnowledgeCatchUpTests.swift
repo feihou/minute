@@ -682,4 +682,89 @@ struct KnowledgeCatchUpTests {
         #expect(meeting.knowledgeExtractedAt != nil)
         #expect(catchUp.skippedChunksByMeeting.isEmpty)
     }
+    @Test func coolingDownRestartsALoopTheDeviceStopped() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("A", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        var calls = 0
+        let catchUp = makeCatchUp { _, _ in
+            calls += 1
+            if calls == 1 {
+                throw LanguageModelSession.GenerationError.rateLimited(.init(debugDescription: "test"))
+            }
+            return .empty
+        }
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 1)
+        #expect(meeting.knowledgeExtractedAt == nil)
+
+        // The device cooling off is the signal the loop's own thermal guard no
+        // longer holds. Without it the Brain's "catches up while it's open" row
+        // is a lie until the user backgrounds and re-foregrounds the app.
+        catchUp.thermalStateDidChange()
+        await catchUp.waitUntilIdle()
+        #expect(calls == 2)
+        #expect(meeting.knowledgeExtractedAt != nil)
+    }
+
+    @Test func coolingDownWhilePausedStartsNothing() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("A", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        var calls = 0
+        let catchUp = makeCatchUp { _, _ in
+            calls += 1
+            throw LanguageModelSession.GenerationError.rateLimited(.init(debugDescription: "test"))
+        }
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 1)
+
+        // Thermal notifications keep arriving while the app is backgrounded;
+        // extraction stays foreground-only.
+        catchUp.pause()
+        catchUp.thermalStateDidChange()
+        await catchUp.waitUntilIdle()
+        #expect(calls == 1)
+        #expect(meeting.knowledgeExtractedAt == nil)
+    }
+
+    @Test func aRateLimitedLoopRetriesItselfAfterTheDelay() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("A", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        var calls = 0
+        let catchUp = KnowledgeCatchUp(
+            availabilityMessage: { nil },
+            retryDelay: .milliseconds(50),
+            extract: { _, _ in
+                calls += 1
+                if calls == 1 {
+                    throw LanguageModelSession.GenerationError.rateLimited(.init(debugDescription: "test"))
+                }
+                return .empty
+            }
+        )
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 1)
+
+        // Nothing else would resume this loop while the app stays open: the
+        // scene never changes and no job finishes.
+        var waited = 0
+        while calls < 2 && waited < 2_000 {
+            try await Task.sleep(for: .milliseconds(10))
+            waited += 10
+        }
+        await catchUp.waitUntilIdle()
+        #expect(calls == 2)
+        #expect(meeting.knowledgeExtractedAt != nil)
+    }
 }
