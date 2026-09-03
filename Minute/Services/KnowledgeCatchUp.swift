@@ -330,6 +330,14 @@ final class KnowledgeCatchUp {
                     // so retrying it inside this session would only spin, while
                     // the next launch (or a re-transcription, which changes the
                     // key) reads the meeting again.
+                    //
+                    // A transcript refused end to end lands here too: the
+                    // extractor counts those chunks rather than throwing the
+                    // last refusal, so the ingest above is a no-op and the
+                    // meeting is recorded in the refused-parts row instead of
+                    // dropping into the GenerationError catch below, which
+                    // would skip-list it just as silently but with nothing to
+                    // show for it.
                     skippedChunksByMeeting[meeting.id] = result.refusedChunkCount
                     skip(meeting, key: Self.contentKey(for: transcript))
                 } else {

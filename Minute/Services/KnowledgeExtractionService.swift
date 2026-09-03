@@ -102,7 +102,6 @@ struct KnowledgeExtractionService {
         guard !chunks.isEmpty else { return .empty }
         var candidates: [KnowledgeCandidate] = []
         var refusals = 0
-        var lastRefusal: Error?
         for chunk in chunks {
             try Task.checkCancellation()
             do {
@@ -111,19 +110,23 @@ struct KnowledgeExtractionService {
             } catch let error as LanguageModelSession.GenerationError {
                 switch error {
                 case .guardrailViolation, .refusal:
-                    // One refused chunk shouldn't cost the meeting's other facts.
+                    // One refused chunk shouldn't cost the meeting's other
+                    // facts — and a transcript refused end to end is counted
+                    // the same way, never rethrown. Surfacing the last refusal
+                    // instead reached the caller as a bare GenerationError,
+                    // indistinguishable from a pass that failed outright: the
+                    // meeting was skip-listed for the session with the count
+                    // thrown away, so the Brain tab could only offer the
+                    // generic "still to read" text for a meeting nothing would
+                    // read again today. A counted result says both halves —
+                    // no facts, and how much was refused.
                     refusals += 1
-                    lastRefusal = error
                 case .exceededContextWindowSize:
                     throw error  // handled by the halving loop above
                 default:
                     throw error
                 }
             }
-        }
-        // Every chunk refused → surface it so the caller can skip visibly.
-        if candidates.isEmpty, refusals == chunks.count, let lastRefusal {
-            throw lastRefusal
         }
         return KnowledgeExtractionResult(candidates: candidates, refusedChunkCount: refusals)
     }

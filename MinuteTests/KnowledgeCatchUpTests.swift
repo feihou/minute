@@ -750,6 +750,43 @@ struct KnowledgeCatchUpTests {
         #expect(meeting.knowledgeExtractedAt == nil)
     }
 
+    /// The transcript the guardrails refuse end to end — the worst case of the
+    /// refusal the row exists for, and the one that used to go unrecorded. The
+    /// extractor counts an all-refused pass like any other instead of
+    /// rethrowing the last refusal, so it arrives here as a result with no
+    /// candidates rather than as a `GenerationError`. Both paths skip-list the
+    /// meeting, but only this one leaves a number behind: reached through the
+    /// error catch the meeting would sit in the Brain tab under the generic
+    /// "still to read" text, promising a read that nothing this session will
+    /// attempt.
+    @Test func aFullyRefusedMeetingIsRecordedInTheRefusedPartsRow() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("Health Review", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        var calls = 0
+        let catchUp = makeCatchUp { _, _ in
+            calls += 1
+            return KnowledgeExtractionResult(candidates: [], refusedChunkCount: 3)
+        }
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+
+        #expect(catchUp.skippedChunksByMeeting[meeting.id] == 3)
+        // Nothing was read, so there is nothing to ingest and nothing to retire.
+        #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).isEmpty)
+        #expect(meeting.knowledgeExtractedAt == nil)
+        // Still unread work, exactly as a partly refused meeting is.
+        #expect(catchUp.pendingCount == 1)
+
+        // And still skip-listed, so the session does not spin on a refusal
+        // that is near-deterministic.
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 1)
+    }
+
     @Test func deletingAPartlyRefusedMeetingRetiresItsRefusedParts() async throws {
         let context = try makeContext()
         let meeting = meetingWithTranscript("Health Review", createdAt: .now)
