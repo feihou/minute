@@ -490,7 +490,7 @@ struct KnowledgeCatchUpTests {
         #expect(meeting.knowledgeExtractedAt != nil)
     }
 
-    @Test func aNudgeAfterAJobPausedTheLoopStartsItAgain() async throws {
+    @Test func aJobPauseIsLiftedWhenTheJobEndsNotByANudge() async throws {
         let context = try makeContext()
         let meeting = meetingWithTranscript("Only", createdAt: .now)
         context.insert(meeting)
@@ -498,14 +498,44 @@ struct KnowledgeCatchUpTests {
 
         var calls = 0
         let catchUp = makeCatchUp { _, _ in calls += 1; return .empty }
-        // A summary the user asked for takes the on-device model. Unlike a
-        // scene pause this one expires on the next nudge — the job's own
-        // completion callback — or the first job of a foreground session would
-        // stop the Brain until the user backgrounded the app and came back.
+        // A summary the user asked for takes the on-device model.
         catchUp.pauseForWork()
+        // A nudge from elsewhere (the Brain tab appearing, another meeting's
+        // save) must not lift it: the job still holds the model.
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
+        #expect(calls == 0)
 
+        // The job ENDING is what gives the model back — a job that threw or
+        // that the user stopped ends without ever nudging, and a pause only a
+        // nudge could lift would silence the Brain for the rest of the session.
+        catchUp.workEnded(context: context)
+        await catchUp.waitUntilIdle()
+
+        #expect(calls == 1)
+        #expect(meeting.knowledgeExtractedAt != nil)
+    }
+
+    @Test func theLoopStaysPausedUntilEveryOutstandingJobHasEnded() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("Only", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        var calls = 0
+        let catchUp = makeCatchUp { _, _ in calls += 1; return .empty }
+        // Two jobs in flight at once — the local-model gate queues the second
+        // behind the first, so the first one's completion arrives while the
+        // second is still generating.
+        catchUp.pauseForWork()
+        catchUp.pauseForWork()
+
+        catchUp.workEnded(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 0)   // the queued job still holds the model
+
+        catchUp.workEnded(context: context)
+        await catchUp.waitUntilIdle()
         #expect(calls == 1)
         #expect(meeting.knowledgeExtractedAt != nil)
     }

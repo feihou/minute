@@ -31,6 +31,30 @@ struct SummaryGenerationTests {
         return url
     }
 
+    /// An engine whose file pass parks until the job is cancelled — the Stop
+    /// button's path, and the one exit that reports no failure anywhere.
+    @MainActor
+    private final class ParkedTranscriptionEngine: TranscriptionEngine {
+        var availability: TranscriptionAvailability = .available
+        var volatileText = ""
+        var segments: [TranscriptSegment] = []
+        var timestampOffset: TimeInterval = 0
+        /// Fires as the pass begins, so Stop lands while the job is running
+        /// rather than before it started.
+        var onTranscribeEntered: (() -> Void)?
+        func prepare() async {}
+        func start(inputFormat: AVAudioFormat) async -> (@Sendable (AVAudioPCMBuffer) -> Void)? { nil }
+        func finish() async -> [TranscriptSegment] { [] }
+        func cancel() async {}
+        func transcribe(file: AVAudioFile) async throws -> [TranscriptSegment] {
+            onTranscribeEntered?()
+            // Cancellation-responsive: a wedged job fails the time limit
+            // instead of hanging the suite.
+            try await Task.sleep(for: .seconds(60))
+            return []
+        }
+    }
+
     /// An engine that is "available" and recognizes nothing — audio in a
     /// language the device isn't set to, or plain silence.
     @MainActor
@@ -186,5 +210,53 @@ struct SummaryGenerationTests {
 
         await task?.value
         #expect(started == 1)
+    }
+
+    @Test func aJobThatFailsStillAnnouncesThatItsWorkEnded() async throws {
+        let (container, meeting) = try makeMeeting()
+        defer { _ = container }
+        let jobs = MeetingJobs()
+
+        var started = 0
+        var ended = 0
+        jobs.onWorkStarted = { started += 1 }
+        jobs.onWorkEnded = { ended += 1 }
+
+        // No transcript: the summary throws. Nothing else speaks for this job
+        // — onContentChanged fires only on success — so the catch-up pause it
+        // took is given back here or never, and the Brain goes quiet for the
+        // rest of the foreground session.
+        await jobs.summarize(meeting, template: .standard, context: "", language: nil)?.value
+
+        #expect(started == 1)
+        #expect(ended == 1)
+        #expect(jobs.error(.summary, for: meeting) != nil)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aStoppedJobStillAnnouncesThatItsWorkEnded() async throws {
+        let (container, meeting) = try makeMeeting()
+        defer { _ = container }
+        let source = try makeWavFixture()
+        defer { try? FileManager.default.removeItem(at: source) }
+        let jobs = MeetingJobs()
+
+        var ended = 0
+        jobs.onWorkEnded = { ended += 1 }
+
+        let engine = ParkedTranscriptionEngine()
+        let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        engine.onTranscribeEntered = { enteredContinuation.yield(()) }
+        let task = jobs.retranscribe(meeting, audioAt: source, transcription: engine)
+        var iterator = entered.makeAsyncIterator()
+        _ = await iterator.next()   // the pass is definitely in flight
+
+        // The user tapped Stop. A cancelled job records no failure and never
+        // nudges, so this is the only announcement it makes.
+        jobs.cancel(meeting)
+        await task?.value
+
+        #expect(ended == 1)
+        #expect(!jobs.isBusy(meeting))
     }
 }

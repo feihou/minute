@@ -59,6 +59,15 @@ final class MeetingJobs {
     /// previews can leave it unset.
     var onWorkStarted: (@MainActor () -> Void)?
 
+    /// Fired on the main actor when a job leaves the field, however it ended —
+    /// the counterpart of `onWorkStarted`. Success alone cannot stand for this:
+    /// a summary the user stopped, an MLX merge that came back unreadable, a
+    /// re-transcription that produced no text and an unavailable engine all end
+    /// without ever reaching `onContentChanged`, and the pause `onWorkStarted`
+    /// took would then never be given back. Optional so tests and previews can
+    /// leave it unset.
+    var onWorkEnded: (@MainActor () -> Void)?
+
     /// True while any job holds this meeting — the guard every entry point and
     /// every menu item shares.
     func isBusy(_ meeting: Meeting) -> Bool {
@@ -213,6 +222,11 @@ final class MeetingJobs {
             }
             statuses[id] = nil
             running[id] = nil
+            // Outside the do/catch on purpose: this fires on every exit —
+            // finished, stopped, or failed. Whatever yielded to this job at
+            // `onWorkStarted` is waiting for exactly this, and only the success
+            // branch above ever nudges it.
+            onWorkEnded?()
             token.end()
         }
         running[id] = Running(kind: kind, task: task)

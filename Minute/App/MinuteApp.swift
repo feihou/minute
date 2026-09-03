@@ -80,9 +80,13 @@ struct MinuteApp: App {
         let mainContext = container.mainContext
         jobs.onContentChanged = { catchUp.nudge(context: mainContext) }
         // Extraction yields to work the user is waiting on: every job (the
-        // automatic post-save summary included) pauses the loop, and the
-        // job's completion nudge lifts that pause.
+        // automatic post-save summary included) pauses the loop, and the loop
+        // starts again once every job has left the field. Ending, not
+        // succeeding, is the signal: a summary the user stopped and a
+        // re-transcription that failed never nudge, and a pause waiting on a
+        // nudge would keep the Brain silent for the rest of the session.
         jobs.onWorkStarted = { catchUp.pauseForWork() }
+        jobs.onWorkEnded = { catchUp.workEnded(context: mainContext) }
         _meetingJobs = State(initialValue: jobs)
         _knowledgeCatchUp = State(initialValue: catchUp)
     }

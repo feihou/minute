@@ -43,14 +43,16 @@ final class KnowledgeCatchUp {
     /// this, so a job that completes in the background cannot restart reading
     /// there by nudging.
     private var pausedByScene = false
-    /// True between `pauseForWork()` and the next nudge — a job the user asked
-    /// for holds the on-device model. Kept apart from the scene pause because
-    /// it expires differently: every nudge caller (a finished job, the Brain
-    /// tab appearing) is a moment reading again is wanted, and a job pause that
-    /// outlived them would silence the Brain for the rest of the session.
-    private var pausedByWork = false
+    /// Jobs the user started that are still holding the on-device model. A
+    /// COUNT, not a flag: a flag can only be cleared by something that happens
+    /// afterwards, and the exits that never nudge — a summary the user stopped,
+    /// an unreadable local merge, a re-transcription that produced no text —
+    /// would leave it set for the rest of the foreground session with the Brain
+    /// silent behind it. Counting also survives the local-model gate queueing
+    /// job B behind job A: A finishing must not speak for B.
+    private var outstandingWork = 0
     /// The loop may run only while neither reason to stop is in force.
-    private var isPaused: Bool { pausedByScene || pausedByWork }
+    private var isPaused: Bool { pausedByScene || outstandingWork > 0 }
     /// The context of the most recent nudge, so a loop the device paused
     /// (thermal, rate limit) can restart itself without waiting for the next
     /// scene transition. Every caller nudges with the same main-actor context.
@@ -171,12 +173,12 @@ final class KnowledgeCatchUp {
     ///
     /// Every caller is a moment reading is wanted: a job finishing
     /// (`MeetingJobs.onContentChanged`), the Brain tab appearing, the scene
-    /// coming back. So a nudge lifts the work pause itself — but never the
-    /// scene pause, or a job that finished after the user left would restart
-    /// extraction in the background.
+    /// coming back. None of them lifts a pause: while a job holds the model
+    /// only that job ending may start reading again (`workEnded(context:)`),
+    /// and only the scene coming back lifts the scene pause — a nudge under
+    /// either one records the context and waits.
     func nudge(context: ModelContext) {
         lastContext = context
-        pausedByWork = false
         guard !isPaused else { return }
         if let running {
             if running.isCancelled {
@@ -220,11 +222,24 @@ final class KnowledgeCatchUp {
     }
 
     /// A job the user started wants the on-device model. Extraction gets out
-    /// of the way until the next nudge — which the job itself sends when it
-    /// finishes.
+    /// of the way until every such job has ended (`workEnded(context:)`).
     func pauseForWork() {
-        pausedByWork = true
+        outstandingWork += 1
         stopLoop()
+    }
+
+    /// One job left the field, whatever it did there — MeetingJobs fires this
+    /// on success, on failure, and on the cancel a Stop tap produces. Reading
+    /// resumes once the last of them is gone; while another is still running
+    /// this only decrements, so a queued job keeps the model to itself.
+    /// Balanced against `pauseForWork()`, and guarded so an unpaired call (a
+    /// job that started before this instance existed) can't drive the count
+    /// negative and park the loop forever.
+    func workEnded(context: ModelContext) {
+        guard outstandingWork > 0 else { return }
+        outstandingWork -= 1
+        guard outstandingWork == 0 else { return }
+        nudge(context: context)
     }
 
     /// The scene came back to `.active`: the one door out of `pause()`.
