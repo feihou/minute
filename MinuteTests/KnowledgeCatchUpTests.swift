@@ -489,6 +489,32 @@ struct KnowledgeCatchUpTests {
         #expect(entities.map(\.name).sorted() == ["Fresh"])  // stale facts never ingested
     }
 
+    @Test func meetingDeletedMidExtractionLeavesNoKnowledgeBehind() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("Botched Take", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        let catchUp = makeCatchUp { _, _ in
+            // Deleting a botched take the moment it is saved is routine — that
+            // save is also what nudges this loop — so the delete lands while
+            // the model is still reading the transcript.
+            #expect(MeetingStore.delete(meeting, context: context))
+            return [KnowledgeCandidate(entityName: "Sarah", entityKind: .person, fact: "Sarah spoke", validatedQuote: nil)]
+        }
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+
+        // The confirmation dialog promised everything the Brain learned from
+        // this meeting is gone. Ingesting afterwards writes facts keyed to a
+        // meeting that no longer exists, so no later delete can remove them.
+        let facts = try context.fetch(FetchDescriptor<KnowledgeFact>())
+        let entities = try context.fetch(FetchDescriptor<KnowledgeEntity>())
+        #expect(facts.isEmpty)
+        #expect(entities.isEmpty)
+        #expect(catchUp.pendingCount == 0)
+    }
+
     @Test func rateLimitedPausesWithoutPoisoningTheQueue() async throws {
         let context = try makeContext()
         let meeting = meetingWithTranscript("A", createdAt: .now)

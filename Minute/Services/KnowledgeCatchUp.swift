@@ -137,7 +137,15 @@ final class KnowledgeCatchUp {
             do {
                 let names = knownEntityNames(context: context)
                 let candidates = try await extract(transcript, names)
-                guard !meeting.isDeleted else { continue }
+                // Deleted while the model was reading it — routine, since
+                // saving a recording is both what nudges this loop and when a
+                // botched take gets deleted. `isGone`, not `isDeleted`: the
+                // delete has committed by now, so `isDeleted` is false again
+                // and the staleness guard below sees the detached object's
+                // last-known transcript, which of course still matches.
+                // Ingesting here would write facts keyed to a meeting that no
+                // longer exists, and no later delete could remove them.
+                guard !meeting.isGone else { continue }
                 // A re-transcription may have replaced the segments while the
                 // model was reading the old text; facts from a stale transcript
                 // must not be ingested or stamped over. The meeting stays

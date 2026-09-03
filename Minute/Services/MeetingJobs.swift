@@ -108,7 +108,11 @@ final class MeetingJobs {
                     self.statuses[id] = status
                 }
             // The meeting may have been deleted while the model was working.
-            guard !meeting.isDeleted else { return }
+            // `isGone` rather than `isDeleted`: by the time a job's await
+            // returns, that delete has committed and SwiftData has cleared
+            // `isDeleted` again on the detached object, so writing here would
+            // resurrect content the user was told was gone.
+            guard !meeting.isGone else { return }
             meeting.summary = summary
             applySuggestedTitleIfDefault(summary, to: meeting)
             try? meeting.modelContext?.save()
@@ -132,7 +136,7 @@ final class MeetingJobs {
             } catch {
                 throw JobMessage(message: "Re-transcription failed: \(error.localizedDescription)")
             }
-            guard !meeting.isDeleted else { return }
+            guard !meeting.isGone else { return }
             // A pass that produced nothing — the device language no longer
             // matching the audio, say — must not be mistaken for "this meeting
             // has no speech". Applying it would either destroy the only copy
@@ -153,7 +157,7 @@ final class MeetingJobs {
             let ranges = try await DiarizationService().diarize(audioAt: url) { status in
                 self.statuses[id] = status
             }
-            guard !meeting.isDeleted else { return }
+            guard !meeting.isGone else { return }
             try MeetingJobs.applySpeakerIdentification(ranges, to: meeting)
             try? meeting.modelContext?.save()
         }
@@ -184,7 +188,7 @@ final class MeetingJobs {
             } catch is CancellationError {
                 // The user tapped Stop — nothing to report.
             } catch {
-                if !meeting.isDeleted, !Task.isCancelled {
+                if !meeting.isGone, !Task.isCancelled {
                     failures[id] = Failure(kind: kind, message: error.localizedDescription)
                 }
             }

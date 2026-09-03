@@ -2,20 +2,6 @@ import SwiftData
 import SwiftUI
 import UIKit
 
-extension Meeting {
-    /// Whether this meeting is no longer in the store.
-    ///
-    /// `isDeleted` alone does not answer that: SwiftData reports it only while
-    /// the delete is still pending and clears it again once the save commits,
-    /// leaving the object alive with its last-known values and no context. The
-    /// committed case is the one that reaches a view — the stack that did not
-    /// do the deleting redraws after the save, not during it — so both halves
-    /// have to be asked about.
-    var isGone: Bool {
-        isDeleted || modelContext == nil
-    }
-}
-
 /// Everything about one meeting: playback, summary, transcript, and
 /// edit/copy/share/delete — laid out as a single reading surface rather than a
 /// stack of cards, so the notes read like a document instead of a form.
