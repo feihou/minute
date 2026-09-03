@@ -149,11 +149,15 @@ struct SettingsView: View {
                 settingsLabel("Live Transcription", systemImage: "captions.bubble", tint: .blue)
             }
 
+            // Deliberately not gated on Live Transcription: this setting also
+            // governs imported audio (MeetingListView.startImport reads it,
+            // and AudioImporter transcribes regardless of the live setting).
+            // Gating it left a user who records without live transcription
+            // unable to turn it on for imports at all — and left it stuck ON,
+            // greyed out and looking inert, while imports kept auto-summarizing.
             Toggle(isOn: $autoSummarize) {
                 settingsLabel("Auto-Summarize", systemImage: "sparkles", tint: .purple)
             }
-            // Without a transcript there is nothing to summarize.
-            .disabled(!liveTranscription)
 
             Picker(selection: $summaryTemplate) {
                 ForEach(SummaryTemplate.all) { template in
@@ -176,7 +180,7 @@ struct SettingsView: View {
         } header: {
             Text("Recording")
         } footer: {
-            Text("\(selectedQuality.label): \(selectedQuality.detail). Settings apply to new recordings. Auto-Summarize generates the summary on device right after a meeting is saved — it needs Live Transcription to produce the transcript it summarizes. The template controls how notes are organized (e.g. Yesterday/Today/Blockers for standups).")
+            Text("\(selectedQuality.label): \(selectedQuality.detail). Settings apply to new recordings. Auto-Summarize generates the summary on device as soon as a meeting has a transcript — after a recording made with Live Transcription on, and after importing audio. The template controls how notes are organized (e.g. Yesterday/Today/Blockers for standups).")
         }
     }
 
