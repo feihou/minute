@@ -152,7 +152,12 @@ struct MeetingListView: View {
             // reference these files may still exist in the real database.
             guard !storeIsEphemeral, !didSweepOrphans else { return }
             didSweepOrphans = true
-            MeetingStore.removeOrphanedAudio(referencedFileNames: Set(meetings.compactMap(\.audioFileName)))
+            // Its own fetch, not the view's @Query: a query whose fetch failed
+            // is silently empty, and an empty referenced set would delete
+            // every recording in the library.
+            if let referenced = MeetingStore.referencedAudioFileNames(context: context) {
+                MeetingStore.removeOrphanedAudio(referencedFileNames: referenced)
+            }
             // Same idea for the knowledge base: drops support left by meetings
             // deleted before this existed, and by any earlier pass whose save
             // failed. Runs on the same guard, so it never touches the fallback

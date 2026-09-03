@@ -229,6 +229,21 @@ enum MeetingStore {
         return true
     }
 
+    /// The audio files the library still references, or nil when the store
+    /// couldn't be read. The launch sweep deletes everything NOT in this set,
+    /// so a failed read must never be mistaken for an empty library — the
+    /// knowledge sweep already refuses to run on one, and the audio sweep
+    /// must too.
+    static func referencedAudioFileNames(context: ModelContext) -> Set<String>? {
+        do {
+            let meetings = try context.fetch(FetchDescriptor<Meeting>())
+            return Set(meetings.compactMap(\.audioFileName))
+        } catch {
+            logger.error("Could not read the library before sweeping orphaned audio, so nothing was swept: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
     /// Removes audio files that no meeting references (e.g. left behind by a
     /// crash mid-recording), so no recording lingers on disk invisibly.
     /// `directory` defaults to the live recordings directory; tests pass a
