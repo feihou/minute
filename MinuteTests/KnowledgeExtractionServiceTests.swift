@@ -46,6 +46,17 @@ struct KnowledgeExtractionServiceTests {
         #expect(KnowledgeExtractionService.hintNames(for: "we ran a testing pass", from: ["A/B Testing"]) == ["A/B Testing"])
     }
 
+    @Test func aNameWithNoTokensIsNeverAHint() {
+        // A roster row that is pure punctuation normalizes to nothing, and an
+        // empty phrase sits inside every haystack — including the "  " a chunk
+        // with no words of its own produces. Such a row has to drop out before
+        // the phrase probe, or it would be hinted for a chunk that says nothing.
+        #expect(KnowledgeExtractionService.hintNames(for: "", from: ["—"]).isEmpty)
+        #expect(KnowledgeExtractionService.hintNames(for: "  ...  ", from: ["!!!"]).isEmpty)
+        // And it drops out without taking the real names beside it with it.
+        #expect(KnowledgeExtractionService.hintNames(for: "Atlas ships", from: ["—", "Atlas"]) == ["Atlas"])
+    }
+
     @Test func candidateValidatesQuoteAndMapsKind() {
         let transcript = "[00:01] Sarah: I will own the Atlas redesign."
         let good = KnowledgeCandidateDraft(
