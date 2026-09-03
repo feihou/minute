@@ -115,19 +115,39 @@ enum KnowledgeIngest {
                 // corroboration, or deleting the first meeting would discard
                 // knowledge this one still supports. Tombstones are excluded:
                 // they exist to keep a rejected claim out, not to hold sources.
-                // Only on evidence as strong as the fact itself: the same
+                //
+                // Two ways to earn an entry, on deliberately different evidence.
+                //
+                // Inheriting — a meeting that never sourced this row joins it
+                // only on evidence as strong as the fact itself: the same
                 // statement token-for-token in order, and a quote that actually
                 // validated against this transcript. A looser match is still a
                 // fair reason to drop the candidate — it is not a reason to let
                 // this meeting inherit the fact once the original source goes.
-                if duplicate.status != .rejected,
-                   let quote = candidate.validatedQuote,
-                   KnowledgeText.statesTheSame(duplicate.originalText, candidate.fact) {
-                    // The restatement brings its own quote now, so the row no
-                    // longer depends on one meeting's phrasing to explain it.
+                //
+                // Keeping — the pre-loop stripped an entry this meeting already
+                // had so the new transcript could decide afresh, and the claim
+                // survived: that is precisely why the candidate is being
+                // dropped. Handing back what the meeting already held is not an
+                // inheritance, so the match that dropped the candidate is
+                // evidence enough — no quote and no word-for-word repeat
+                // required. Demanding them here would record the meeting's
+                // statement nowhere at all: the candidate is gone and so is the
+                // source, and deleting the other meeting then prunes a fact this
+                // transcript still states.
+                let keptItsOwnEntry = previouslySupported.contains(duplicate.id)
+                let inheritsIt = candidate.validatedQuote != nil
+                    && KnowledgeText.statesTheSame(duplicate.originalText, candidate.fact)
+                if duplicate.status != .rejected, keptItsOwnEntry || inheritsIt {
+                    // The restatement brings its own quote when it has one, so
+                    // the row no longer depends on one meeting's phrasing to
+                    // explain it. Nil is honest for the rest: the meeting states
+                    // this, nothing in it could be quoted, and the quote the
+                    // stripped entry carried belonged to a transcript that no
+                    // longer exists.
                     let newestBefore = duplicate.capturedAt
                     duplicate.addSource(FactSource(
-                        meetingID: meetingID, quote: quote, capturedAt: meeting.createdAt
+                        meetingID: meetingID, quote: candidate.validatedQuote, capturedAt: meeting.createdAt
                     ))
                     // A dated source can make this fact the entity's newest,
                     // and synthesis is fed newest-first with "prefer the newer

@@ -425,8 +425,52 @@ struct KnowledgeIngestTests {
             from: second, context: context
         )
 
-        // One fact, not a second near-identical draft beside it.
+        // One fact, not a second near-identical draft beside it...
+        let facts = try context.fetch(FetchDescriptor<KnowledgeFact>())
+        #expect(facts.count == 1)
+        // ...and it is the original row, not a replacement.
+        #expect(facts.first?.originalText == "Sarah leads the Atlas redesign")
+        #expect(facts.first?.status == .autoCaptured)
+        // Dropping the candidate says B still states this, so B has to get back
+        // the source entry the pre-loop stripped. Without it the row is sourced
+        // by A alone and deleting A prunes a claim B's transcript still makes —
+        // a visible duplicate traded for silent evidence loss.
+        #expect(fact.sourceMeetingIDs == [first.id, second.id])
+    }
+
+    @Test func reextractedParaphraseWithoutAQuoteStillKeepsTheMeetingAsASource() throws {
+        let context = try makeContext()
+        let first = Meeting(title: "A", createdAt: .now.addingTimeInterval(-3600))
+        let second = Meeting(title: "B", createdAt: .now)
+        context.insert(first)
+        context.insert(second)
+        let sarah = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(sarah)
+        let fact = KnowledgeFact(
+            text: "Sarah leads the Atlas redesign", originalText: "Sarah leads the Atlas redesign",
+            status: .autoCaptured, sourceMeetingID: first.id, capturedAt: first.createdAt, entity: sarah
+        )
+        context.insert(fact)
+        fact.addSource(FactSource(meetingID: second.id, quote: nil, capturedAt: second.createdAt))
+        try context.save()
+
+        // B is re-transcribed and paraphrases, and this time nothing in the new
+        // transcript validated as a quote. A missing quote is a reason to refuse
+        // a meeting a fact it never stated; it is not a reason to take away one
+        // it already vouched for and still does.
+        try KnowledgeIngest.apply(
+            [candidate("Sarah", "Sarah leads the Atlas redesign work", quote: nil)],
+            from: second, context: context
+        )
+
         #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).count == 1)
+        #expect(fact.sourceMeetingIDs == [first.id, second.id])
+        // The point of keeping the entry: A goes and the claim stays, because a
+        // live transcript still states it.
+        #expect(MeetingStore.delete(first, context: context))
+        let remaining = try context.fetch(FetchDescriptor<KnowledgeFact>())
+        #expect(remaining.map(\.originalText) == ["Sarah leads the Atlas redesign"])
+        #expect(remaining.first?.sourceMeetingIDs == [second.id])
     }
 
     @Test func aParaphraseAfterACorroborationInTheSameRunIsStillAWithinMeetingRepeat() throws {
