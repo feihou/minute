@@ -99,7 +99,7 @@ struct MLXJobGateTests {
         let gate = MLXJobGate()
 
         await #expect(throws: Boom.self) {
-            try await gate.run(onWaiting: {}, body: { () async throws -> Void in throw Boom() })
+            try await gate.run(onWaiting: {}, body: { () async throws in throw Boom() })
         }
 
         // A wedged gate would hang every later summary forever.
