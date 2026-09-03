@@ -42,6 +42,32 @@ struct SummaryEditorParsingTests {
         #expect(SummaryEditorView.splitActionItemLine("only a task") == ["only a task"])
     }
 
+    /// The separator carries its spaces, so a bare "|" the model or a user
+    /// wrote inside a field is not a delimiter. The two-field line is the
+    /// half-typed row people actually produce.
+    @Test func splitActionItemLineKeepsBarePipesInsideFields() {
+        #expect(SummaryEditorView.splitActionItemLine("A|B | Alice | Friday") == ["A|B", "Alice", "Friday"])
+        #expect(SummaryEditorView.splitActionItemLine("a | b") == ["a", "b"])
+    }
+
+    /// "\r\n" is a single Swift `Character`, so splitting on "\n" never split a
+    /// CRLF paste at all: an entire pasted list collapsed into one action item
+    /// whose owner and deadline were swallowed by the next row's text.
+    @Test func parseActionItemsSplitsCarriageReturnLines() {
+        let parsed = SummaryEditorView.parseActionItems("Ship it | Alice | Friday\r\nWrite the doc\rReview it | Priya")
+        #expect(parsed == [
+            ActionItem(task: "Ship it", owner: "Alice", deadline: "Friday"),
+            ActionItem(task: "Write the doc", owner: "Not specified", deadline: "Not specified"),
+            ActionItem(task: "Review it", owner: "Priya", deadline: "Not specified"),
+        ])
+    }
+
+    /// Same bug on every other section of the editor: a CRLF-pasted list of key
+    /// points, decisions or section items became a single run-on item.
+    @Test func parseListSplitsCarriageReturnLines() {
+        #expect(SummaryEditorView.parseList("one\r\ntwo\rthree") == ["one", "two", "three"])
+    }
+
     /// A user-typed line with one separator still means task + owner, as it
     /// did before — the deadline is what's missing, not the owner.
     @Test func parseActionItemsTreatsASingleSeparatorAsTheOwner() {
@@ -54,18 +80,42 @@ struct SummaryEditorParsingTests {
         #expect(parsed == [ActionItem(task: "Book the room", owner: "Not specified", deadline: "Not specified")])
     }
 
-    /// The round trip the editor performs on every Save: whatever `init`
+    /// The round trip the editor performs on every Save: whatever the editor
     /// serialized must parse back to the identical items, or saving rewrites
-    /// notes the user never edited.
+    /// notes the user never edited. Built by calling `serializeActionItems` —
+    /// the one serializer `init` itself uses — rather than a hand-copied format
+    /// literal, so that changing the written format without changing the parser
+    /// fails here instead of silently shifting every field a column on the next
+    /// Save.
     @Test func actionItemsSurviveTheEditorsSerializeParseRoundTrip() {
         let items = [
             ActionItem(task: "Decide A | B pricing", owner: "Alice", deadline: "Friday"),
             ActionItem(task: "Ship the fix", owner: "Not specified", deadline: "Not specified"),
         ]
-        let serialized = items
-            .map { "\($0.task) | \($0.owner) | \($0.deadline)" }
-            .joined(separator: "\n")
 
+        let serialized = SummaryEditorView.serializeActionItems(items)
+
+        // The wire format itself, pinned so a change to it is a decision rather
+        // than a side effect — the round trip alone would stay green on any
+        // self-consistent format, including one that loses the user's data.
+        #expect(serialized == """
+            Decide A | B pricing | Alice | Friday
+            Ship the fix | Not specified | Not specified
+            """)
         #expect(SummaryEditorView.parseActionItems(serialized) == items)
+    }
+
+    /// The accepted limit of an unescaped line format a human types by hand: a
+    /// separator inside the owner or deadline is indistinguishable from a real
+    /// one, so those fields shift. Owners are names and deadlines are dates,
+    /// where this is vanishingly rare, and escaping would tax everyone who types
+    /// a row. Pinned so the trade-off stays a decision, not a surprise.
+    @Test func aSeparatorInsideTheDeadlineStillShiftsFields() {
+        let serialized = SummaryEditorView.serializeActionItems([
+            ActionItem(task: "Ship it", owner: "Alice", deadline: "Mon | Tue"),
+        ])
+
+        #expect(SummaryEditorView.parseActionItems(serialized)
+            == [ActionItem(task: "Ship it | Alice", owner: "Mon", deadline: "Tue")])
     }
 }
