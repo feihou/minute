@@ -311,6 +311,15 @@ struct RecordingView: View {
                         .multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .loadingModel:
+                VStack(spacing: 10) {
+                    ProgressView("Loading the transcription model…")
+                    Text("Recording continues while the model loads — the live transcript starts once it's ready.")
+                        .font(.footnote)
+                        .foregroundStyle(.white.opacity(0.5))
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .unavailable(let reason):
                 transcriptPlaceholder("text.bubble", reason)
             default:
