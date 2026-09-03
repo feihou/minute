@@ -293,7 +293,22 @@ final class MLXSummarizationService: SummarizationEngine {
             }
             try Task.checkCancellation()
             await onProgress?("Combining notes…")
-            var summary = try await merge(notes, template: template, contextBlock: contextBlock, container: container)
+            var summary: MeetingSummary
+            do {
+                summary = try await merge(notes, template: template, contextBlock: contextBlock, container: container)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Every part already succeeded, at minutes of on-device
+                // generation apiece. A garbled merge or condense reply —
+                // the largest prompt of the run, and the one a small
+                // model misformats most — degrades the summary (no
+                // overview, title, or template sections) instead of
+                // destroying it, the same finish line the Apple engine
+                // protects.
+                Self.logger.error("Local merge failed, combining notes in code: \(error.localizedDescription)")
+                summary = Self.mechanicalSummary(from: notes)
+            }
             if skipped > 0 {
                 summary.skippedParts = skipped
             }
@@ -572,6 +587,84 @@ final class MLXSummarizationService: SummarizationEngine {
             return lines.joined(separator: "\n")
         }
         .joined(separator: "\n\n")
+    }
+
+    // MARK: Code-level fallback
+
+    /// Folds chunk notes together in code — concatenate, dedupe, group
+    /// speakers — for when the model garbles the one request it is already
+    /// too late to retry. Loses the rephrasing, keeps every fact. The Apple
+    /// engine degrades exactly this way on a refusal
+    /// (SummarizationService.mechanicallyCombined).
+    static func mechanicallyCombined(_ notes: [LocalChunkNotes]) -> LocalChunkNotes {
+        var actionItems: [LocalActionItem] = []
+        for item in notes.flatMap({ $0.actionItems ?? [] }) {
+            let task = (item.task ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !task.isEmpty else { continue }
+            // Same wording with a conflicting specified owner or deadline is
+            // two commitments, not overlap — keep both.
+            if let index = actionItems.firstIndex(where: {
+                ($0.task ?? "").caseInsensitiveCompare(task) == .orderedSame
+                    && !fieldsConflict($0.owner, item.owner)
+                    && !fieldsConflict($0.deadline, item.deadline)
+            }) {
+                // Overlapping parts repeat tasks; keep the copy that names an
+                // owner or deadline.
+                if SummarizationService.normalizedField(actionItems[index].owner ?? "") == ActionItem.notSpecified {
+                    actionItems[index].owner = item.owner
+                }
+                if SummarizationService.normalizedField(actionItems[index].deadline ?? "") == ActionItem.notSpecified {
+                    actionItems[index].deadline = item.deadline
+                }
+            } else {
+                actionItems.append(LocalActionItem(task: task, owner: item.owner, deadline: item.deadline))
+            }
+        }
+
+        var perspectives: [LocalPerspective] = []
+        for perspective in notes.flatMap({ $0.speakerPerspectives ?? [] }) {
+            let speaker = (perspective.speaker ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !speaker.isEmpty else { continue }
+            if let index = perspectives.firstIndex(where: { ($0.speaker ?? "").caseInsensitiveCompare(speaker) == .orderedSame }) {
+                perspectives[index].points = SummarizationService.cleaned((perspectives[index].points ?? []) + (perspective.points ?? []))
+            } else {
+                perspectives.append(LocalPerspective(speaker: speaker, points: SummarizationService.cleaned(perspective.points ?? [])))
+            }
+        }
+
+        return LocalChunkNotes(
+            keyPoints: SummarizationService.cleaned(notes.flatMap { $0.keyPoints ?? [] }),
+            decisions: SummarizationService.cleaned(notes.flatMap { $0.decisions ?? [] }),
+            actionItems: actionItems,
+            openQuestions: SummarizationService.cleaned(notes.flatMap { $0.openQuestions ?? [] }),
+            speakerPerspectives: perspectives
+        )
+    }
+
+    /// True when both values are specified and disagree — e.g. the same task
+    /// wording owned by two different people.
+    private static func fieldsConflict(_ first: String?, _ second: String?) -> Bool {
+        let lhs = SummarizationService.normalizedField(first ?? "")
+        let rhs = SummarizationService.normalizedField(second ?? "")
+        return lhs != ActionItem.notSpecified && rhs != ActionItem.notSpecified
+            && lhs.caseInsensitiveCompare(rhs) != .orderedSame
+    }
+
+    /// The no-model fallback summary: combined notes with an empty overview
+    /// and no suggested title — the detail view hides both when empty, so the
+    /// notes never claim a model wrote something it didn't.
+    static func mechanicalSummary(from notes: [LocalChunkNotes]) -> MeetingSummary {
+        let combined = mechanicallyCombined(notes)
+        return MeetingSummary(
+            overview: "",
+            keyPoints: combined.keyPoints ?? [],
+            decisions: combined.decisions ?? [],
+            actionItems: (combined.actionItems ?? []).normalized(),
+            openQuestions: combined.openQuestions ?? [],
+            generatedAt: .now,
+            suggestedTitle: nil,
+            speakerPerspectives: (combined.speakerPerspectives ?? []).normalized()
+        )
     }
 
     // MARK: JSON handling

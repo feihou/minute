@@ -139,3 +139,89 @@ struct MLXJSONExtractionTests {
         #expect(extract(reply) == #"{"keyPoints": []}"#)
     }
 }
+
+/// When the merge (or a condense inside it) comes back unreadable, minutes of
+/// on-device generation must not be thrown away: the chunk notes fold together
+/// in code, exactly as the Apple engine degrades on a refusal.
+struct MLXMechanicalFallbackTests {
+    private func notes(
+        keyPoints: [String]? = nil,
+        decisions: [String]? = nil,
+        actionItems: [LocalActionItem]? = nil,
+        openQuestions: [String]? = nil,
+        speakerPerspectives: [LocalPerspective]? = nil
+    ) -> LocalChunkNotes {
+        LocalChunkNotes(
+            keyPoints: keyPoints,
+            decisions: decisions,
+            actionItems: actionItems,
+            openQuestions: openQuestions,
+            speakerPerspectives: speakerPerspectives
+        )
+    }
+
+    @MainActor
+    @Test("Overlapping parts fold into one set of notes")
+    func combinesAndDedupes() {
+        let combined = MLXSummarizationService.mechanicallyCombined([
+            notes(
+                keyPoints: ["Pricing is behind", "Pricing is behind"],
+                decisions: ["Ship on Friday"],
+                actionItems: [LocalActionItem(task: "Update the pricing page", owner: nil, deadline: nil)],
+                openQuestions: ["Who owns the migration?"],
+                speakerPerspectives: [LocalPerspective(speaker: "Ana", points: ["Wants a staged rollout"])]
+            ),
+            notes(
+                keyPoints: ["pricing is behind", "Docs are stale"],
+                actionItems: [LocalActionItem(task: "update the pricing page", owner: "Ana", deadline: "Friday")],
+                speakerPerspectives: [LocalPerspective(speaker: "ana", points: ["Wants a staged rollout", "Needs the docs first"])]
+            ),
+        ])
+
+        #expect(combined.keyPoints == ["Pricing is behind", "Docs are stale"])
+        #expect(combined.decisions == ["Ship on Friday"])
+        #expect(combined.openQuestions == ["Who owns the migration?"])
+        // The repeat carries the owner and deadline the first copy lacked.
+        #expect(combined.actionItems?.count == 1)
+        #expect(combined.actionItems?.first?.task == "Update the pricing page")
+        #expect(combined.actionItems?.first?.owner == "Ana")
+        #expect(combined.actionItems?.first?.deadline == "Friday")
+        #expect(combined.speakerPerspectives?.count == 1)
+        #expect(combined.speakerPerspectives?.first?.points == ["Wants a staged rollout", "Needs the docs first"])
+    }
+
+    @MainActor
+    @Test("The same task owned by two people stays two commitments")
+    func conflictingOwnersAreNotMerged() {
+        let combined = MLXSummarizationService.mechanicallyCombined([
+            notes(actionItems: [LocalActionItem(task: "Send the deck", owner: "Ana", deadline: nil)]),
+            notes(actionItems: [LocalActionItem(task: "Send the deck", owner: "Bo", deadline: nil)]),
+        ])
+        #expect(combined.actionItems?.count == 2)
+    }
+
+    @MainActor
+    @Test("The fallback summary keeps every fact and claims nothing extra")
+    func fallbackSummaryHasNoOverviewOrTitle() {
+        let summary = MLXSummarizationService.mechanicalSummary(from: [
+            notes(
+                keyPoints: ["Pricing is behind"],
+                decisions: ["Ship on Friday"],
+                actionItems: [LocalActionItem(task: "Update the pricing page", owner: nil, deadline: nil)],
+                openQuestions: ["Who owns the migration?"]
+            ),
+        ])
+
+        // No model wrote these, so the summary must not pretend otherwise.
+        #expect(summary.overview.isEmpty)
+        #expect(summary.suggestedTitle == nil)
+        #expect(summary.keyPoints == ["Pricing is behind"])
+        #expect(summary.decisions == ["Ship on Friday"])
+        #expect(summary.openQuestions == ["Who owns the migration?"])
+        // A missing owner is the literal placeholder, never a blank.
+        #expect(summary.actionItems == [
+            ActionItem(task: "Update the pricing page", owner: ActionItem.notSpecified, deadline: ActionItem.notSpecified)
+        ])
+        #expect(summary.speakerPerspectives == nil)
+    }
+}
