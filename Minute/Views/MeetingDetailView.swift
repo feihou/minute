@@ -215,6 +215,9 @@ struct MeetingDetailView: View {
             titleVisibility: .visible
         ) {
             Button("Delete Meeting", role: .destructive) {
+                // A summary or re-transcription still running on this meeting
+                // would keep decoding a deleted file for minutes; stop it first.
+                jobs.cancel(meeting)
                 // Only leave once the delete is actually committed — dismissing
                 // on a failed delete tells the user their meeting is gone while
                 // it is still in the library. Playback is torn down only on

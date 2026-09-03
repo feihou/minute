@@ -113,9 +113,16 @@ struct RecordingView: View {
                         .buttonStyle(.borderedProminent)
                     }
                     Button(session.didStartRecording ? "Discard" : "Close", role: .destructive) {
-                        Task {
-                            await session.discard()
-                            onFinish(nil)
+                        if session.didStartRecording {
+                            // Captured audio deserves the same confirmation the
+                            // toolbar Discard has; this button sits 12pt from
+                            // Save Recording.
+                            confirmingDiscard = true
+                        } else {
+                            Task {
+                                await session.discard()
+                                onFinish(nil)
+                            }
                         }
                     }
                     .buttonStyle(.bordered)

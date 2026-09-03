@@ -23,6 +23,7 @@ struct MeetingListView: View {
 
     @Environment(\.modelContext) private var context
     @Environment(KnowledgeCatchUp.self) private var catchUp
+    @Environment(MeetingJobs.self) private var jobs
     @Query(sort: \Meeting.createdAt, order: .reverse) private var meetings: [Meeting]
 
     @State private var searchText = ""
@@ -37,6 +38,9 @@ struct MeetingListView: View {
     /// Home Screen widget must never kick off work the user didn't ask for.
     @State private var destinationAutoSummarizes = false
     @State private var deleteFailed = false
+    /// The meeting a swipe or context menu asked to delete, held until the
+    /// confirmation is answered.
+    @State private var pendingDelete: Meeting?
     @State private var didSweepOrphans = false
     @State private var showingImporter = false
     @State private var importingFileName: String?
@@ -241,7 +245,7 @@ struct MeetingListView: View {
                         .listRowSeparator(.hidden, edges: .top)
                         .swipeActions(edge: .trailing) {
                             Button(role: .destructive) {
-                                deleteFailed = !MeetingStore.delete(meeting, context: context)
+                                pendingDelete = meeting
                             } label: {
                                 Label("Delete", systemImage: "trash")
                             }
@@ -257,7 +261,7 @@ struct MeetingListView: View {
                             }
                             Divider()
                             Button(role: .destructive) {
-                                deleteFailed = !MeetingStore.delete(meeting, context: context)
+                                pendingDelete = meeting
                             } label: {
                                 Label("Delete Meeting", systemImage: "trash")
                             }
@@ -281,6 +285,22 @@ struct MeetingListView: View {
             if groupedMeetings.isEmpty, !searchText.isEmpty {
                 ContentUnavailableView.search(text: searchText)
             }
+        }
+        .confirmationDialog(
+            "Delete this meeting?",
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingDelete
+        ) { meeting in
+            Button("Delete Meeting", role: .destructive) {
+                deleteMeeting(meeting)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("The recording, transcript, summary, and everything Brain learned from this meeting will be permanently deleted from this iPhone.")
         }
         .alert("This meeting couldn't be deleted", isPresented: $deleteFailed) {
             Button("OK", role: .cancel) {}
@@ -412,6 +432,13 @@ struct MeetingListView: View {
         draftDefaultTitle = RecordingSession.defaultTitle()
         draftTitle = draftDefaultTitle
         showingNewMeeting = true
+    }
+
+    private func deleteMeeting(_ meeting: Meeting) {
+        // A summary or re-transcription still running on this meeting would
+        // keep decoding a deleted file for minutes; stop it first.
+        jobs.cancel(meeting)
+        deleteFailed = !MeetingStore.delete(meeting, context: context)
     }
 
     private func handleDeepLink(_ url: URL) {

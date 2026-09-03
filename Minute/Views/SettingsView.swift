@@ -9,6 +9,7 @@ import UIKit
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var context
+    @Environment(MeetingJobs.self) private var jobs
     @Query private var meetings: [Meeting]
 
     @AppStorage(AppSettings.audioQualityKey) private var audioQualityRaw = AudioQuality.high.rawValue
@@ -467,6 +468,9 @@ struct SettingsView: View {
     private func deleteAllMeetings() {
         var allSucceeded = true
         for meeting in meetings {
+            // A summary or re-transcription still running on this meeting would
+            // keep decoding a deleted file for minutes; stop it first.
+            jobs.cancel(meeting)
             if !MeetingStore.delete(meeting, context: context) {
                 allSucceeded = false
             }
@@ -507,5 +511,6 @@ struct SettingsView: View {
 #Preview {
     SettingsView()
         .modelContainer(MeetingStore.previewContainer())
+        .environment(MeetingJobs())
 }
 #endif
