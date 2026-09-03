@@ -122,9 +122,15 @@ final class TranscriptionService: TranscriptionEngine {
                     }
                 }
             } catch {
-                // Losing live results is non-fatal; the recording continues.
+                // Losing live results is non-fatal for the recording — but
+                // silence here left the panel showing stale segments (or
+                // "Listening…") for the rest of the meeting and the saved
+                // transcript simply stopped mid-sentence. Say it where the
+                // user is looking. Everything finalized so far stays in
+                // `segments` and is still saved.
                 Self.logger.error("Transcriber results stream failed: \(error.localizedDescription)")
                 self?.volatileText = ""
+                self?.availability = .unavailable(Self.liveStoppedMessage(error))
             }
         }
 
@@ -228,6 +234,14 @@ final class TranscriptionService: TranscriptionEngine {
             volatileText = ""
         }
         return segments
+    }
+
+    /// What the recording screen shows once the live results stream has died.
+    /// The recording itself is unaffected, so the message has to say that as
+    /// well as what stopped — otherwise a user watching the panel assumes the
+    /// meeting is being lost and stops it.
+    static func liveStoppedMessage(_ error: any Error) -> String {
+        "Live transcription stopped: \(error.localizedDescription). Recording continues; you can re-transcribe the audio after saving."
     }
 
     /// Abandons the session without waiting for final results (user discarded).
