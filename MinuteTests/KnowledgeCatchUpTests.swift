@@ -328,10 +328,11 @@ struct KnowledgeCatchUpTests {
             calls += 1
             if calls == 1 {
                 startedContinuation.yield(())
-                // An extraction that only notices cancellation late — the
-                // real one sits inside a FoundationModels call.
-                try? await Task.sleep(for: .milliseconds(150))
-                try Task.checkCancellation()
+                // Parks until pause() cancels it, so the teardown this test
+                // nudges into is still in progress by construction. A timed
+                // sleep here would only be racing the main-actor hop that
+                // clears the loop, and would pass or fail on host speed.
+                try await Task.sleep(for: .seconds(60))
             }
             return []
         }

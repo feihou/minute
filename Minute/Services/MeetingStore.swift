@@ -190,6 +190,14 @@ enum MeetingStore {
         return url
     }
 
+    /// What the user is agreeing to when they confirm a delete. Lives here
+    /// rather than in either view because both the list and the detail screen
+    /// ask the same question about the same operation, and a promise about
+    /// what `delete` removes must not drift between the two places it is made.
+    /// "learned only from this meeting" is the literal truth: a fact another
+    /// meeting also states keeps that meeting as a source and survives.
+    static let deleteMeetingWarning = "The recording, transcript, summary, and everything Brain learned only from this meeting will be permanently deleted from this iPhone."
+
     /// Deleting a meeting also removes its audio file so no orphaned data
     /// remains. The database deletion commits FIRST: if it fails, the audio is
     /// untouched (a meeting must never reappear pointing at deleted audio),

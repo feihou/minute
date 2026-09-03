@@ -215,20 +215,7 @@ struct MeetingListView: View {
                 if let finished {
                     destinationAutoSummarizes = AppSettings.autoSummarizeEnabled
                     meetingDestination = finished
-                    // The loop is otherwise only nudged by a finished job or a
-                    // scene activation; with Auto-Summarize off (the default)
-                    // neither happens, and the Brain never reads this meeting
-                    // until the app is backgrounded and reopened.
-                    //
-                    // Only nudge when there is something to read: the loop
-                    // skip-lists a transcript-less meeting for the rest of the
-                    // process, so nudging a silent save would spend its one
-                    // chance and the transcript a later Re-transcribe Audio
-                    // produces would never be extracted. Nothing is lost by
-                    // waiting — that job nudges the loop itself when it lands.
-                    if finished.hasTranscript {
-                        catchUp.nudge(context: context)
-                    }
+                    nudgeBrain(for: finished)
                 }
             }
         }
@@ -305,7 +292,7 @@ struct MeetingListView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: { _ in
-            Text("The recording, transcript, summary, and everything Brain learned from this meeting will be permanently deleted from this iPhone.")
+            Text(MeetingStore.deleteMeetingWarning)
         }
         .alert("This meeting couldn't be deleted", isPresented: $deleteFailed) {
             Button("OK", role: .cancel) {}
@@ -439,7 +426,34 @@ struct MeetingListView: View {
         showingNewMeeting = true
     }
 
+    /// Lets the Brain read a meeting that has just arrived from a recording or
+    /// an import. The loop is otherwise only nudged by a finished job or a
+    /// scene activation, so with Auto-Summarize off (the default) neither
+    /// happens and the meeting goes unread until the app is backgrounded and
+    /// reopened.
+    ///
+    /// Two cases skip the nudge. A meeting with no transcript (a silent save,
+    /// an import whose transcription failed) has nothing to read, and the loop
+    /// skip-lists it for the rest of the process — spending its one chance, so
+    /// the transcript a later Re-transcribe Audio produces would never be
+    /// extracted. Nothing is lost by waiting there: that job nudges the loop
+    /// itself when it lands. And with Auto-Summarize on, the summary starting
+    /// on the next screen already nudges when it finishes
+    /// (`MeetingJobs.onContentChanged`), as does the Brain tab's own `.task`;
+    /// nudging now would only make extraction and that summary contend for the
+    /// single on-device model.
+    private func nudgeBrain(for meeting: Meeting) {
+        guard meeting.hasTranscript, !destinationAutoSummarizes else { return }
+        catchUp.nudge(context: context)
+    }
+
     private func deleteMeeting(_ meeting: Meeting) {
+        // Cleared here, not only through the dialog's isPresented setter:
+        // deleting the last meeting swaps `meetingList` — which hosts that
+        // dialog — for `emptyState` in the same update, so the setter may
+        // never run and this would keep holding a detached Meeting that a
+        // later presentation would put back on screen.
+        pendingDelete = nil
         // A summary or re-transcription still running on this meeting would
         // keep decoding a deleted file for minutes; stop it first.
         jobs.cancel(meeting)
@@ -479,14 +493,7 @@ struct MeetingListView: View {
                 // kicks in for imports too.
                 destinationAutoSummarizes = AppSettings.autoSummarizeEnabled
                 meetingDestination = result.meeting
-                // Same reason — and the same guard — as the post-recording
-                // nudge above: an import that came back without a transcript
-                // (speech model not ready, transcription failed) must stay off
-                // the loop's skip-list so the transcript a later re-transcription
-                // produces still gets extracted.
-                if result.meeting.hasTranscript {
-                    catchUp.nudge(context: context)
-                }
+                nudgeBrain(for: result.meeting)
             } catch is CancellationError {
                 // User cancelled — nothing to report.
             } catch {

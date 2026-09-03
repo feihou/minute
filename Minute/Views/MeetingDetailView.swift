@@ -95,6 +95,18 @@ struct MeetingDetailView: View {
                 SummarizationEngines.prewarm(language: AppSettings.summaryLanguage)
             }
         }
+        .onChange(of: meeting.isGone) { _, gone in
+            // The delete that happened elsewhere — the list's row, or the
+            // Brain tab's copy of this meeting — swaps the page below for the
+            // placeholder, and the placeholder has no transport controls. The
+            // player is `@State` and survives that swap, so without this it
+            // keeps playing a file `deleteAudioFile` has already unlinked, with
+            // nothing on screen to stop it. The detail's own Delete button
+            // stops playback itself and dismisses, so it never reaches here.
+            if gone {
+                player.stop()
+            }
+        }
         .onDisappear {
             player.stop()
             if !meeting.isGone {
@@ -220,7 +232,7 @@ struct MeetingDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The recording, transcript, summary, and everything Brain learned from this meeting will be permanently deleted from this iPhone.")
+            Text(MeetingStore.deleteMeetingWarning)
         }
         .alert("This meeting couldn't be deleted", isPresented: $deleteFailed) {
             Button("OK", role: .cancel) {}

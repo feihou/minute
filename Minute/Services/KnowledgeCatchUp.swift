@@ -41,16 +41,24 @@ final class KnowledgeCatchUp {
     /// What the skip-list remembers a meeting by: identity plus the text
     /// the extractor would read, so new text means a new attempt.
     static func contentKey(for meeting: Meeting) -> Int {
-        meeting.timestampedTranscriptText.hashValue
+        contentKey(for: meeting.timestampedTranscriptText)
     }
 
-    /// Skip-lists a meeting under the text that was actually read. `key`
-    /// must be passed wherever an `await` sits between reading the text and
+    /// The same derivation from text already in hand. Stated once here so the
+    /// loop — which must key on the transcript it actually handed the
+    /// extractor, not on whatever the meeting holds after the await — cannot
+    /// drift from what `isSkipped` computes.
+    private static func contentKey(for transcript: String) -> Int {
+        transcript.hashValue
+    }
+
+    /// Skip-lists a meeting under the text that was actually read. The key is
+    /// always passed in because an `await` sits between reading the text and
     /// skipping: a re-transcription landing in that window would otherwise
     /// skip-list text no extractor has ever seen, which is the very
     /// wait-for-relaunch this list's content key exists to avoid.
-    private func skip(_ meeting: Meeting, key: Int? = nil) {
-        skippedThisSession[meeting.id] = key ?? Self.contentKey(for: meeting)
+    private func skip(_ meeting: Meeting, key: Int) {
+        skippedThisSession[meeting.id] = key
     }
 
     /// Cheap for the common case: only meetings that actually failed pay for
@@ -163,7 +171,7 @@ final class KnowledgeCatchUp {
                 // stop without skip-listing, exactly like the availability
                 // guard at the top of run(), and let the next nudge retry.
                 if case .unavailable = error { return }
-                skip(meeting, key: transcript.hashValue)
+                skip(meeting, key: Self.contentKey(for: transcript))
             } catch let error as LanguageModelSession.GenerationError {
                 // Rate limiting is the device saying "not now", not a verdict
                 // on this meeting: stop without skip-listing (spec §5
@@ -174,11 +182,11 @@ final class KnowledgeCatchUp {
                 if case .assetsUnavailable = error { return }
                 // Permanent (refusal, etc.) failures skip for this session
                 // and retry at next launch.
-                skip(meeting, key: transcript.hashValue)
+                skip(meeting, key: Self.contentKey(for: transcript))
             } catch {
                 // Non-FoundationModels failures skip for this session and
                 // retry at next launch.
-                skip(meeting, key: transcript.hashValue)
+                skip(meeting, key: Self.contentKey(for: transcript))
             }
         }
     }
