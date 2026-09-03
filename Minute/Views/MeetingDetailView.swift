@@ -34,6 +34,13 @@ struct MeetingDetailView: View {
     @State private var renamingSpeaker: Int?
     @State private var renameText = ""
     @State private var selectedTab: Tab = .summary
+    /// The masthead field's text while the user is editing it; nil means "not
+    /// being edited", so the field shows the stored title. Edits go through
+    /// this rather than straight into `meeting.title`: bound directly, every
+    /// keystroke was a model mutation the whole app re-rendered on, and
+    /// clearing the field wrote an empty title that then headed the library
+    /// row, the widget, and every export.
+    @State private var titleDraft: String?
     @AppStorage(AppSettings.summaryTemplateKey) private var summaryTemplateID = SummaryTemplate.standard.id
     @Query private var knowledgeEntities: [KnowledgeEntity]
 
@@ -110,6 +117,7 @@ struct MeetingDetailView: View {
         .onDisappear {
             player.stop()
             if !meeting.isGone {
+                commitTitle()
                 saveQuietly()
             }
         }
@@ -279,9 +287,17 @@ struct MeetingDetailView: View {
     /// separate chips restated what the line already says.
     private var masthead: some View {
         VStack(alignment: .leading, spacing: 10) {
-            TextField("Title", text: $meeting.title, axis: .vertical)
+            TextField("Title", text: Binding(
+                get: { titleDraft ?? meeting.title },
+                set: { titleDraft = $0 }
+            ))
                 .font(.largeTitle.bold())
                 .textFieldStyle(.plain)
+                // Single-line on purpose: with `axis: .vertical` the return
+                // key inserted a newline into the title instead of finishing
+                // the edit, and onSubmit never fired.
+                .submitLabel(.done)
+                .onSubmit { commitTitle() }
                 .accessibilityLabel("Meeting title")
 
             Text(metaLine)
@@ -677,6 +693,20 @@ struct MeetingDetailView: View {
 
     static func speakerColor(for index: Int) -> Color {
         speakerColors[index % speakerColors.count]
+    }
+
+    /// Writes the edited title back to the meeting, substituting the fallback
+    /// when the user left the field empty. A no-op when nothing was typed, so
+    /// merely opening and leaving this screen never touches the model — which
+    /// also keeps the widget snapshot from being rewritten for a visit.
+    private func commitTitle() {
+        guard let draft = titleDraft else { return }
+        titleDraft = nil
+        guard !meeting.isGone else { return }
+        let committed = Meeting.committedTitle(draft: draft, fallback: meeting.titleFallback)
+        if committed != meeting.title {
+            meeting.title = committed
+        }
     }
 
     private func saveQuietly() {

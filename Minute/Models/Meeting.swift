@@ -78,3 +78,30 @@ final class Meeting {
         return "Speaker \(index + 1)"
     }
 }
+
+extension Meeting {
+    /// The title to store when the user finishes editing the detail
+    /// masthead. A title is an identifier as much as a label — it heads the
+    /// library row, the Home Screen widget, the exported and mirrored
+    /// notes.md, and the iCloud Drive folder name — so an emptied field must
+    /// not be written through: it falls back to the meeting's own default.
+    /// Newlines fold into spaces rather than being trimmed off the ends,
+    /// because a pasted two-line string would otherwise turn "# title" into a
+    /// heading plus a stray body line in every export.
+    static func committedTitle(draft: String, fallback: String) -> String {
+        let flattened = draft
+            .replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return flattened.isEmpty ? fallback : flattened
+    }
+
+    /// What the title reverts to when the field is emptied: the exact
+    /// auto-generated title this meeting was created with, or — for meetings
+    /// stored before that field existed, and for imports — the same string
+    /// regenerated from the creation date, so the fallback is never empty.
+    var titleFallback: String {
+        defaultTitle ?? RecordingSession.defaultTitle(for: createdAt)
+    }
+}
