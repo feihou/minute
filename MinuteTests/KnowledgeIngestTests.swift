@@ -516,4 +516,35 @@ struct KnowledgeIngestTests {
         #expect(entity.synthesizedFactCount == nil)
     }
 
+    @Test func reextractionThatDropsAnEntitysOnlyFactRemovesTheEntity() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "m")
+        context.insert(meeting)
+        try KnowledgeIngest.apply([candidate("Bob", "Bob joined the Atlas team")], from: meeting, context: context)
+        #expect(try context.fetch(FetchDescriptor<KnowledgeEntity>()).count == 1)
+
+        // The re-transcribed meeting no longer mentions Bob. His only fact
+        // was this meeting's still-suggested one, so it goes — and an
+        // entity with nothing left to show must not linger with his name.
+        try KnowledgeIngest.apply([], from: meeting, context: context)
+
+        #expect(try context.fetch(FetchDescriptor<KnowledgeEntity>()).isEmpty)
+        #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).isEmpty)
+    }
+
+    @Test func reextractionKeepsAnEntityThatStillHasFacts() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "m")
+        let other = Meeting(title: "other")
+        context.insert(meeting)
+        context.insert(other)
+        try KnowledgeIngest.apply([candidate("Bob", "Bob joined the Atlas team")], from: meeting, context: context)
+        try KnowledgeIngest.apply([candidate("Bob", "Bob prefers async reviews")], from: other, context: context)
+
+        try KnowledgeIngest.apply([], from: meeting, context: context)
+
+        let entities = try context.fetch(FetchDescriptor<KnowledgeEntity>())
+        #expect(entities.count == 1)
+        #expect(entities[0].facts.count == 1)
+    }
 }

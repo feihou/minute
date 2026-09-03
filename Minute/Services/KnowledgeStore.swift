@@ -107,7 +107,9 @@ enum KnowledgeStore {
         }
 
         var doomed: [UUID: KnowledgeEntity] = [:]
-        for entity in allEntities where changedEntities.contains(entity.id) {
+        // Also entities with no facts at all: a re-extraction in an earlier
+        // build could empty one without anything examining it afterwards.
+        for entity in allEntities where changedEntities.contains(entity.id) || (entity.facts.isEmpty && entity.kind != .me) {
             // Judged against `removedIDs` rather than re-reading `entity.facts`,
             // which still lists rows that are deleted-pending until the save.
             if entity.visibleFacts.contains(where: { !removedIDs.contains($0.id) }) {

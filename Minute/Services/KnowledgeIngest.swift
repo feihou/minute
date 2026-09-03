@@ -168,6 +168,21 @@ enum KnowledgeIngest {
         for entity in touched.values {
             entity.synthesizedFactCount = nil
         }
+        // A re-extraction can empty an entity: a new entity only ever gets
+        // `.suggested` facts, and this meeting's still-suggested facts were
+        // deleted above. Nothing later would remove it — reconcile only
+        // examines entities whose facts lost a source — so its name (learned
+        // from this meeting) would stay on disk with nothing to show and no
+        // delete path. Remove it now; a merge tombstone pointing at it, or
+        // the Me entity, is left alone.
+        let redirectTargets = Set(known.compactMap(\.redirectTo))
+        for entity in touched.values where entity.kind != .me {
+            guard entity.redirectTo == nil, !redirectTargets.contains(entity.id) else { continue }
+            let remaining = entity.facts.filter { !staleIDs.contains($0.id) }
+            if remaining.isEmpty {
+                context.delete(entity)
+            }
+        }
         try context.save()
         return result
     }
