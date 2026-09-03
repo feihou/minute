@@ -294,9 +294,16 @@ final class WhisperTranscriptionService: TranscriptionEngine {
         // timestamp would otherwise re-confirm the same audio every pass,
         // duplicating transcript text.
         var lastConfirmedEnd: TimeInterval = -1
-        // Pinned after the first pass so live text stops flickering between
-        // per-window detection hypotheses; nil means "detect on this pass".
+        // Pinned once two passes agree on enough speech, so live text stops
+        // flickering between per-window detection hypotheses; nil means
+        // "detect on this pass".
         var pinnedLanguage: String?
+        // What the previous pass detected — a pin needs the same answer twice.
+        var previousDetection: String?
+        // Speech confirmed so far, summed over segment durations. Confirmed
+        // audio is purged from the tail, so adding the current pass's
+        // segments double-counts nothing.
+        var decodedSpeechSeconds: TimeInterval = 0
 
         while !feed.isStopped, !Task.isCancelled {
             let snapshot = feed.snapshot()
@@ -336,20 +343,26 @@ final class WhisperTranscriptionService: TranscriptionEngine {
                 // below, so the final pass only re-decodes the shrunken tail
                 // instead of repeating this whole pass's work.
                 guard !Task.isCancelled else { break }
-                // Pin only once detection has heard enough audio — the very
-                // first 1-second pass is too short to trust, and a wrong pin
-                // would mistranscribe the rest of the meeting. Measured
-                // cumulatively (totalSamples): the retained tail shrinks with
-                // every purge and might never span the threshold itself.
-                if pinnedLanguage == nil,
-                   totalSamples >= Self.languagePinMinimumSamples {
-                    pinnedLanguage = results.first?.language
-                }
                 let mapped = Self.mapSegments(results, timeBase: timeBase)
+                // Pin only on evidence: the same detection twice in a row and
+                // at least five seconds of speech actually decoded. A wrong
+                // pin mistranscribes the rest of the meeting, and a recording
+                // that starts with a quiet room hands the first pass minutes
+                // of silence around one second of speech.
+                if pinnedLanguage == nil {
+                    let detected = results.first?.language
+                    pinnedLanguage = Self.languagePin(
+                        detected: detected,
+                        matching: previousDetection,
+                        speechSeconds: decodedSpeechSeconds + Self.speechSeconds(of: mapped)
+                    )
+                    previousDetection = detected
+                }
                 let split = Self.splitForConfirmation(mapped, keepingLast: 2)
                 if let lastConfirmed = split.confirmed.last, lastConfirmed.end > lastConfirmedEnd {
                     lastConfirmedEnd = lastConfirmed.end
                     segments.append(contentsOf: split.confirmed)
+                    decodedSpeechSeconds += Self.speechSeconds(of: split.confirmed)
                     // Purge audio the loop will never decode again, keeping
                     // memory and per-pass copy cost bounded to the tail; the
                     // cap above bounds the voiceless stretches the gate skips.
@@ -389,11 +402,35 @@ final class WhisperTranscriptionService: TranscriptionEngine {
         }
     }
 
-    /// Language detection needs at least this much audio before its result
-    /// is trusted enough to pin for the rest of the meeting.
-    private static let languagePinMinimumSamples = 5 * WhisperKit.sampleRate
+    /// Speech — not recorded audio — the pin waits for. Recorded time counts
+    /// silence and the model-load backlog, so a meeting that starts quiet
+    /// crossed the old threshold on its very first decoded second.
+    static let languagePinMinimumSpeechSeconds: TimeInterval = 5
     /// The most unconfirmed audio the live feed retains (5 minutes ≈ 19 MB).
     private static let maximumTailSamples = 5 * 60 * WhisperKit.sampleRate
+
+    /// Seconds of speech in a pass's segments — the measure the language pin
+    /// waits on.
+    static func speechSeconds(of segments: [TranscriptSegment]) -> TimeInterval {
+        segments.reduce(0) { $0 + max(0, $1.end - $1.start) }
+    }
+
+    /// The language to fix for the rest of the meeting, or nil to keep
+    /// detecting. It takes the same detection on two consecutive passes AND
+    /// at least languagePinMinimumSpeechSeconds of decoded speech: WhisperKit
+    /// always fills in a language (defaulting to English when detection
+    /// fails), one second of speech is not enough to tell zh from en, and a
+    /// wrong pin transliterates every later pass of the meeting.
+    static func languagePin(
+        detected: String?,
+        matching previous: String?,
+        speechSeconds: TimeInterval
+    ) -> String? {
+        guard let detected,
+              detected == previous,
+              speechSeconds >= languagePinMinimumSpeechSeconds else { return nil }
+        return detected
+    }
 
     /// detectLanguage must be explicit: it defaults to !usePrefillPrompt,
     /// i.e. false, and then a nil language silently decodes as English.
