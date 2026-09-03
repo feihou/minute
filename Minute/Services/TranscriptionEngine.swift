@@ -10,6 +10,15 @@ enum TranscriptionAvailability: Equatable {
     case unavailable(String)
 }
 
+/// Thrown by the file path when the engine can't run, carrying the same
+/// explanation `availability` shows the live path. Re-transcribe and import
+/// render `localizedDescription` verbatim, so a bare framework error there
+/// would hide the one sentence that tells the user what to do.
+struct TranscriptionUnavailableError: LocalizedError, Equatable {
+    let message: String
+    var errorDescription: String? { message }
+}
+
 /// The transcription contract the recording, import, and re-transcribe paths
 /// talk to, instead of a concrete engine. Live sessions stream buffers in and
 /// observable text out; the file path transcribes in one throwing call.

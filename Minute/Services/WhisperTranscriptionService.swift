@@ -411,7 +411,15 @@ final class WhisperTranscriptionService: TranscriptionEngine {
 
     func transcribe(file: AVAudioFile) async throws -> [TranscriptSegment] {
         guard availability == .available, let whisperKit = await loadedWhisperKit() else {
-            throw CocoaError(.featureUnsupported)
+            // loadedWhisperKit() has just written the actionable text into
+            // availability when the load failed; prepare() wrote it when the
+            // model was missing. Either way, throw that, not a bare code.
+            if case .unavailable(let message) = availability {
+                throw TranscriptionUnavailableError(message: message)
+            }
+            throw TranscriptionUnavailableError(
+                message: "Whisper transcription isn't ready. Check Settings → Transcription Model, or switch back to Apple Speech."
+            )
         }
 
         // detectLanguage must be explicit: it defaults to !usePrefillPrompt,
