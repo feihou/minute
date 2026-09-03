@@ -30,6 +30,25 @@ final class KnowledgeCatchUp {
     /// otherwise hand the restart nudge to a task that is about to exit,
     /// and nothing would run again until the next scene transition.
     private var restartRequested: ModelContext?
+    /// True between `pause()` and `resume(context:)` — the app is not
+    /// foreground. The loop is foreground-only (spec §5): FoundationModels
+    /// rate-limits background apps, and once a finished job's background token
+    /// ends the app is suspended mid-request. Only the scene coming back lifts
+    /// this, so a job that completes in the background cannot restart reading
+    /// there by nudging.
+    private var pausedByScene = false
+    /// True between `pauseForWork()` and the next nudge — a job the user asked
+    /// for holds the on-device model. Kept apart from the scene pause because
+    /// it expires differently: every nudge caller (a finished job, the Brain
+    /// tab appearing) is a moment reading again is wanted, and a job pause that
+    /// outlived them would silence the Brain for the rest of the session.
+    private var pausedByWork = false
+    /// The loop may run only while neither reason to stop is in force.
+    private var isPaused: Bool { pausedByScene || pausedByWork }
+    /// The context of the most recent nudge, so a loop the device paused
+    /// (thermal, rate limit) can restart itself without waiting for the next
+    /// scene transition. Every caller nudges with the same main-actor context.
+    private var lastContext: ModelContext?
     /// Meetings that failed or were empty this session, keyed by the
     /// transcript they had at the time. Skipped, not retried hot, so one
     /// permanently-refusing meeting can't head-of-line-block the queue —
@@ -80,7 +99,16 @@ final class KnowledgeCatchUp {
     }
 
     /// Starts the loop if it isn't running. Cheap to call often.
+    ///
+    /// Every caller is a moment reading is wanted: a job finishing
+    /// (`MeetingJobs.onContentChanged`), the Brain tab appearing, the scene
+    /// coming back. So a nudge lifts the work pause itself — but never the
+    /// scene pause, or a job that finished after the user left would restart
+    /// extraction in the background.
     func nudge(context: ModelContext) {
+        lastContext = context
+        pausedByWork = false
+        guard !isPaused else { return }
         if let running {
             if running.isCancelled {
                 restartRequested = context
@@ -99,15 +127,35 @@ final class KnowledgeCatchUp {
         }
     }
 
-    /// Stops after the in-flight meeting. Call when the scene deactivates.
-    /// Also disarms any restart a mid-teardown nudge queued: that nudge
-    /// belonged to a foreground moment this pause has already ended, and
-    /// consuming it later would start an uncancelled loop while the app is
-    /// inactive — burning rate-limited FoundationModels calls and
+    /// What both pauses do: stop after the in-flight meeting, and disarm any
+    /// restart a mid-teardown nudge queued — that nudge belonged to a moment
+    /// the pause has already ended, and consuming it later would start an
+    /// uncancelled loop, burning rate-limited FoundationModels calls and
     /// skip-listing every meeting they fail on until the next launch.
-    func pause() {
+    private func stopLoop() {
         running?.cancel()
         restartRequested = nil
+    }
+
+    /// The scene left `.active`. Call from the scene-phase handler; only
+    /// `resume(context:)` lifts it.
+    func pause() {
+        pausedByScene = true
+        stopLoop()
+    }
+
+    /// A job the user started wants the on-device model. Extraction gets out
+    /// of the way until the next nudge — which the job itself sends when it
+    /// finishes.
+    func pauseForWork() {
+        pausedByWork = true
+        stopLoop()
+    }
+
+    /// The scene came back to `.active`: the one door out of `pause()`.
+    func resume(context: ModelContext) {
+        pausedByScene = false
+        nudge(context: context)
     }
 
     /// Test hook: resolves when the loop (and any restart it queued) has

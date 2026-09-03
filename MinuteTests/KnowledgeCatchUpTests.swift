@@ -280,7 +280,7 @@ struct KnowledgeCatchUpTests {
         #expect(!catchUp.isWorking)
     }
 
-    @Test func pauseStopsTheLoopAndNudgeResumes() async throws {
+    @Test func pauseStopsTheLoopAndResumeRestartsIt() async throws {
         let context = try makeContext()
         context.insert(meetingWithTranscript("A", createdAt: .now))
         context.insert(meetingWithTranscript("B", createdAt: .now.addingTimeInterval(-60)))
@@ -307,7 +307,7 @@ struct KnowledgeCatchUpTests {
         await catchUp.waitUntilIdle()
         #expect(calls == 1)
 
-        catchUp.nudge(context: context)
+        catchUp.resume(context: context)
         await catchUp.waitUntilIdle()
         // The paused meeting is retried from scratch (cancellation doesn't
         // join the skip-list — only genuine failures do), then the loop
@@ -341,8 +341,8 @@ struct KnowledgeCatchUpTests {
         _ = await started.next()
         catchUp.pause()
         // The scene flickered back to active before the loop finished
-        // tearing down. This nudge must not be lost.
-        catchUp.nudge(context: context)
+        // tearing down. This resume must not be lost.
+        catchUp.resume(context: context)
         await catchUp.waitUntilIdle()
 
         // Not just "the restart entered the extractor": the restarted loop
@@ -378,7 +378,7 @@ struct KnowledgeCatchUpTests {
         // window: the queued restart belongs to a foreground moment that is
         // already over by the time the loop unwinds.
         catchUp.pause()
-        catchUp.nudge(context: context)
+        catchUp.resume(context: context)
         catchUp.pause()
         await catchUp.waitUntilIdle()
 
@@ -461,6 +461,51 @@ struct KnowledgeCatchUpTests {
 
         // Unstamped work still exists — the count must say so, not lie "done".
         #expect(catchUp.pendingCount == 1)
+    }
+
+    @Test func aNudgeWhileTheSceneIsPausedStartsNothingUntilResume() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("Only", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        var calls = 0
+        let catchUp = makeCatchUp { _, _ in calls += 1; return [] }
+        catchUp.pause()
+
+        // A job finishing after the app left the foreground nudges the loop.
+        // Extraction is foreground-only — there is no keep-alive once the job's
+        // token ends — so this must record the context and start nothing.
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 0)
+        #expect(meeting.knowledgeExtractedAt == nil)
+
+        // The scene coming back is what starts reading again.
+        catchUp.resume(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 1)
+        #expect(meeting.knowledgeExtractedAt != nil)
+    }
+
+    @Test func aNudgeAfterAJobPausedTheLoopStartsItAgain() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("Only", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        var calls = 0
+        let catchUp = makeCatchUp { _, _ in calls += 1; return [] }
+        // A summary the user asked for takes the on-device model. Unlike a
+        // scene pause this one expires on the next nudge — the job's own
+        // completion callback — or the first job of a foreground session would
+        // stop the Brain until the user backgrounded the app and came back.
+        catchUp.pauseForWork()
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+
+        #expect(calls == 1)
+        #expect(meeting.knowledgeExtractedAt != nil)
     }
 
     @Test func transcriptReplacedMidExtractionIsReextractedNotStampedStale() async throws {
