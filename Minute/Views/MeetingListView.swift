@@ -189,7 +189,16 @@ struct MeetingListView: View {
                     // scene activation; with Auto-Summarize off (the default)
                     // neither happens, and the Brain never reads this meeting
                     // until the app is backgrounded and reopened.
-                    catchUp.nudge(context: context)
+                    //
+                    // Only nudge when there is something to read: the loop
+                    // skip-lists a transcript-less meeting for the rest of the
+                    // process, so nudging a silent save would spend its one
+                    // chance and the transcript a later Re-transcribe Audio
+                    // produces would never be extracted. Nothing is lost by
+                    // waiting — that job nudges the loop itself when it lands.
+                    if finished.hasTranscript {
+                        catchUp.nudge(context: context)
+                    }
                 }
             }
         }
@@ -417,7 +426,14 @@ struct MeetingListView: View {
                 // kicks in for imports too.
                 destinationAutoSummarizes = AppSettings.autoSummarizeEnabled
                 meetingDestination = result.meeting
-                catchUp.nudge(context: context)
+                // Same reason — and the same guard — as the post-recording
+                // nudge above: an import that came back without a transcript
+                // (speech model not ready, transcription failed) must stay off
+                // the loop's skip-list so the transcript a later re-transcription
+                // produces still gets extracted.
+                if result.meeting.hasTranscript {
+                    catchUp.nudge(context: context)
+                }
             } catch is CancellationError {
                 // User cancelled — nothing to report.
             } catch {
