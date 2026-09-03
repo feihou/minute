@@ -300,6 +300,36 @@ struct KnowledgeCatchUpTests {
         #expect(calls == 3)  // the unstamped remainder was picked up
     }
 
+    @Test func nudgeWhileAPausedLoopIsStillUnwindingRestartsTheLoop() async throws {
+        let context = try makeContext()
+        context.insert(meetingWithTranscript("Only", createdAt: .now))
+        try context.save()
+
+        var calls = 0
+        let (firstCallStarted, startedContinuation) = AsyncStream.makeStream(of: Void.self)
+        let catchUp = makeCatchUp { _, _ in
+            calls += 1
+            if calls == 1 {
+                startedContinuation.yield(())
+                // An extraction that only notices cancellation late — the
+                // real one sits inside a FoundationModels call.
+                try? await Task.sleep(for: .milliseconds(150))
+                try Task.checkCancellation()
+            }
+            return []
+        }
+        catchUp.nudge(context: context)
+        var started = firstCallStarted.makeAsyncIterator()
+        _ = await started.next()
+        catchUp.pause()
+        // The scene flickered back to active before the loop finished
+        // tearing down. This nudge must not be lost.
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+
+        #expect(calls == 2)
+    }
+
     @Test func unavailableModelLeavesQueueUntouchedForALaterNudge() async throws {
         let context = try makeContext()
         context.insert(meetingWithTranscript("A", createdAt: .now))

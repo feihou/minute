@@ -64,14 +64,31 @@ final class KnowledgeCatchUp {
         self.extract = extract
     }
 
+    /// A nudge that arrived while a cancelled loop was still unwinding.
+    /// `pause()` cancels the task but the task clears `running` itself when
+    /// it finishes, and cancellation is only noticed between chunks — so a
+    /// quick scene flicker (Notification Center, a call banner) would
+    /// otherwise hand the restart nudge to a task that is about to exit,
+    /// and nothing would run again until the next scene transition.
+    private var restartRequested: ModelContext?
+
     /// Starts the loop if it isn't running. Cheap to call often.
     func nudge(context: ModelContext) {
-        guard running == nil else { return }
+        if let running {
+            if running.isCancelled {
+                restartRequested = context
+            }
+            return
+        }
         running = Task { [self] in
             isWorking = true
             await run(context: context)
             isWorking = false
             running = nil
+            if let restartContext = restartRequested {
+                restartRequested = nil
+                nudge(context: restartContext)
+            }
         }
     }
 
@@ -80,9 +97,12 @@ final class KnowledgeCatchUp {
         running?.cancel()
     }
 
-    /// Test hook: resolves when the current loop (if any) has finished.
+    /// Test hook: resolves when the loop (and any restart it queued) has
+    /// finished.
     func waitUntilIdle() async {
-        await running?.value
+        while let task = running {
+            await task.value
+        }
     }
 
     private func run(context: ModelContext) async {
