@@ -51,6 +51,14 @@ final class MeetingJobs {
     /// leave it unset.
     var onContentChanged: (@MainActor () -> Void)?
 
+    /// Fired on the main actor when a job actually starts, before its work
+    /// begins — the knowledge catch-up loop's work pause. Extraction and a
+    /// user-tapped summary otherwise issue FoundationModels requests against
+    /// the same on-device model at the same time, which is exactly the
+    /// competition the README promises the Brain avoids. Optional so tests and
+    /// previews can leave it unset.
+    var onWorkStarted: (@MainActor () -> Void)?
+
     /// True while any job holds this meeting — the guard every entry point and
     /// every menu item shares.
     func isBusy(_ meeting: Meeting) -> Bool {
@@ -186,6 +194,9 @@ final class MeetingJobs {
         let id = meeting.id
         if let running = running[id] { return running.task }
         failures[id] = nil
+        // Before the task, not inside it: whatever yields to user-initiated
+        // work has to have yielded by the time the first request goes out.
+        onWorkStarted?()
         // Keep the app awake through brief app switches so the work isn't
         // suspended part-way through.
         let token = BackgroundTaskToken(name: "MeetingJobs")

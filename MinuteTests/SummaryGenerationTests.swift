@@ -164,4 +164,27 @@ struct SummaryGenerationTests {
         #expect(meeting.segments.isEmpty)
         #expect(!jobs.isBusy(meeting))
     }
+
+    @Test func startingAJobAnnouncesThatUserWorkBegan() async throws {
+        let (container, meeting) = try makeMeeting()
+        defer { _ = container }
+        let jobs = MeetingJobs()
+
+        var started = 0
+        jobs.onWorkStarted = { started += 1 }
+
+        let task = jobs.summarize(meeting, template: .standard, context: "", language: nil)
+        // Fired before the work runs: the knowledge catch-up loop has to stop
+        // competing for the on-device model with the summary the user is
+        // watching, not learn about it once the summary is over.
+        #expect(started == 1)
+
+        // Re-entering the screen attaches to the running job; that is not new
+        // work and must not fire again.
+        jobs.summarize(meeting, template: .standard, context: "", language: nil)
+        #expect(started == 1)
+
+        await task?.value
+        #expect(started == 1)
+    }
 }
