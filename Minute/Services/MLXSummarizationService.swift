@@ -195,6 +195,69 @@ enum MLXModelStore {
     }
 }
 
+// MARK: - Job gate
+
+/// Serializes local-model work across the whole app.
+///
+/// Each summarize job builds its own service instance and loads its own
+/// 1-2.3 GB container (deliberately: keeping the weights resident between
+/// occasional summaries is worse for memory pressure). Nothing else stops two
+/// meetings from summarizing at once — MeetingJobs gates per meeting, and
+/// Auto-Summarize plus a manual Generate on another meeting is two clicks
+/// away — and two containers resident together is what pushes the app past
+/// the foreground memory limit on the very devices the catalog's floors
+/// admit, killing it with both jobs lost and no failure recorded.
+actor MLXJobGate {
+    static let shared = MLXJobGate()
+
+    /// Progress text a queued job reports, so the summary section explains
+    /// the wait instead of sitting on "Loading the summary model…".
+    static let waitingStatus = "Waiting for another local-model job to finish…"
+
+    private var isRunning = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    /// Runs `body` once no other local-model job is running, calling
+    /// `onWaiting` first when this job has to queue. The gate reopens as soon
+    /// as `body` returns OR throws — a failed job must never wedge the queue.
+    ///
+    /// `body` is a labelled parameter, not a trailing one: callers pass two
+    /// closures, and a labelled-plus-trailing pair is what SwiftLint's
+    /// multiple_closures_with_trailing_closure rejects.
+    nonisolated func run<T>(
+        onWaiting: @escaping @MainActor @Sendable () -> Void,
+        body: @MainActor () async throws -> T
+    ) async throws -> T {
+        await acquire(onWaiting: onWaiting)
+        do {
+            let value = try await body()
+            await release()
+            return value
+        } catch {
+            await release()
+            throw error
+        }
+    }
+
+    private func acquire(onWaiting: @escaping @MainActor @Sendable () -> Void) async {
+        if isRunning {
+            await onWaiting()
+        }
+        // A loop, not a single suspension: release() wakes one waiter, but a
+        // job arriving in between can take the gate first.
+        while isRunning {
+            await withCheckedContinuation { waiting.append($0) }
+        }
+        isRunning = true
+    }
+
+    private func release() {
+        isRunning = false
+        guard !waiting.isEmpty else { return }
+        waiting.removeFirst().resume()
+    }
+}
+
 // MARK: - Service
 
 /// Generates structured meeting summaries with a user-downloaded local model
@@ -249,6 +312,36 @@ final class MLXSummarizationService: SummarizationEngine {
         }
         let chunks = TranscriptChunker.chunks(from: transcript, maxChars: TranscriptChunker.defaultMaxChars)
         guard !chunks.isEmpty else { throw SummarizerError.emptyTranscript }
+
+        // One local-model job at a time, app-wide: see MLXJobGate. Both
+        // closures are labelled arguments — a labelled closure plus a
+        // trailing one trips SwiftLint's
+        // multiple_closures_with_trailing_closure, which CI enforces.
+        return try await MLXJobGate.shared.run(
+            onWaiting: { onProgress?(MLXJobGate.waitingStatus) },
+            body: {
+                try await self.generate(chunks: chunks, template: template, context: context, onProgress: onProgress)
+            }
+        )
+    }
+
+    /// The whole generation, from model load to finished notes, run while
+    /// holding MLXJobGate.
+    private func generate(
+        chunks: [String],
+        template: SummaryTemplate,
+        context: String,
+        onProgress: (@MainActor @Sendable (String) -> Void)?
+    ) async throws -> MeetingSummary {
+        // The weights go the moment this job ends: the gate opens for the
+        // next job immediately afterwards, and two resident containers is the
+        // failure the gate exists to prevent. Spelled `self.` because a local
+        // `let container` is declared below and this defer clears the
+        // instance property, not that local.
+        defer { self.container = nil }
+        // A job cancelled while it queued behind another must not start a
+        // full generation now that its turn came.
+        try Task.checkCancellation()
 
         onProgress?("Loading the summary model…")
         // Outside the do/catch below, which only wraps generation: a corrupt
