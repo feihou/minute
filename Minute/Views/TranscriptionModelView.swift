@@ -42,6 +42,19 @@ struct TranscriptionModelView: View {
         ) { model in
             Button("Delete \(model.label)", role: .destructive) {
                 WhisperModelStore.delete(model.variant)
+                // The deleted model may have been the selected one. Leaving
+                // the selection there makes the next recording report "the
+                // model isn't downloaded" while a downloaded model sits one
+                // row below with no checkmark. selectedVariant is the
+                // @AppStorage on AppSettings.whisperModelKey, so writing it
+                // stores the new selection.
+                if let replacement = WhisperDownloadCenter.replacementSelection(
+                    after: model.variant,
+                    selected: AppSettings.whisperModel,
+                    downloaded: WhisperModelCatalog.models.map(\.variant).filter(WhisperModelStore.isDownloaded)
+                ) {
+                    selectedVariant = replacement
+                }
                 refreshDownloaded()
             }
             Button("Cancel", role: .cancel) {}

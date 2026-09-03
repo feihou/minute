@@ -23,6 +23,17 @@ final class WhisperDownloadCenter {
 
     private init() {}
 
+    /// The variant to select once `deleted` is removed, or nil to leave the
+    /// stored selection alone. `downloaded` is the still-downloaded catalog
+    /// variants in catalog order (smallest → most accurate), so the most
+    /// accurate survivor wins — the same reasoning as
+    /// WhisperModelCatalog.defaultModel: accuracy is why someone opts into
+    /// Whisper in the first place.
+    static func replacementSelection(after deleted: String, selected: String, downloaded: [String]) -> String? {
+        guard deleted == selected else { return nil }
+        return downloaded.last { $0 != deleted }
+    }
+
     func download(_ model: WhisperModel) {
         let variant = model.variant
         // Already in flight — never start a second task on the same folder.
