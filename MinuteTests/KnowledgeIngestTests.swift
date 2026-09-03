@@ -420,12 +420,14 @@ struct KnowledgeIngestTests {
 
         // B is re-transcribed and re-extracted; the model now paraphrases
         // (five of six tokens overlap — a near-duplicate, not an exact repeat).
-        try KnowledgeIngest.apply(
+        let result = try KnowledgeIngest.apply(
             [candidate("Sarah", "Sarah leads the Atlas redesign work")],
             from: second, context: context
         )
 
-        // One fact, not a second near-identical draft beside it...
+        // Dropped as a repeat rather than merged or superseded elsewhere...
+        #expect(result.duplicatesDropped == 1)
+        // ...one fact, not a second near-identical draft beside it...
         let facts = try context.fetch(FetchDescriptor<KnowledgeFact>())
         #expect(facts.count == 1)
         // ...and it is the original row, not a replacement.
@@ -458,11 +460,12 @@ struct KnowledgeIngestTests {
         // transcript validated as a quote. A missing quote is a reason to refuse
         // a meeting a fact it never stated; it is not a reason to take away one
         // it already vouched for and still does.
-        try KnowledgeIngest.apply(
+        let result = try KnowledgeIngest.apply(
             [candidate("Sarah", "Sarah leads the Atlas redesign work", quote: nil)],
             from: second, context: context
         )
 
+        #expect(result.duplicatesDropped == 1)
         #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).count == 1)
         #expect(fact.sourceMeetingIDs == [first.id, second.id])
         // The point of keeping the entry: A goes and the claim stays, because a
@@ -531,6 +534,44 @@ struct KnowledgeIngestTests {
         // But the second meeting did not say what the first said, so it must
         // not end up owning the first meeting's claim when that meeting goes.
         #expect(existing.sourceMeetingIDs == [first.id])
+    }
+
+    @Test func aReorderedRestatementRevokesTheSourceEntryTheMeetingAlreadyHeld() throws {
+        let context = try makeContext()
+        let first = Meeting(title: "A", createdAt: .now.addingTimeInterval(-3600))
+        let second = Meeting(title: "B", createdAt: .now)
+        context.insert(first)
+        context.insert(second)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        let existing = KnowledgeFact(
+            text: "Sarah assigned Alex to Jordan", originalText: "Sarah assigned Alex to Jordan",
+            status: .autoCaptured, sourceMeetingID: first.id, capturedAt: first.createdAt, entity: entity
+        )
+        context.insert(existing)
+        // B stated it too, so the pre-loop strips B's entry and leaves the new
+        // transcript to decide whether B still vouches for it.
+        existing.addSource(FactSource(
+            meetingID: second.id, quote: "Sarah assigned Alex to Jordan", capturedAt: second.createdAt
+        ))
+        try context.save()
+
+        // B is re-transcribed and the roles come out flipped. Sorted tokens
+        // make that an exact match, so the candidate is dropped either way —
+        // but B's transcript now states the opposite of the row it used to
+        // support, and having once been a source is not a licence to keep
+        // vouching for a claim this transcript contradicts.
+        let result = try KnowledgeIngest.apply(
+            [candidate("Sarah", "Sarah assigned Jordan to Alex", quote: "Sarah assigned Jordan to Alex")],
+            from: second, context: context
+        )
+
+        #expect(result.duplicatesDropped == 1)
+        #expect(existing.sourceMeetingIDs == [first.id])
+        // The visible harm of handing the entry back: an entity page shows the
+        // newest source's quote as this fact's grounding, and B's quote says the
+        // reverse. A alone states this, and A never quoted it.
+        #expect(existing.sourceQuote == nil)
     }
 
     @Test func anUngroundedRestatementIsDroppedButNotTreatedAsCorroboration() throws {

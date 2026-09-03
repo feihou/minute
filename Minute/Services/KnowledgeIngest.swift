@@ -116,28 +116,27 @@ enum KnowledgeIngest {
                 // knowledge this one still supports. Tombstones are excluded:
                 // they exist to keep a rejected claim out, not to hold sources.
                 //
-                // Two ways to earn an entry, on deliberately different evidence.
+                // Two bars, on deliberately different evidence. Inheriting a row
+                // this meeting never sourced takes evidence as strong as the
+                // fact itself: the same statement token-for-token in order, and
+                // a quote that validated against this transcript. Keeping an
+                // entry the pre-loop stripped takes only the match that dropped
+                // the candidate — the meeting already vouched for this and still
+                // does, and demanding more would record its statement nowhere at
+                // all, so deleting the other meeting would prune a fact this
+                // transcript states.
                 //
-                // Inheriting — a meeting that never sourced this row joins it
-                // only on evidence as strong as the fact itself: the same
-                // statement token-for-token in order, and a quote that actually
-                // validated against this transcript. A looser match is still a
-                // fair reason to drop the candidate — it is not a reason to let
-                // this meeting inherit the fact once the original source goes.
-                //
-                // Keeping — the pre-loop stripped an entry this meeting already
-                // had so the new transcript could decide afresh, and the claim
-                // survived: that is precisely why the candidate is being
-                // dropped. Handing back what the meeting already held is not an
-                // inheritance, so the match that dropped the candidate is
-                // evidence enough — no quote and no word-for-word repeat
-                // required. Demanding them here would record the meeting's
-                // statement nowhere at all: the candidate is gone and so is the
-                // source, and deleting the other meeting then prunes a fact this
-                // transcript still states.
-                let keptItsOwnEntry = previouslySupported.contains(duplicate.id)
-                let inheritsIt = candidate.validatedQuote != nil
-                    && KnowledgeText.statesTheSame(duplicate.originalText, candidate.fact)
+                // A reordering is not "still does". `normalized` sorts tokens,
+                // so "assigned Alex to Jordan" matches "assigned Jordan to
+                // Alex"; handing the entry back would attribute the row — and
+                // show its quote — to a transcript saying the opposite, and
+                // leave the row alive on that transcript alone once the meeting
+                // that made the claim goes. Revoking is the honest outcome.
+                let sameStatement = KnowledgeText.statesTheSame(duplicate.originalText, candidate.fact)
+                let isReordering = !sameStatement
+                    && KnowledgeText.normalized(duplicate.originalText) == candidateNormalized
+                let keptItsOwnEntry = previouslySupported.contains(duplicate.id) && !isReordering
+                let inheritsIt = sameStatement && candidate.validatedQuote != nil
                 if duplicate.status != .rejected, keptItsOwnEntry || inheritsIt {
                     // The restatement brings its own quote when it has one, so
                     // the row no longer depends on one meeting's phrasing to
