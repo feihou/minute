@@ -552,21 +552,42 @@ final class MLXSummarizationService: SummarizationEngine {
 
     // MARK: Model loading
 
-    /// Loads through the same downloader path as Settings' download — with
-    /// the snapshot already cached this is an offline cache hit, and it
-    /// avoids hardcoding HubCache's snapshot-revision layout.
+    /// Loads the weights straight out of the directory the download recorded.
+    /// Loading by repo id instead would resolve revision "main" through
+    /// huggingface.co on EVERY summary — a request the user never asked for,
+    /// a ~60 s stall before the first token on a network where the host is
+    /// reachable but dead, and a chance of pulling newly added files
+    /// mid-generation. Only the Get button may touch the network.
     private func loadedContainer() async throws -> ModelContainer {
         if let container { return container }
         guard let model = MLXModelCatalog.model(for: AppSettings.localSummaryModel) else {
             throw SummarizerError.unavailable("The selected summary model is no longer offered. Choose another in Settings → Summary Model.")
         }
+        let directory = try await snapshotDirectory(for: model)
         let loaded = try await LLMModelFactory.shared.loadContainer(
-            from: #hubDownloader(MLXModelStore.hubClient()),
-            using: #huggingFaceTokenizerLoader(),
-            configuration: ModelConfiguration(id: model.repoID)
+            from: directory,
+            using: #huggingFaceTokenizerLoader()
         )
         container = loaded
         return loaded
+    }
+
+    /// The recorded snapshot directory. A model downloaded by a build that
+    /// didn't record one is resolved the old way ONCE — the same call the
+    /// download makes, so a cached snapshot is found — and the marker is
+    /// rewritten so every later load is local.
+    private func snapshotDirectory(for model: MLXSummaryModel) async throws -> URL {
+        if let recorded = MLXModelStore.snapshotDirectory(for: model) { return recorded }
+        let resolved = try await resolve(
+            configuration: ModelConfiguration(id: model.repoID),
+            from: #hubDownloader(MLXModelStore.hubClient()),
+            useLatest: false,
+            progressHandler: { _ in }
+        )
+        // Best effort: a marker that can't be rewritten costs one resolve per
+        // load, not a failed summary.
+        _ = MLXModelStore.writeCompletionMarker(for: model, snapshotDirectory: resolved.modelDirectory)
+        return resolved.modelDirectory
     }
 
     // MARK: Prompts
