@@ -28,18 +28,27 @@ struct RecordingLiveActivity: Widget {
                         .lineLimit(1)
                 }
             } compactLeading: {
-                StatusIcon(isPaused: context.state.isPaused)
+                StatusIcon(isPaused: context.state.isPaused, isStale: context.isStale)
             } compactTrailing: {
                 TimerText(state: context.state, isStale: context.isStale)
                     .font(.caption2)
-                    .foregroundStyle(context.state.isPaused ? Color.orange : Color.red)
+                    .foregroundStyle(statusTint(isPaused: context.state.isPaused, isStale: context.isStale))
                     .frame(maxWidth: 52)
             } minimal: {
-                StatusIcon(isPaused: context.state.isPaused)
+                StatusIcon(isPaused: context.state.isPaused, isStale: context.isStale)
             }
             .keylineTint(.red)
         }
     }
+}
+
+/// What every presentation colours itself by. Stated once because the same
+/// activity is drawn three ways at once — expanded, compact, minimal — and a
+/// live red glyph beside a card reading "Minute isn't running" is the drift
+/// that costs the user a recording they think is still going.
+private func statusTint(isPaused: Bool, isStale: Bool) -> Color {
+    if isStale { return .secondary }
+    return isPaused ? .orange : .red
 }
 
 /// Matches the in-app recording screen: dark studio backdrop, red/orange
@@ -105,10 +114,7 @@ private struct StatusBadge: View {
     let isPaused: Bool
     var isStale = false
 
-    private var tint: Color {
-        if isStale { return .secondary }
-        return isPaused ? .orange : .red
-    }
+    private var tint: Color { statusTint(isPaused: isPaused, isStale: isStale) }
 
     var body: some View {
         HStack(spacing: 5) {
@@ -127,9 +133,18 @@ private struct StatusBadge: View {
 
 private struct StatusIcon: View {
     let isPaused: Bool
+    var isStale = false
+
+    /// A struck-through waveform, not a quieter one: the compact Island is a
+    /// glyph and a clock with no room for the lock screen's "Minute isn't
+    /// running", so the shape has to carry the whole message on its own.
+    private var symbol: String {
+        if isStale { return "waveform.slash" }
+        return isPaused ? "pause.fill" : "waveform"
+    }
 
     var body: some View {
-        Image(systemName: isPaused ? "pause.fill" : "waveform")
-            .foregroundStyle(isPaused ? Color.orange : Color.red)
+        Image(systemName: symbol)
+            .foregroundStyle(statusTint(isPaused: isPaused, isStale: isStale))
     }
 }
