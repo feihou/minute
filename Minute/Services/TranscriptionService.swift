@@ -188,6 +188,12 @@ final class TranscriptionService: TranscriptionEngine {
             } else {
                 await analyzer.cancelAndFinishNow()
             }
+            // The caller replaces the meeting's entire transcript with what
+            // comes back, so a re-transcription the user stopped must be
+            // thrown away rather than applied. `collector` is an unstructured
+            // Task and does not inherit this cancellation, which is why the
+            // check has to be explicit.
+            try Task.checkCancellation()
         } catch {
             await analyzer.cancelAndFinishNow()
             collector.cancel()
