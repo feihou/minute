@@ -508,6 +508,45 @@ struct KnowledgeIngestTests {
         #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).count == 1)
     }
 
+    @Test func aSecondCandidateInTheSameRunKeepsTheQuoteTheFirstOneValidated() throws {
+        // `addSource` replaces the meeting's entry, so whichever candidate is
+        // applied last decides alone whether B's support is quoted. Both orders
+        // of the same two candidates have to leave the same entry.
+        func quoteRecordedForB(applying candidates: [KnowledgeCandidate]) throws -> String? {
+            let context = try makeContext()
+            let first = Meeting(title: "A", createdAt: .now.addingTimeInterval(-3600))
+            let second = Meeting(title: "B", createdAt: .now)
+            context.insert(first)
+            context.insert(second)
+            let sarah = KnowledgeEntity(name: "Sarah", kind: .person)
+            context.insert(sarah)
+            let fact = KnowledgeFact(
+                text: "Sarah leads the Atlas redesign", originalText: "Sarah leads the Atlas redesign",
+                status: .autoCaptured, sourceMeetingID: first.id, capturedAt: first.createdAt, entity: sarah
+            )
+            context.insert(fact)
+            fact.addSource(FactSource(meetingID: second.id, quote: nil, capturedAt: second.createdAt))
+            try context.save()
+
+            try KnowledgeIngest.apply(candidates, from: second, context: context)
+
+            #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).count == 1)
+            #expect(fact.sourceMeetingIDs == [first.id, second.id])
+            return fact.sources.first { $0.meetingID == second.id }?.quote
+        }
+
+        // Adjacent chunks of B's new transcript emit the claim twice: once word
+        // for word, carrying a phrase that validated against the transcript,
+        // and once paraphrased with nothing quotable.
+        let repeated = candidate("Sarah", "Sarah leads the Atlas redesign", quote: "Sarah leads the Atlas redesign")
+        let paraphrase = candidate("Sarah", "Sarah leads the Atlas redesign work", quote: nil)
+
+        // The paraphrase says nothing new about grounding, so it must not erase
+        // the quote the repeat just validated against this same transcript.
+        #expect(try quoteRecordedForB(applying: [repeated, paraphrase]) == "Sarah leads the Atlas redesign")
+        #expect(try quoteRecordedForB(applying: [paraphrase, repeated]) == "Sarah leads the Atlas redesign")
+    }
+
     @Test func aReorderedRestatementIsDroppedButNotTreatedAsCorroboration() throws {
         let context = try makeContext()
         let first = Meeting(title: "first")
@@ -572,6 +611,42 @@ struct KnowledgeIngestTests {
         // newest source's quote as this fact's grounding, and B's quote says the
         // reverse. A alone states this, and A never quoted it.
         #expect(existing.sourceQuote == nil)
+    }
+
+    @Test func aFuzzyBandReversalKeepsTheSourceButNotItsReversedQuote() throws {
+        let context = try makeContext()
+        let first = Meeting(title: "A", createdAt: .now.addingTimeInterval(-3600))
+        let second = Meeting(title: "B", createdAt: .now)
+        context.insert(first)
+        context.insert(second)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        let existing = KnowledgeFact(
+            text: "Sarah assigned Alex to Jordan", originalText: "Sarah assigned Alex to Jordan",
+            status: .autoCaptured, sourceMeetingID: first.id, sourceQuote: "Sarah assigned Alex to Jordan",
+            capturedAt: first.createdAt, entity: entity
+        )
+        context.insert(existing)
+        existing.addSource(FactSource(meetingID: second.id, quote: nil, capturedAt: second.createdAt))
+        try context.save()
+
+        // B is re-transcribed with the roles flipped AND a word added, so the
+        // sorted forms differ: this reversal lands in the fuzzy band rather
+        // than matching as an exact repeat, where the reordering guard sees it.
+        let reversed = "Sarah quickly assigned Jordan to Alex"
+        let result = try KnowledgeIngest.apply(
+            [candidate("Sarah", reversed, quote: reversed)],
+            from: second, context: context
+        )
+
+        #expect(result.duplicatesDropped == 1)
+        #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).count == 1)
+        // B's transcript is still close enough to keep the row alive on it...
+        #expect(existing.sourceMeetingIDs == [first.id, second.id])
+        // ...but it does not state this claim, so its words must not be filed
+        // as the evidence for it, nor shown as the fact's grounding.
+        #expect(existing.sources.first { $0.meetingID == second.id }?.quote == nil)
+        #expect(existing.sourceQuote != reversed)
     }
 
     @Test func anUngroundedRestatementIsDroppedButNotTreatedAsCorroboration() throws {

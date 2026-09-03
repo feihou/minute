@@ -51,9 +51,12 @@ enum KnowledgeIngest {
         var touched: [UUID: KnowledgeEntity] = [:]
         // Facts this meeting vouched for before this re-extraction. The
         // pre-loop strips this meeting from them so the new transcript decides
-        // afresh; a paraphrase of one must still count as a within-meeting
-        // repeat, or it routes to review as a "cross-meeting" near-duplicate
-        // and the entity page shows the same claim twice.
+        // afresh, which two things below have to undo. A paraphrase of one must
+        // still count as a within-meeting repeat, or it routes to review as a
+        // "cross-meeting" near-duplicate and the entity page shows the same
+        // claim twice; and the entry itself has to come back when the claim
+        // survives, or deleting the other source prunes a fact this transcript
+        // still states.
         var previouslySupported: Set<UUID> = []
         for fact in allFacts where fact.sourceMeetingIDs.contains(meetingID) {
             if fact.sources.count > 1 {
@@ -126,27 +129,34 @@ enum KnowledgeIngest {
                 // all, so deleting the other meeting would prune a fact this
                 // transcript states.
                 //
-                // A reordering is not "still does". `normalized` sorts tokens,
-                // so "assigned Alex to Jordan" matches "assigned Jordan to
-                // Alex"; handing the entry back would attribute the row — and
-                // show its quote — to a transcript saying the opposite, and
-                // leave the row alive on that transcript alone once the meeting
-                // that made the claim goes. Revoking is the honest outcome.
+                // A reordering is not "still does": `KnowledgeText.statesTheSame`
+                // documents why sorted tokens cannot be read as agreement. The
+                // entry stays revoked rather than going back to a transcript
+                // that says the opposite.
                 let sameStatement = KnowledgeText.statesTheSame(duplicate.originalText, candidate.fact)
                 let isReordering = !sameStatement
                     && KnowledgeText.normalized(duplicate.originalText) == candidateNormalized
                 let keptItsOwnEntry = previouslySupported.contains(duplicate.id) && !isReordering
                 let inheritsIt = sameStatement && candidate.validatedQuote != nil
                 if duplicate.status != .rejected, keptItsOwnEntry || inheritsIt {
-                    // The restatement brings its own quote when it has one, so
-                    // the row no longer depends on one meeting's phrasing to
-                    // explain it. Nil is honest for the rest: the meeting states
-                    // this, nothing in it could be quoted, and the quote the
-                    // stripped entry carried belonged to a transcript that no
-                    // longer exists.
+                    // Only a candidate that states the same thing can ground
+                    // this row. A retained paraphrase — or a reversal wide
+                    // enough to land in the fuzzy band, where `isReordering`
+                    // cannot see it — would otherwise file words saying
+                    // something else as this fact's evidence, and `sourceQuote`
+                    // would display them. Falling back to the entry this meeting
+                    // already has keeps a quote an earlier candidate in the same
+                    // run validated: `addSource` replaces the meeting's entry,
+                    // so without it whichever chunk came out last would decide
+                    // alone. The pre-loop stripped every pre-run entry for a
+                    // `previouslySupported` fact, so that fallback can only see
+                    // this run's own work, never a quote belonging to the
+                    // transcript this one replaced.
+                    let quote = (sameStatement ? candidate.validatedQuote : nil)
+                        ?? duplicate.sources.first { $0.meetingID == meetingID }?.quote
                     let newestBefore = duplicate.capturedAt
                     duplicate.addSource(FactSource(
-                        meetingID: meetingID, quote: candidate.validatedQuote, capturedAt: meeting.createdAt
+                        meetingID: meetingID, quote: quote, capturedAt: meeting.createdAt
                     ))
                     // A dated source can make this fact the entity's newest,
                     // and synthesis is fed newest-first with "prefer the newer
