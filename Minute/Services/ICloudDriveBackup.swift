@@ -650,6 +650,12 @@ enum ICloudDriveBackup {
                 }
                 continue
             }
+            // Held rather than judged here: the recheck below is what decides
+            // whether a failure is one. The user's delete can remove the
+            // recording between the size check `write` makes and the copy that
+            // reads it, and that copy's failure is the delete working, not the
+            // backup breaking.
+            var writeError: Error?
             do {
                 let placed = try place(item, existing: live[item.meetingID], in: documents)
                 live[item.meetingID] = placed.url
@@ -667,22 +673,26 @@ enum ICloudDriveBackup {
                     shouldContinue: { shouldContinue() && !isDeletedSinceSnapshot(item.meetingID) }
                 )
             } catch {
-                // One unmirrorable meeting still must not block the rest — but
-                // the run is no longer a complete backup, and the caller has to
-                // know that before it tells the user everything is safe.
-                outcome = .incomplete
-                logger.error("Mirroring \(item.folderName) failed: \(error.localizedDescription)")
+                writeError = error
             }
             // The check above is minutes old by the time a large recording has
             // finished copying, so ask again with the folder already written:
             // otherwise the meeting stays in `chosen`, the sweep below skips
             // it on that basis, and the run reports a complete backup with a
             // deleted transcript sitting in iCloud Drive until a later sync.
-            // Failing to write it changes nothing here — a partly written
-            // folder is exactly what has to go.
-            if isDeletedSinceSnapshot(item.meetingID),
-               !takeBack(item.meetingID, owned: owned, parked: &parked, live: &live) {
+            // Failing to write it changes nothing about that — a partly
+            // written folder is exactly what has to go — and a run that took
+            // one back is only incomplete if something it owns survived.
+            if isDeletedSinceSnapshot(item.meetingID) {
+                if !takeBack(item.meetingID, owned: owned, parked: &parked, live: &live) {
+                    outcome = .incomplete
+                }
+            } else if let writeError {
+                // One unmirrorable meeting still must not block the rest — but
+                // the run is no longer a complete backup, and the caller has to
+                // know that before it tells the user everything is safe.
                 outcome = .incomplete
+                logger.error("Mirroring \(item.folderName) failed: \(writeError.localizedDescription)")
             }
         }
 

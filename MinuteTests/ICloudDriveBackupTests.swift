@@ -44,6 +44,55 @@ private final class Trip: @unchecked Sendable {
     }
 }
 
+/// Runs a side effect in the one window no `shouldContinue` check can stand
+/// in: FileManager asks its delegate immediately before it copies a file, so
+/// this fires between the size `write` reads off the recording and the copy
+/// that reads its bytes — where the user's delete lands on a real device,
+/// from the main actor, while the mirror runs in the background. The copy
+/// itself is then left to fail, the way it does when the recording it was
+/// about to read has just been deleted.
+private final class CopyInterceptor: NSObject, FileManagerDelegate {
+    private let source: URL
+    private let effect: () -> Void
+
+    init(source: URL, effect: @escaping () -> Void) {
+        self.source = source
+        self.effect = effect
+    }
+
+    func fileManager(_ fileManager: FileManager, shouldCopyItemAt srcURL: URL, to dstURL: URL) -> Bool {
+        fire(for: srcURL.path)
+        return true
+    }
+
+    func fileManager(_ fileManager: FileManager, shouldCopyItemAtPath srcPath: String, toPath dstPath: String) -> Bool {
+        fire(for: srcPath)
+        return true
+    }
+
+    /// Deliberately explicit rather than left to the default: a copy this
+    /// class broke must fail, not be quietly proceeded past.
+    func fileManager(
+        _ fileManager: FileManager,
+        shouldProceedAfterError error: any Error,
+        copyingItemAt srcURL: URL,
+        to dstURL: URL
+    ) -> Bool {
+        false
+    }
+
+    /// Other suites share `FileManager.default`, so touch nothing but the one
+    /// file this test set up — and only once, however many of the delegate's
+    /// forms Foundation asks.
+    private func fire(for path: String) {
+        guard path == source.path, !fired else { return }
+        fired = true
+        effect()
+    }
+
+    private var fired = false
+}
+
 private actor CancellationProbe {
     private var stopped = false
 
@@ -371,6 +420,59 @@ struct ICloudDriveBackupTests {
         // And it carried on to the meeting after it.
         let keptFolder = documents.appendingPathComponent(keptName, isDirectory: true)
         #expect(try String(contentsOf: keptFolder.appendingPathComponent("notes.md"), encoding: .utf8) == "# kept")
+    }
+
+    /// The same delete, landing a moment earlier: the recording goes away
+    /// between the size `write` reads off it and the copy of its bytes, so
+    /// the copy fails on a file that is already gone. The run then did
+    /// exactly the right thing — the folder goes with the meeting — and
+    /// counting that failure against it would warn the user their backup is
+    /// incomplete over a meeting that is correctly absent from it.
+    @Test func mirrorIsCompleteWhenACopyFailedOnAMeetingDeletedMidWrite() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+
+        let deletedID = UUID()
+        // A noted deletion lives for the rest of the process, so hand it back
+        // however this test ends — the way MeetingStore does when the delete
+        // turns out not to have committed.
+        defer { ICloudDriveBackup.noteMeetingDeleteFailed(deletedID) }
+
+        let deletedName = "2026-08-03 09.30 Deleted"
+        let firstTake = try recording(in: documents, bytes: "first take")
+        let deleted = item(
+            id: deletedID.uuidString,
+            folderName: deletedName,
+            notes: "# secret transcript",
+            audio: firstTake
+        )
+        try ICloudDriveBackup.mirror([deleted], into: documents)
+
+        // A re-recording gives the second run something to copy: unchanged
+        // notes and unchanged audio are both skipped, and the run would never
+        // reach the copy this test breaks.
+        let secondTake = try recording(in: documents, bytes: "second take")
+        let retaken = item(
+            id: deletedID.uuidString,
+            folderName: deletedName,
+            notes: "# secret transcript",
+            audio: secondTake
+        )
+        let interceptor = CopyInterceptor(source: secondTake) {
+            ICloudDriveBackup.noteMeetingDeleted(deletedID)
+            try? FileManager.default.removeItem(at: secondTake)
+        }
+        FileManager.default.delegate = interceptor
+        defer { FileManager.default.delegate = nil }
+
+        let outcome = try ICloudDriveBackup.mirror([retaken], into: documents)
+
+        // Nothing of that meeting is left: not the folder an earlier run gave
+        // it, and not the recording that run had copied into it.
+        #expect(!FileManager.default.fileExists(atPath: documents.appendingPathComponent(deletedName).path))
+        // The copy failed because the meeting was deleted, which is the run
+        // doing its job — not a hole in the backup to warn about.
+        #expect(outcome == .complete)
     }
 
     /// Deleting a meeting is not a one-way door: `MeetingStore.delete` puts

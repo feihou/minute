@@ -30,7 +30,10 @@ enum KnowledgeIngest {
     ///   partly read meeting is never stamped, so that trimming would repeat
     ///   on every launch until nothing was left. Merging is safe because the
     ///   dedup loop already reads an exact repeat of a fact this meeting still
-    ///   supports as a within-meeting duplicate.
+    ///   supports as a within-meeting duplicate. The known trade: a fact the
+    ///   old transcript stated and the new one does not outlives the edit
+    ///   until some pass is refused nothing and replaces the lot — which the
+    ///   unstamped meeting keeps trying for, on every launch.
     @discardableResult
     static func apply(
         _ candidates: [KnowledgeCandidate],
