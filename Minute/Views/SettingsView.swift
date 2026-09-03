@@ -64,12 +64,10 @@ struct SettingsView: View {
                     Button("Done") { dismiss() }
                 }
             }
-            // task(id:) so returning from the engine/model picker refreshes
-            // the capability row without reopening Settings. finishedCount:
-            // a download can finish (and auto-select) after the picker is
-            // popped, and @AppStorage never observes the center's direct
-            // write to the dotted key — re-check on every terminal outcome.
-            .task(id: transcriptionStatusKey) { await refreshTranscriptionStatus() }
+            // task(id:) so returning from an engine/model picker refreshes the
+            // capability rows without reopening Settings; see modelStatusKey
+            // for why both download centers are part of the key.
+            .task(id: modelStatusKey) { await refreshTranscriptionStatus() }
             .task { usage = MeetingStore.recordingsUsage() }
             // The background mirror records its verdict with a direct
             // UserDefaults write, which @AppStorage does not observe on these
@@ -495,8 +493,18 @@ struct SettingsView: View {
         deleteAllFailed = !allSucceeded
     }
 
-    private var transcriptionStatusKey: String {
-        "\(transcriptionEngineRaw)|\(whisperModelRaw)|\(WhisperDownloadCenter.shared.finishedCount)"
+    /// Everything whose change has to re-run the capability check and re-read
+    /// the model rows. Both centers' `finishedCount` is in here because a
+    /// download can finish — and auto-select the model it just fetched — after
+    /// its picker has been popped, and @AppStorage never observes the center's
+    /// direct write to the dotted selection key. Reading them during `body` is
+    /// also what makes the plain computed rows (`summaryModelName`, the
+    /// availability footnote, `summarizationStatus`) re-evaluate at all: the
+    /// summary side had no dependency on MLXDownloadCenter, so a finished
+    /// ~1 GB download kept reading "Local Model / Unavailable / not downloaded
+    /// yet" until Settings was dismissed and reopened.
+    private var modelStatusKey: String {
+        "\(transcriptionEngineRaw)|\(whisperModelRaw)|\(WhisperDownloadCenter.shared.finishedCount)|\(MLXDownloadCenter.shared.finishedCount)"
     }
 
     private func refreshTranscriptionStatus() async {
