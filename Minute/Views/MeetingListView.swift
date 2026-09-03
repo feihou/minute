@@ -10,6 +10,7 @@ struct MeetingListView: View {
 
     @State private var searchText = ""
     @State private var draftTitle = ""
+    @State private var draftDefaultTitle = ""
     @State private var showingNewMeeting = false
     @State private var showingSettings = false
     @State private var activeSession: RecordingSession?
@@ -171,7 +172,7 @@ struct MeetingListView: View {
         #endif
         .sheet(isPresented: $showingNewMeeting) {
             NewMeetingSheet(title: $draftTitle) {
-                activeSession = RecordingSession(title: draftTitle)
+                activeSession = RecordingSession(title: draftTitle, prefilledDefaultTitle: draftDefaultTitle)
             }
         }
         .sheet(isPresented: $showingSettings) {
@@ -372,7 +373,8 @@ struct MeetingListView: View {
     }
 
     private func beginNewMeeting() {
-        draftTitle = RecordingSession.defaultTitle()
+        draftDefaultTitle = RecordingSession.defaultTitle()
+        draftTitle = draftDefaultTitle
         showingNewMeeting = true
     }
 

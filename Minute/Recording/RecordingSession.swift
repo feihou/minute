@@ -40,6 +40,9 @@ final class RecordingSession: Identifiable {
     /// Transient, user-visible explanation (e.g. why recording auto-paused).
     private(set) var notice: String?
     var title: String
+    /// The default the New Meeting sheet prefilled — stored, not regenerated:
+    /// see `savedTitles(draft:prefilledDefault:)`.
+    let prefilledDefaultTitle: String
     private var audioFileName: String?
     private var transcriptionTask: Task<Void, Never>?
     private let startedAt = Date()
@@ -55,8 +58,9 @@ final class RecordingSession: Identifiable {
     /// second meeting referencing the same audio file.
     private var didSave = false
 
-    init(title: String) {
+    init(title: String, prefilledDefaultTitle: String = RecordingSession.defaultTitle()) {
         self.title = title
+        self.prefilledDefaultTitle = prefilledDefaultTitle
     }
 
     func start() async {
@@ -181,13 +185,10 @@ final class RecordingSession: Identifiable {
         }
         guard let finishedRecording else { return nil }
 
-        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        // The default is stored verbatim so "still has the default title" can
-        // be checked later even if the locale or time zone changes.
-        let generatedDefault = Self.defaultTitle(for: startedAt)
+        let saved = Self.savedTitles(draft: title, prefilledDefault: prefilledDefaultTitle)
         let meeting = Meeting(
-            title: trimmedTitle.isEmpty ? generatedDefault : trimmedTitle,
-            defaultTitle: generatedDefault,
+            title: saved.title,
+            defaultTitle: saved.defaultTitle,
             createdAt: startedAt,
             duration: finishedRecording.duration,
             audioFileName: audioFileName,
@@ -249,7 +250,21 @@ final class RecordingSession: Identifiable {
         }
     }
 
-    static func defaultTitle(for date: Date = .now) -> String {
+    /// `nonisolated` because it touches no session state: that lets it stand
+    /// as the default argument of `init(title:prefilledDefaultTitle:)`, which
+    /// Swift evaluates outside the main actor.
+    nonisolated static func defaultTitle(for date: Date = .now) -> String {
         "Meeting \(date.formatted(date: .abbreviated, time: .shortened))"
+    }
+
+    /// The title to store and the default it is later compared against
+    /// (MeetingJobs adopts the model's suggested title only while the two
+    /// still match). The default is the exact string the sheet prefilled,
+    /// never one regenerated now: both have minute resolution, so
+    /// regenerating drifted whenever the sheet stayed open across a minute
+    /// boundary, and the suggested title was then silently never adopted.
+    static func savedTitles(draft: String, prefilledDefault: String) -> (title: String, defaultTitle: String) {
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed.isEmpty ? prefilledDefault : trimmed, prefilledDefault)
     }
 }
