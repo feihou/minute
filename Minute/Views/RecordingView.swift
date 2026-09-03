@@ -59,8 +59,13 @@ struct RecordingView: View {
             ) {
                 Button("Discard Recording", role: .destructive) {
                     Task {
-                        await session.discard(in: context)
-                        onFinish(nil)
+                        // false = the meeting row couldn't be deleted, so it is
+                        // still in the library with its audio; the session goes
+                        // to .failed and this screen stays put for a retry
+                        // instead of dismissing on a discard that didn't happen.
+                        if await session.discard(in: context) {
+                            onFinish(nil)
+                        }
                     }
                 }
                 Button("Keep Recording", role: .cancel) {}
@@ -132,8 +137,12 @@ struct RecordingView: View {
                             confirmingDiscard = true
                         } else {
                             Task {
-                                await session.discard(in: context)
-                                onFinish(nil)
+                                // Also the retry after a discard whose delete
+                                // didn't commit: only dismiss once the row is
+                                // actually gone.
+                                if await session.discard(in: context) {
+                                    onFinish(nil)
+                                }
                             }
                         }
                     }

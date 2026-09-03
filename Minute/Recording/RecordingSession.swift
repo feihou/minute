@@ -76,6 +76,14 @@ final class RecordingSession: Identifiable {
     /// Set after a successful save; a stale queued finish() must not insert a
     /// second meeting referencing the same audio file.
     private var didSave = false
+    /// How a saved meeting is removed — `MeetingStore.delete` in the app.
+    /// Injectable because the branch that decides whether this session can
+    /// corrupt the library is the one where that delete does NOT commit:
+    /// MeetingStore re-inserts the row and returns false, and the audio the
+    /// live row still points at then has to be left alone. The delete fails
+    /// only when `context.save()` throws, which SwiftData's in-memory store
+    /// has no way to be made to do, so that branch is unreachable otherwise.
+    private let deleteMeeting: @MainActor (Meeting, ModelContext) -> Bool
 
     /// `transcription` is injectable for tests; it defaults to nil rather than
     /// to `TranscriptionEngines.current()` because a default argument is
@@ -83,11 +91,13 @@ final class RecordingSession: Identifiable {
     init(
         title: String,
         prefilledDefaultTitle: String = RecordingSession.defaultTitle(),
-        transcription: (any TranscriptionEngine)? = nil
+        transcription: (any TranscriptionEngine)? = nil,
+        deleteMeeting: @escaping @MainActor (Meeting, ModelContext) -> Bool = MeetingStore.delete
     ) {
         self.title = title
         self.prefilledDefaultTitle = prefilledDefaultTitle
         self.transcription = transcription ?? TranscriptionEngines.current()
+        self.deleteMeeting = deleteMeeting
     }
 
     func start() async {
@@ -293,11 +303,15 @@ final class RecordingSession: Identifiable {
                 // away, and never leave a meeting pointing at nothing.
                 // `discard(in:)` runs on this actor between our awaits and may
                 // already have removed the row, so ask before removing it
-                // again — a committed delete leaves isDeleted false.
-                if !meeting.isGone {
-                    MeetingStore.delete(meeting, context: context)
+                // again — a committed delete leaves isDeleted false. A delete
+                // that did NOT commit left the row alive (MeetingStore
+                // re-inserts it), so keep the handle rather than dropping the
+                // only reference the retrying discard has: forgetting it here
+                // would strand a meeting in the library pointing at audio
+                // `discard(in:)` deletes.
+                if meeting.isGone || deleteMeeting(meeting, context) {
+                    savedMeeting = nil
                 }
-                savedMeeting = nil
                 return nil
             }
             // `saveWithoutTranscript()` may have banked the segments while we
@@ -332,13 +346,37 @@ final class RecordingSession: Identifiable {
     /// transcript is finalized: a discard arriving after that (or after a
     /// failed transcript save) has a row to remove, and leaving it would keep
     /// a meeting whose audio this method just deleted.
-    func discard(in context: ModelContext) async {
+    ///
+    /// Returns false when that row could not be deleted, and then nothing else
+    /// is thrown away: a delete that fails to commit is undone by MeetingStore,
+    /// so the meeting is still in the library, and removing its audio here
+    /// would leave exactly the wreck MeetingStore refuses to create — a meeting
+    /// whose recording is gone, its playback and Re-transcribe both dead. The
+    /// session enters `.failed` instead, keeping the meeting so the caller can
+    /// retry the same delete rather than dismissing on a discard that did not
+    /// happen.
+    func discard(in context: ModelContext) async -> Bool {
+        // A meeting that already saved is the library's, not this session's:
+        // the caller has it and the screen is closing on it. The toolbar
+        // Discard goes live again the moment finish() returns the phase to
+        // .idle, and acting on it here would delete the meeting just handed
+        // over along with the audio it points at. Nothing is left to throw
+        // away, so report success and let the screen close.
+        guard !didSave else { return true }
         didDiscard = true
         transcriptionTask?.cancel()
         recorder.stop()
         await transcription.cancel()
-        if let savedMeeting, !savedMeeting.isGone {
-            MeetingStore.delete(savedMeeting, context: context)
+        if let savedMeeting, !savedMeeting.isGone, !deleteMeeting(savedMeeting, context) {
+            phase = .failed(
+                "The recording couldn't be discarded — storage may be full. It's still saved in your library. Free up space and tap Close to try again.",
+                canOpenSettings: false
+            )
+            // The user asked to throw this recording away, so stop offering to
+            // keep it: `.failed` would otherwise put Save Recording on screen,
+            // and finish() refuses to run once a discard has begun.
+            didStartRecording = false
+            return false
         }
         savedMeeting = nil
         if let audioFileName {
@@ -349,6 +387,7 @@ final class RecordingSession: Identifiable {
         pendingSegments = nil
         didStartRecording = false
         phase = .idle
+        return true
     }
 
     /// Every phase change funnels through here (phase's didSet), so system
