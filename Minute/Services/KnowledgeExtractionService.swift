@@ -34,6 +34,19 @@ struct KnowledgeCandidate: Sendable, Equatable {
     var validatedQuote: String?
 }
 
+/// What one extraction pass produced. The refused count rides along because a
+/// meeting the guardrails only partly read must not be stamped as read: the
+/// caller has to tell "this transcript held no durable facts" from "part of it
+/// was refused", the same distinction the summarizer records as skippedParts.
+struct KnowledgeExtractionResult: Sendable, Equatable {
+    var candidates: [KnowledgeCandidate]
+    /// Chunks the on-device guardrails refused. Non-zero means the transcript
+    /// was only partly read.
+    var refusedChunkCount: Int = 0
+
+    static let empty = KnowledgeExtractionResult(candidates: [])
+}
+
 /// Extracts durable facts from a transcript with the on-device model.
 /// Mirrors SummarizationService: same model, guardrails, chunker, and
 /// context-overflow halving. Nothing leaves the device.
@@ -61,7 +74,7 @@ struct KnowledgeExtractionService {
     func extract(
         transcript: String,
         knownEntityNames: [String]
-    ) async throws -> [KnowledgeCandidate] {
+    ) async throws -> KnowledgeExtractionResult {
         if let message = Self.availabilityMessage {
             throw SummarizerError.unavailable(message)
         }
@@ -84,9 +97,9 @@ struct KnowledgeExtractionService {
         transcript: String,
         knownEntityNames: [String],
         maxChars: Int
-    ) async throws -> [KnowledgeCandidate] {
+    ) async throws -> KnowledgeExtractionResult {
         let chunks = TranscriptChunker.chunks(from: transcript, maxChars: maxChars)
-        guard !chunks.isEmpty else { return [] }
+        guard !chunks.isEmpty else { return .empty }
         var candidates: [KnowledgeCandidate] = []
         var refusals = 0
         var lastRefusal: Error?
@@ -112,7 +125,7 @@ struct KnowledgeExtractionService {
         if candidates.isEmpty, refusals == chunks.count, let lastRefusal {
             throw lastRefusal
         }
-        return candidates
+        return KnowledgeExtractionResult(candidates: candidates, refusedChunkCount: refusals)
     }
 
     private func extractChunk(_ chunk: String, knownEntityNames: [String]) async throws -> KnowledgeChunkDraft {

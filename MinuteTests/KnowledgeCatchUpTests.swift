@@ -52,7 +52,9 @@ struct KnowledgeCatchUpTests {
         var order: [String] = []
         let catchUp = makeCatchUp {transcript, _ in
             order.append(transcript.contains("New") ? "New" : "Old")
-            return [KnowledgeCandidate(entityName: "Sarah", entityKind: .person, fact: "Sarah spoke", validatedQuote: nil)]
+            return KnowledgeExtractionResult(candidates: [
+                KnowledgeCandidate(entityName: "Sarah", entityKind: .person, fact: "Sarah spoke", validatedQuote: nil),
+            ])
         }
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
@@ -73,7 +75,7 @@ struct KnowledgeCatchUpTests {
         struct Boom: Error {}
         let catchUp = makeCatchUp {transcript, _ in
             if transcript.contains("Failing") { throw Boom() }
-            return []
+            return .empty
         }
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
@@ -94,7 +96,7 @@ struct KnowledgeCatchUpTests {
         try context.save()
 
         var calls = 0
-        let catchUp = makeCatchUp {_, _ in calls += 1; return [] }
+        let catchUp = makeCatchUp {_, _ in calls += 1; return .empty }
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
 
@@ -108,7 +110,7 @@ struct KnowledgeCatchUpTests {
         context.insert(meetingWithTranscript("Readable", createdAt: .now))
         try context.save()
 
-        let catchUp = makeCatchUp { _, _ in [] }
+        let catchUp = makeCatchUp { _, _ in .empty }
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
 
@@ -125,7 +127,7 @@ struct KnowledgeCatchUpTests {
         try context.save()
 
         var calls = 0
-        let catchUp = makeCatchUp { _, _ in calls += 1; return [] }
+        let catchUp = makeCatchUp { _, _ in calls += 1; return .empty }
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
         #expect(calls == 0)   // no transcript: skipped for now
@@ -155,7 +157,7 @@ struct KnowledgeCatchUpTests {
         let catchUp = makeCatchUp { _, _ in
             calls += 1
             if calls == 1 { throw Boom() }
-            return []
+            return .empty
         }
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
@@ -197,7 +199,7 @@ struct KnowledgeCatchUpTests {
                 )
                 throw Boom()
             }
-            return []
+            return .empty
         }
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
@@ -229,7 +231,7 @@ struct KnowledgeCatchUpTests {
         let catchUp = makeCatchUp {_, _ in
             calls += 1
             try await Task.sleep(for: .milliseconds(50))
-            return []
+            return .empty
         }
         catchUp.nudge(context: context)
         catchUp.nudge(context: context)
@@ -246,7 +248,7 @@ struct KnowledgeCatchUpTests {
         var calls = 0
         let catchUp = KnowledgeCatchUp(
             availabilityMessage: { "Apple Intelligence isn't ready." },
-            extract: { _, _ in calls += 1; return [] }
+            extract: { _, _ in calls += 1; return .empty }
         )
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
@@ -266,7 +268,7 @@ struct KnowledgeCatchUpTests {
         var catchUpRef: KnowledgeCatchUp?
         let catchUp = makeCatchUp {_, _ in
             observedDuringRun = catchUpRef?.isWorking ?? false
-            return []
+            return .empty
         }
         catchUpRef = catchUp
         #expect(!catchUp.isWorking)
@@ -298,7 +300,7 @@ struct KnowledgeCatchUpTests {
                 startedContinuation.yield(())
                 try await Task.sleep(for: .seconds(60))
             }
-            return []
+            return .empty
         }
         catchUp.nudge(context: context)
         var started = firstCallStarted.makeAsyncIterator()
@@ -334,7 +336,7 @@ struct KnowledgeCatchUpTests {
                 // clears the loop, and would pass or fail on host speed.
                 try await Task.sleep(for: .seconds(60))
             }
-            return []
+            return .empty
         }
         catchUp.nudge(context: context)
         var started = firstCallStarted.makeAsyncIterator()
@@ -369,7 +371,7 @@ struct KnowledgeCatchUpTests {
                 // cancellation only when the model call returns.
                 try await Task.sleep(for: .seconds(60))
             }
-            return []
+            return .empty
         }
         catchUp.nudge(context: context)
         var started = firstCallStarted.makeAsyncIterator()
@@ -411,7 +413,7 @@ struct KnowledgeCatchUpTests {
                     var mayFinish = extractMayFinish.makeAsyncIterator()
                     _ = await mayFinish.next()
                 }
-                return []
+                return .empty
             }
         )
         catchUp.nudge(context: context)
@@ -436,7 +438,7 @@ struct KnowledgeCatchUpTests {
         var message: String? = "Apple Intelligence isn't ready."
         let catchUp = KnowledgeCatchUp(
             availabilityMessage: { message },
-            extract: { _, _ in calls += 1; return [] }
+            extract: { _, _ in calls += 1; return .empty }
         )
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
@@ -470,7 +472,7 @@ struct KnowledgeCatchUpTests {
         try context.save()
 
         var calls = 0
-        let catchUp = makeCatchUp { _, _ in calls += 1; return [] }
+        let catchUp = makeCatchUp { _, _ in calls += 1; return .empty }
         catchUp.pause()
 
         // A job finishing after the app left the foreground nudges the loop.
@@ -495,7 +497,7 @@ struct KnowledgeCatchUpTests {
         try context.save()
 
         var calls = 0
-        let catchUp = makeCatchUp { _, _ in calls += 1; return [] }
+        let catchUp = makeCatchUp { _, _ in calls += 1; return .empty }
         // A summary the user asked for takes the on-device model. Unlike a
         // scene pause this one expires on the next nudge — the job's own
         // completion callback — or the first job of a foreground session would
@@ -521,10 +523,14 @@ struct KnowledgeCatchUpTests {
                 // A re-transcription lands while the model is mid-read.
                 meeting.segments = [TranscriptSegment(text: "Replaced transcript line", start: 0, end: 1)]
                 meeting.knowledgeExtractedAt = nil
-                return [KnowledgeCandidate(entityName: "Stale", entityKind: .topic, fact: "from old transcript", validatedQuote: nil)]
+                return KnowledgeExtractionResult(candidates: [
+                    KnowledgeCandidate(entityName: "Stale", entityKind: .topic, fact: "from old transcript", validatedQuote: nil),
+                ])
             }
             #expect(transcript.contains("Replaced"))
-            return [KnowledgeCandidate(entityName: "Fresh", entityKind: .topic, fact: "from new transcript", validatedQuote: nil)]
+            return KnowledgeExtractionResult(candidates: [
+                KnowledgeCandidate(entityName: "Fresh", entityKind: .topic, fact: "from new transcript", validatedQuote: nil),
+            ])
         }
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
@@ -546,7 +552,9 @@ struct KnowledgeCatchUpTests {
             // save is also what nudges this loop — so the delete lands while
             // the model is still reading the transcript.
             #expect(MeetingStore.delete(meeting, context: context))
-            return [KnowledgeCandidate(entityName: "Sarah", entityKind: .person, fact: "Sarah spoke", validatedQuote: nil)]
+            return KnowledgeExtractionResult(candidates: [
+                KnowledgeCandidate(entityName: "Sarah", entityKind: .person, fact: "Sarah spoke", validatedQuote: nil),
+            ])
         }
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
@@ -573,7 +581,7 @@ struct KnowledgeCatchUpTests {
             if calls == 1 {
                 throw LanguageModelSession.GenerationError.rateLimited(.init(debugDescription: "test"))
             }
-            return []
+            return .empty
         }
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
@@ -599,7 +607,7 @@ struct KnowledgeCatchUpTests {
         let catchUp = makeCatchUp { _, _ in
             calls += 1
             guard available else { throw SummarizerError.unavailable("Apple Intelligence isn't ready.") }
-            return []
+            return .empty
         }
         catchUp.nudge(context: context)
         await catchUp.waitUntilIdle()
@@ -611,5 +619,67 @@ struct KnowledgeCatchUpTests {
         await catchUp.waitUntilIdle()
         // Neither meeting was skip-listed, so both are read on the next nudge.
         #expect(calls == 3)
+    }
+
+    @Test func aPartlyRefusedMeetingKeepsItsFactsButIsNotStamped() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("Health Review", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        let catchUp = makeCatchUp { _, _ in
+            KnowledgeExtractionResult(
+                candidates: [
+                    KnowledgeCandidate(entityName: "Sarah", entityKind: .person, fact: "Sarah owns Atlas", validatedQuote: nil),
+                ],
+                refusedChunkCount: 2
+            )
+        }
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+
+        // What the model did read is kept…
+        #expect(try context.fetch(FetchDescriptor<KnowledgeEntity>()).map(\.name) == ["Sarah"])
+        // …but stamping would retire the meeting with two passages never read.
+        #expect(meeting.knowledgeExtractedAt == nil)
+        #expect(catchUp.skippedChunksByMeeting[meeting.id] == 2)
+        #expect(catchUp.pendingCount == 1)
+    }
+
+    @Test func aPartlyRefusedMeetingIsNotRetriedHotInTheSameSession() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("Health Review", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        var calls = 0
+        let catchUp = makeCatchUp { _, _ in
+            calls += 1
+            return KnowledgeExtractionResult(candidates: [], refusedChunkCount: 1)
+        }
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        // Guardrail refusals are near-deterministic: retrying inside this
+        // session would spin the loop over the same refusal forever.
+        #expect(calls == 1)
+
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 1)
+        #expect(meeting.knowledgeExtractedAt == nil)
+    }
+
+    @Test func aFullyReadMeetingRecordsNoSkippedChunks() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("Standup", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        let catchUp = makeCatchUp { _, _ in .empty }
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+
+        #expect(meeting.knowledgeExtractedAt != nil)
+        #expect(catchUp.skippedChunksByMeeting.isEmpty)
     }
 }

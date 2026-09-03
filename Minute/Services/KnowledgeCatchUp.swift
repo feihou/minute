@@ -10,7 +10,7 @@ import SwiftData
 @MainActor
 @Observable
 final class KnowledgeCatchUp {
-    typealias Extractor = @MainActor (_ transcript: String, _ knownEntityNames: [String]) async throws -> [KnowledgeCandidate]
+    typealias Extractor = @MainActor (_ transcript: String, _ knownEntityNames: [String]) async throws -> KnowledgeExtractionResult
 
     /// Unstamped meetings remaining, for the m2 "catching up" row.
     private(set) var pendingCount = 0
@@ -19,6 +19,12 @@ final class KnowledgeCatchUp {
     /// catch-up row keys on this, not on pendingCount — pending work can sit
     /// skip-listed while the loop is idle, and a spinner would be a lie.
     private(set) var isWorking = false
+
+    /// Chunks the guardrails refused, per meeting, as of the last read of it.
+    /// Such a meeting stays unstamped so a later launch retries it; this is
+    /// what a Brain surface can show meanwhile, the way a summary shows
+    /// "N parts couldn't be summarized".
+    private(set) var skippedChunksByMeeting: [UUID: Int] = [:]
 
     private let availabilityMessage: @MainActor () -> String?
     private let extract: Extractor
@@ -192,7 +198,7 @@ final class KnowledgeCatchUp {
             let transcript = meeting.timestampedTranscriptText
             do {
                 let names = knownEntityNames(context: context)
-                let candidates = try await extract(transcript, names)
+                let result = try await extract(transcript, names)
                 // Deleted while the model was reading it — routine, since
                 // saving a recording is both what nudges this loop and when a
                 // botched take gets deleted. `isGone`, not `isDeleted`: the
@@ -208,8 +214,22 @@ final class KnowledgeCatchUp {
                 // unstamped and un-skipped, so this same loop picks it up again
                 // with the fresh transcript.
                 guard meeting.timestampedTranscriptText == transcript else { continue }
-                try KnowledgeIngest.apply(candidates, from: meeting, context: context)
-                meeting.knowledgeExtractedAt = .now
+                try KnowledgeIngest.apply(result.candidates, from: meeting, context: context)
+                if result.refusedChunkCount > 0 {
+                    // Stamping would retire the meeting with those passages
+                    // never read — and the meetings richest in durable facts
+                    // are exactly the ones a guardrail refuses. Keep what was
+                    // extracted, remember how much was missed, and skip-list
+                    // the text that was read: a refusal is near-deterministic,
+                    // so retrying it inside this session would only spin, while
+                    // the next launch (or a re-transcription, which changes the
+                    // key) reads the meeting again.
+                    skippedChunksByMeeting[meeting.id] = result.refusedChunkCount
+                    skip(meeting, key: Self.contentKey(for: transcript))
+                } else {
+                    meeting.knowledgeExtractedAt = .now
+                    skippedChunksByMeeting[meeting.id] = nil
+                }
                 try context.save()
             } catch is CancellationError {
                 return
