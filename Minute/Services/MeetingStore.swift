@@ -288,6 +288,55 @@ enum MeetingStore {
         }
     }
 
+    /// Deletes the persistent store and every recording under it, so the next
+    /// launch starts from an empty library.
+    ///
+    /// The only exit from fallback mode. When the persistent container cannot
+    /// open, nothing else in the app can reach these files: Settings' Delete
+    /// All Meetings iterates the empty in-memory library, and `delete` resolves
+    /// audio through `recordingsDirectory()`, which points at the session-only
+    /// temporary directory there. So the audio and transcripts on disk would
+    /// otherwise sit at rest with no delete path at all — exactly what the
+    /// "no data at rest without a delete path" invariant forbids — while the
+    /// same failing open repeats at every launch. Removing the files is the
+    /// whole operation: SwiftData recreates the store at the next launch, and
+    /// this process keeps the in-memory container it already opened, which is
+    /// why the caller tells the user to quit and reopen.
+    ///
+    /// Everything else in Application Support is left alone: downloaded
+    /// Whisper and summary models are not meeting data and cost gigabytes to
+    /// fetch again. Returns false when something could not be removed, so the
+    /// caller can say so rather than promise a clean slate. `base` is a
+    /// parameter so tests run against a scratch tree instead of the real
+    /// Application Support directory.
+    @discardableResult
+    static func resetPersistentStore(base: URL? = nil) -> Bool {
+        var succeeded = true
+        do {
+            let root = try base ?? FileManager.default.url(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+            var targets = storeFileNames.map { root.appendingPathComponent($0) }
+            targets.append(root.appendingPathComponent(recordingsDirectoryName, isDirectory: true))
+            for url in targets {
+                guard FileManager.default.fileExists(atPath: url.path) else { continue }
+                do {
+                    try FileManager.default.removeItem(at: url)
+                } catch {
+                    logger.error("Resetting the store could not remove \(url.lastPathComponent): \(error.localizedDescription)")
+                    succeeded = false
+                }
+            }
+        } catch {
+            logger.error("Resetting the store failed: \(error.localizedDescription)")
+            succeeded = false
+        }
+        return succeeded
+    }
+
     static func newAudioFileName() -> String {
         UUID().uuidString + ".m4a"
     }

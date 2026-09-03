@@ -261,6 +261,46 @@ struct MeetingStoreTests {
         #expect(!FileManager.default.fileExists(atPath: url.path))
     }
 
+    /// F68: in fallback mode nothing else can reach these files — the library
+    /// the delete paths iterate is the empty in-memory one, and
+    /// `recordingsDirectory()` points at the session-only tmp directory — so
+    /// this is the only delete path the on-disk audio and transcripts have.
+    @Test func resetPersistentStoreRemovesTheStoreFilesAndEveryRecording() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reset-\(UUID().uuidString)", isDirectory: true)
+        let recordings = base.appendingPathComponent("Recordings", isDirectory: true)
+        try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let store = base.appendingPathComponent("default.store")
+        let wal = base.appendingPathComponent("default.store-wal")
+        let audio = recordings.appendingPathComponent(MeetingStore.newAudioFileName())
+        let models = base.appendingPathComponent("WhisperModels", isDirectory: true)
+        try Data("db".utf8).write(to: store)
+        try Data("wal".utf8).write(to: wal)
+        try Data("audio".utf8).write(to: audio)
+        try FileManager.default.createDirectory(at: models, withIntermediateDirectories: true)
+
+        #expect(MeetingStore.resetPersistentStore(base: base))
+
+        #expect(!FileManager.default.fileExists(atPath: store.path))
+        #expect(!FileManager.default.fileExists(atPath: wal.path))
+        #expect(!FileManager.default.fileExists(atPath: recordings.path))
+        // Downloaded models are not meeting data and cost gigabytes to fetch
+        // again; "start over" must not turn into that penalty.
+        #expect(FileManager.default.fileExists(atPath: models.path))
+    }
+
+    @Test func resetPersistentStoreSucceedsWhenThereIsNothingToRemove() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reset-empty-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        // A store can fail to open because it was never written. "Nothing to
+        // delete" is a successful reset, not a failure to report to the user.
+        #expect(MeetingStore.resetPersistentStore(base: base))
+    }
+
     @Test func importedAudioFileNameKeepsKnownExtensionsAndDefaultsUnknownToM4a() {
         #expect(MeetingStore.importedAudioFileName(originalExtension: "MP3").hasSuffix(".mp3"))
         #expect(MeetingStore.importedAudioFileName(originalExtension: "wav").hasSuffix(".wav"))
