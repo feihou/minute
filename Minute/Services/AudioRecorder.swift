@@ -260,6 +260,11 @@ final class AudioRecorder {
     var onWriteError: ((Error) -> Void)?
     private var didReportWriteError = false
 
+    /// Called when the input route changed and capture was restarted against
+    /// the new hardware, so the owner can say so briefly. Recording never
+    /// stopped — this is information, not a failure.
+    var onRouteChanged: ((String) -> Void)?
+
     private let engine = AVAudioEngine()
     private let tapHandler = BufferHandlerBox()
     private var file: AVAudioFile?
@@ -306,9 +311,9 @@ final class AudioRecorder {
     }
 
     init() {
-        let pauseOnNotification: @Sendable (Notification) -> Void = { [weak self] _ in
+        let restartOnNotification: @Sendable (Notification) -> Void = { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.systemPause(causedByInterruption: false)
+                self?.handleConfigurationChange()
             }
         }
         // Phone call / Siri interruption: iOS suspends our audio session.
@@ -347,7 +352,7 @@ final class AudioRecorder {
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
             queue: .main,
-            using: pauseOnNotification
+            using: restartOnNotification
         ))
         // The audio daemon crashed and took the engine, the file's encoder,
         // and the session with it. Nothing can be resumed in place; say so
@@ -361,6 +366,29 @@ final class AudioRecorder {
                 self?.handleMediaServicesReset()
             }
         })
+    }
+
+    /// The input route or its format changed (AirPods connecting or
+    /// auto-switching away, a wired headset being plugged in). Re-arm the tap
+    /// against the new hardware and keep recording: pausing here left the rest
+    /// of a meeting uncaptured whenever a headset switched away with the phone
+    /// locked, since the only signal was the Live Activity flipping to Paused.
+    ///
+    /// No interruption ownership is involved, so `pausedByInterruption` is
+    /// untouched and the `.ended`-pairing logic is unaffected. Only a failed
+    /// restart falls back to the old pause-with-notice, which still leaves
+    /// everything captured so far saveable.
+    private func handleConfigurationChange() {
+        guard state == .recording else { return }
+        do {
+            engine.inputNode.removeTap(onBus: 0)
+            try installTap()
+            try engine.start()
+            onRouteChanged?("Microphone changed — still recording")
+        } catch {
+            Self.logger.error("Restarting after an audio route change failed: \(error.localizedDescription)")
+            systemPause(causedByInterruption: false)
+        }
     }
 
     /// Pauses because the system took the microphone away, not because the

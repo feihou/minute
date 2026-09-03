@@ -53,6 +53,10 @@ final class RecordingSession: Identifiable {
     /// alive. Cancelled the moment recording ends, so a process that dies
     /// mid-recording simply stops refreshing and the card goes stale.
     private var activityRefreshTask: Task<Void, Never>?
+    /// Clears a notice that explains something already resolved (a route
+    /// change the recorder recovered from), so it doesn't sit on screen
+    /// implying the recording still needs attention.
+    private var noticeClearTask: Task<Void, Never>?
     private let startedAt = Date()
     /// Captured once when recording stops; kept until a save succeeds so a
     /// failed context.save() can be retried without touching the recorder.
@@ -112,6 +116,11 @@ final class RecordingSession: Identifiable {
             // tell the user why instead of pretending the recording is healthy.
             self.phase = .paused
             self.notice = "Recording paused — audio couldn't be written (storage may be full). Free up space and resume, or stop to save what's been captured."
+        }
+
+        recorder.onRouteChanged = { [weak self] message in
+            guard let self, self.phase == .recording else { return }
+            self.showTransientNotice(message)
         }
 
         // Start capturing audio immediately — recording never waits on the
@@ -182,6 +191,19 @@ final class RecordingSession: Identifiable {
             // recorded so far stays saveable from the paused state.
             Self.logger.error("Resume failed: \(error.localizedDescription)")
             notice = "Couldn't resume the microphone. You can try again, or stop to save what's recorded."
+        }
+    }
+
+    /// A notice about something the recorder already handled: shown briefly,
+    /// then cleared. The pause notices stay up because they name an action the
+    /// user still has to take; this one doesn't.
+    private func showTransientNotice(_ message: String) {
+        notice = message
+        noticeClearTask?.cancel()
+        noticeClearTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled, let self, self.notice == message else { return }
+            self.notice = nil
         }
     }
 
