@@ -58,9 +58,10 @@ enum ICloudDriveBackup {
     /// Meetings deleted since some snapshot was taken. A snapshot is captured
     /// on the main actor and mirrored on a background task, so the user can
     /// delete a meeting while the run is still copying earlier ones — and each
-    /// Item carries that meeting's full notes text in memory. Never emptied: a
-    /// deleted meeting cannot come back, and one UUID per deletion for the life
-    /// of the process is nothing beside writing a deleted transcript to iCloud.
+    /// Item carries that meeting's full notes text in memory. One UUID per
+    /// deletion for the life of the process is nothing beside writing a deleted
+    /// transcript to iCloud, so nothing here is aged out; the only way an id
+    /// leaves is `noteMeetingDeleteFailed`, when the delete did not commit.
     private nonisolated(unsafe) static var deletedMeetingIDs: Set<String> = []
     private static let deletedMeetingLock = NSLock()
 
@@ -70,6 +71,20 @@ enum ICloudDriveBackup {
         deletedMeetingLock.lock()
         defer { deletedMeetingLock.unlock() }
         deletedMeetingIDs.insert(id.uuidString)
+    }
+
+    /// Takes that back when the delete did not commit. `MeetingStore.delete`
+    /// re-inserts the meeting and returns false if the save throws, and the
+    /// user is told the delete failed — so a noted deletion is a prediction,
+    /// not a fact, and the caller must retract it on that rollback path.
+    /// Without this the mirror would skip a meeting the user still has for the
+    /// rest of the process, and the folder a run had already removed would stay
+    /// gone from iCloud Drive with the backup still reported complete. The next
+    /// sync re-creates it, the way it would for any meeting not mirrored yet.
+    nonisolated static func noteMeetingDeleteFailed(_ id: UUID) {
+        deletedMeetingLock.lock()
+        defer { deletedMeetingLock.unlock() }
+        deletedMeetingIDs.remove(id.uuidString)
     }
 
     private nonisolated static func isDeletedSinceSnapshot(_ meetingID: String) -> Bool {

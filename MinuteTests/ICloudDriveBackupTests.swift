@@ -108,6 +108,13 @@ struct ICloudDriveBackupTests {
             .sorted()
     }
 
+    /// Every entry, hidden ones included. A folder the mirror parks carries a
+    /// dot-prefixed staging name, so "nothing of this meeting is here" is only
+    /// proved by looking past what the Files app shows.
+    private func allNames(in directory: URL) throws -> [String] {
+        try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+    }
+
     // MARK: - Names
 
     @Test func folderNameIsDatePrefixedAndSanitized() {
@@ -278,8 +285,9 @@ struct ICloudDriveBackupTests {
         try ICloudDriveBackup.mirror([entry], into: documents)
 
         // Nothing was ever created: a deleted meeting's transcript must not
-        // reach iCloud Drive even for the seconds until the next sync.
-        #expect(try visibleNames(in: documents).isEmpty)
+        // reach iCloud Drive even for the seconds until the next sync, and
+        // not under a hidden name either.
+        #expect(try allNames(in: documents).isEmpty)
     }
 
     /// The case the snapshot cannot see: the delete lands after `mirror` has
@@ -304,6 +312,88 @@ struct ICloudDriveBackupTests {
         // failing at it: an incomplete verdict here would warn about a backup
         // that is exactly as complete as it should be.
         #expect(outcome == .complete)
+    }
+
+    /// Deleting a meeting is not a one-way door: `MeetingStore.delete` puts
+    /// the row back and reports failure when the save throws, and the user is
+    /// told the delete did not happen. That meeting still exists, so the note
+    /// has to be revocable — otherwise the mirror goes on skipping it for the
+    /// life of the process and the folder this run removed never comes back.
+    @Test func mirrorBacksUpAgainAfterADeleteIsRolledBack() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+
+        let meetingID = UUID()
+        let entry = item(id: meetingID.uuidString, folderName: "2026-08-03 09.30 Kept", notes: "# kept")
+        try ICloudDriveBackup.mirror([entry], into: documents)
+
+        // The delete is noted, the mirror in flight takes the folder with it,
+        // and only then does the save throw and the meeting come back.
+        ICloudDriveBackup.noteMeetingDeleted(meetingID)
+        try ICloudDriveBackup.mirror([entry], into: documents)
+        #expect(try allNames(in: documents).isEmpty)
+
+        ICloudDriveBackup.noteMeetingDeleteFailed(meetingID)
+        try ICloudDriveBackup.mirror([entry], into: documents)
+
+        let folder = documents.appendingPathComponent(entry.folderName, isDirectory: true)
+        #expect(try String(contentsOf: folder.appendingPathComponent("notes.md"), encoding: .utf8) == "# kept")
+    }
+
+    /// One delete that failed says nothing about the others a long mirror run
+    /// was told about: forgetting all of them would put every one of those
+    /// transcripts back into iCloud Drive.
+    @Test func aRolledBackDeleteClearsOnlyTheMeetingItNames() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+
+        let restoredID = UUID()
+        let goneID = UUID()
+        let restored = item(id: restoredID.uuidString, folderName: "2026-08-03 09.30 Restored", notes: "# restored")
+        let gone = item(id: goneID.uuidString, folderName: "2026-08-03 10.00 Gone", notes: "# secret transcript")
+
+        ICloudDriveBackup.noteMeetingDeleted(restoredID)
+        ICloudDriveBackup.noteMeetingDeleted(goneID)
+        ICloudDriveBackup.noteMeetingDeleteFailed(restoredID)
+
+        try ICloudDriveBackup.mirror([restored, gone], into: documents)
+
+        #expect(try allNames(in: documents) == [restored.folderName])
+    }
+
+    /// Two meetings that trade titles make the mirror park one folder under a
+    /// hidden staging name so the other can take that name. When the parked
+    /// one belongs to the meeting the user just deleted, the staged folder has
+    /// to go — the run's own un-park cleanup would otherwise put a deleted
+    /// meeting's notes back into view under a free name.
+    @Test func mirrorRemovesADeletedMeetingsFolderEvenWhileItIsParked() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+
+        let deletedID = UUID()
+        let keptID = UUID()
+        let deletedName = "2026-08-03 09.30 One"
+        let keptName = "2026-08-03 10.00 Two"
+        try ICloudDriveBackup.mirror([
+            item(id: deletedID.uuidString, folderName: deletedName, notes: "# secret transcript"),
+            item(id: keptID.uuidString, folderName: keptName, notes: "# kept"),
+        ], into: documents)
+
+        // The user swaps the two titles, then deletes the first meeting while
+        // this snapshot is still being mirrored.
+        ICloudDriveBackup.noteMeetingDeleted(deletedID)
+        let outcome = try ICloudDriveBackup.mirror([
+            item(id: deletedID.uuidString, folderName: keptName, notes: "# secret transcript"),
+            item(id: keptID.uuidString, folderName: deletedName, notes: "# kept"),
+        ], into: documents)
+
+        // Nothing staged left behind, and the meeting that survives holds the
+        // name it asked for. Complete, not incomplete: the folder this run
+        // moved to staging is not also a removal that failed.
+        #expect(try allNames(in: documents) == [deletedName])
+        #expect(outcome == .complete)
+        let folder = documents.appendingPathComponent(deletedName, isDirectory: true)
+        #expect(try String(contentsOf: folder.appendingPathComponent("notes.md"), encoding: .utf8) == "# kept")
     }
 
     /// The user owns this folder in Files. Nothing without the app's marker
