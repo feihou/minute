@@ -8,6 +8,7 @@ import UIKit
 struct MeetingDetailView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @Bindable var meeting: Meeting
     /// Kick off summary generation as soon as the view appears (used right
     /// after a recording finishes when Auto-Summarize is on in Settings).
@@ -41,6 +42,12 @@ struct MeetingDetailView: View {
     /// clearing the field wrote an empty title that then headed the library
     /// row, the widget, and every export.
     @State private var titleDraft: String?
+    /// Whether the masthead field is being edited. The draft is committed the
+    /// moment this goes false, because that is how the keyboard is actually
+    /// dismissed here — a tap on the ⋯ menu, a scroll, a swipe back. Without
+    /// it every action on this screen (Copy Notes, Share Notes, Edit Summary,
+    /// Delete) would read the title the user just replaced on screen.
+    @FocusState private var titleFocused: Bool
     @AppStorage(AppSettings.summaryTemplateKey) private var summaryTemplateID = SummaryTemplate.standard.id
     @Query private var knowledgeEntities: [KnowledgeEntity]
 
@@ -112,6 +119,17 @@ struct MeetingDetailView: View {
             // stops playback itself and dismisses, so it never reaches here.
             if gone {
                 player.stop()
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Leaving the app does not pop this screen, so `onDisappear` never
+            // runs for it — and the background pass mirrors the meeting to
+            // iCloud Drive and may be the last thing that happens before the
+            // app is terminated. An edit still sitting in the draft would be
+            // mirrored stale and then lost, so it is committed and saved here.
+            if phase != .active, !meeting.isGone {
+                commitTitle()
+                saveQuietly()
             }
         }
         .onDisappear {
@@ -287,17 +305,26 @@ struct MeetingDetailView: View {
     /// separate chips restated what the line already says.
     private var masthead: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // Wrapping, because this is the page's headline at display size
+            // and the title every un-renamed meeting starts with — "Meeting
+            // Sep 2, 2026 at 9:41 AM" — is wider than the screen: a
+            // single-line field would scroll it sideways and cut the headline
+            // off mid-word. The return key inserts a newline in a vertical
+            // field rather than submitting, so the edit is committed when the
+            // field loses focus instead; a pasted or typed newline folds back
+            // into a space at that point.
             TextField("Title", text: Binding(
                 get: { titleDraft ?? meeting.title },
                 set: { titleDraft = $0 }
-            ))
+            ), axis: .vertical)
                 .font(.largeTitle.bold())
                 .textFieldStyle(.plain)
-                // Single-line on purpose: with `axis: .vertical` the return
-                // key inserted a newline into the title instead of finishing
-                // the edit, and onSubmit never fired.
-                .submitLabel(.done)
-                .onSubmit { commitTitle() }
+                .focused($titleFocused)
+                .onChange(of: titleFocused) { _, focused in
+                    if !focused {
+                        commitTitle()
+                    }
+                }
                 .accessibilityLabel("Meeting title")
 
             Text(metaLine)
@@ -696,15 +723,18 @@ struct MeetingDetailView: View {
     }
 
     /// Writes the edited title back to the meeting, substituting the fallback
-    /// when the user left the field empty. A no-op when nothing was typed, so
-    /// merely opening and leaving this screen never touches the model — which
-    /// also keeps the widget snapshot from being rewritten for a visit.
+    /// when the user left the field empty. Called from every way out of the
+    /// field — the keyboard being dismissed, the screen being left, the app
+    /// being backgrounded — so it is a no-op when nothing is pending: merely
+    /// opening and leaving this screen never touches the model, which also
+    /// keeps the widget snapshot from being rewritten for a visit. Clearing
+    /// the draft before the `isGone` check is what keeps a pending edit from
+    /// being re-applied to a meeting deleted between two of those calls.
     private func commitTitle() {
         guard let draft = titleDraft else { return }
         titleDraft = nil
         guard !meeting.isGone else { return }
-        let committed = Meeting.committedTitle(draft: draft, fallback: meeting.titleFallback)
-        if committed != meeting.title {
+        if let committed = Meeting.titleCommit(draft: draft, current: meeting.title, fallback: meeting.titleFallback) {
             meeting.title = committed
         }
     }

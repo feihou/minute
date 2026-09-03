@@ -87,14 +87,31 @@ extension Meeting {
     /// not be written through: it falls back to the meeting's own default.
     /// Newlines fold into spaces rather than being trimmed off the ends,
     /// because a pasted two-line string would otherwise turn "# title" into a
-    /// heading plus a stray body line in every export.
+    /// heading plus a stray body line in every export. Splitting on the whole
+    /// `.newlines` set does that in one pass: CRLF, a blank line and the
+    /// Unicode separators a paste from a word processor carries (U+2028,
+    /// U+2029) all collapse to the single space a reader expects, rather than
+    /// to a doubled space or — for the separators a per-character replace
+    /// never listed — to a break that survives into the exported file.
     static func committedTitle(draft: String, fallback: String) -> String {
         let flattened = draft
-            .replacingOccurrences(of: "\r\n", with: " ")
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\r", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
         return flattened.isEmpty ? fallback : flattened
+    }
+
+    /// The title to write back when a pending masthead edit is committed, or
+    /// `nil` when there is nothing to write. The edit is committed from every
+    /// way out of the field — the keyboard being dismissed, the screen being
+    /// left, the app going to the background — so the commits after the first
+    /// one, and a visit that only focused the field, must not dirty the model:
+    /// that write would rewrite the widget snapshot and remirror the meeting
+    /// for a title nobody changed.
+    static func titleCommit(draft: String, current: String, fallback: String) -> String? {
+        let committed = committedTitle(draft: draft, fallback: fallback)
+        return committed == current ? nil : committed
     }
 
     /// What the title reverts to when the field is emptied: the exact
