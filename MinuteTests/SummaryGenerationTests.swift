@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import SwiftData
 import Testing
@@ -15,6 +16,34 @@ struct SummaryGenerationTests {
         let meeting = Meeting(title: "Empty")
         container.mainContext.insert(meeting)
         return (container, meeting)
+    }
+
+    /// Half a second of silence, written as a real WAV file — re-transcription
+    /// opens the audio with AVAudioFile before it ever reaches the engine.
+    private func makeWavFixture() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retranscribe-fixture-\(UUID().uuidString).wav")
+        let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8_000)!
+        buffer.frameLength = 8_000
+        try file.write(from: buffer)
+        return url
+    }
+
+    /// An engine that is "available" and recognizes nothing — audio in a
+    /// language the device isn't set to, or plain silence.
+    @MainActor
+    private final class EmptyTranscriptionEngine: TranscriptionEngine {
+        var availability: TranscriptionAvailability = .available
+        var volatileText = ""
+        var segments: [TranscriptSegment] = []
+        var timestampOffset: TimeInterval = 0
+        func prepare() async {}
+        func start(inputFormat: AVAudioFormat) async -> (@Sendable (AVAudioPCMBuffer) -> Void)? { nil }
+        func finish() async -> [TranscriptSegment] { [] }
+        func cancel() async {}
+        func transcribe(file: AVAudioFile) async throws -> [TranscriptSegment] { [] }
     }
 
     @Test func failedGenerationClearsInFlightStateAndRecordsError() async throws {
@@ -117,5 +146,22 @@ struct SummaryGenerationTests {
         #expect(kept.contains("existing transcript was kept"))
         #expect(!fresh.contains("kept"))
         #expect(fresh.hasPrefix("Re-transcription produced no text"))
+    }
+
+    @Test func retranscriptionThatRecognizedNothingReportsInsteadOfApplying() async throws {
+        let (container, meeting) = try makeMeeting()
+        defer { _ = container }
+        let source = try makeWavFixture()
+        defer { try? FileManager.default.removeItem(at: source) }
+        let jobs = MeetingJobs()
+
+        await jobs.retranscribe(meeting, audioAt: source, transcription: EmptyTranscriptionEngine())?.value
+
+        // An empty pass must never be mistaken for "this meeting has no
+        // speech": the user hears why, and nothing is written over.
+        let message = try #require(jobs.error(.transcription, for: meeting))
+        #expect(message.contains("produced no text"))
+        #expect(meeting.segments.isEmpty)
+        #expect(!jobs.isBusy(meeting))
     }
 }

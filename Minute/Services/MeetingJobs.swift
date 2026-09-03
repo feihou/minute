@@ -119,10 +119,18 @@ final class MeetingJobs {
         }
     }
 
+    /// `transcription` is injectable for tests; it defaults to nil rather than
+    /// to `TranscriptionEngines.current()` because a default argument is
+    /// evaluated outside this type's main-actor isolation (same pattern as
+    /// AudioImporter.importAudio).
     @discardableResult
-    func retranscribe(_ meeting: Meeting, audioAt url: URL) -> Task<Void, Never>? {
+    func retranscribe(
+        _ meeting: Meeting,
+        audioAt url: URL,
+        transcription: (any TranscriptionEngine)? = nil
+    ) -> Task<Void, Never>? {
         start(.transcription, for: meeting) {
-            let transcription = TranscriptionEngines.current()
+            let transcription = transcription ?? TranscriptionEngines.current()
             await transcription.prepare()
             if case .unavailable(let message) = transcription.availability {
                 throw JobMessage(message: message)
