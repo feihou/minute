@@ -6,6 +6,7 @@ struct MeetingListView: View {
     var storeIsEphemeral = false
 
     @Environment(\.modelContext) private var context
+    @Environment(KnowledgeCatchUp.self) private var catchUp
     @Query(sort: \Meeting.createdAt, order: .reverse) private var meetings: [Meeting]
 
     @State private var searchText = ""
@@ -184,6 +185,11 @@ struct MeetingListView: View {
                 if let finished {
                     destinationAutoSummarizes = AppSettings.autoSummarizeEnabled
                     meetingDestination = finished
+                    // The loop is otherwise only nudged by a finished job or a
+                    // scene activation; with Auto-Summarize off (the default)
+                    // neither happens, and the Brain never reads this meeting
+                    // until the app is backgrounded and reopened.
+                    catchUp.nudge(context: context)
                 }
             }
         }
@@ -411,6 +417,7 @@ struct MeetingListView: View {
                 // kicks in for imports too.
                 destinationAutoSummarizes = AppSettings.autoSummarizeEnabled
                 meetingDestination = result.meeting
+                catchUp.nudge(context: context)
             } catch is CancellationError {
                 // User cancelled — nothing to report.
             } catch {
@@ -548,5 +555,6 @@ struct NewMeetingSheet: View {
     MeetingListView()
         .modelContainer(MeetingStore.previewContainer())
         .environment(MeetingJobs())
+        .environment(KnowledgeCatchUp())
 }
 #endif
