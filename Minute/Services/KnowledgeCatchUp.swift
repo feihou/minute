@@ -55,9 +55,11 @@ final class KnowledgeCatchUp {
     /// (thermal, rate limit) can restart itself without waiting for the next
     /// scene transition. Every caller nudges with the same main-actor context.
     private var lastContext: ModelContext?
-    /// How long a loop the device stopped waits before nudging itself. A rate
-    /// limit and an unready model are both "not now", not "never" — and
-    /// nothing else asks again while the app stays in the foreground.
+    /// How long a loop the device stopped waits before nudging itself. Only
+    /// the failures the model reports mid-extraction earn one: a rate limit
+    /// and evicted assets are "not now" by construction, since the model was
+    /// there when the pass started. Unavailability at the top of the loop is
+    /// not — see the guard in `run` — so it is deliberately not retried.
     /// Injectable so tests don't wait a minute.
     private let retryDelay: Duration
     /// At most one delayed retry outstanding: the loop's own guards are cheap,
@@ -141,8 +143,10 @@ final class KnowledgeCatchUp {
         nudge(context: lastContext)
     }
 
-    /// One delayed re-nudge after the device said "not now". Weak, so a
-    /// discarded loop is not kept alive by a pending timer.
+    /// One delayed re-nudge after the model said "not now" mid-extraction.
+    /// Weak, so a discarded loop is not kept alive by a pending timer. Only
+    /// for conditions that clear on their own: a caller that can also be
+    /// permanent would arm this again on every retried pass, forever.
     private func scheduleRetry() {
         guard retryTask == nil, !isPaused, lastContext != nil else { return }
         let delay = retryDelay
@@ -244,10 +248,17 @@ final class KnowledgeCatchUp {
         // Not a per-meeting failure: when the model isn't ready, leave the
         // queue untouched and wait for a later nudge (mirrors the thermal
         // guard's return-without-consuming semantics).
-        guard availabilityMessage() == nil else {
-            scheduleRetry()
-            return
-        }
+        //
+        // Deliberately no scheduleRetry() here. This message is as often
+        // permanent as transient — an iPhone that can't run Apple Intelligence
+        // never becomes one that can — and a retry re-arms itself from this
+        // same guard on the next pass, so it would refetch every unstamped
+        // meeting once a delay for the whole foreground lifetime, on exactly
+        // the phones whose pending set can only grow. The reasons that do
+        // clear already have a door: turning Apple Intelligence on happens in
+        // Settings, which backgrounds the app, and the scene coming back
+        // nudges — as does the Brain tab appearing, or any job finishing.
+        guard availabilityMessage() == nil else { return }
 
         while !Task.isCancelled {
             // Sustained ANE work on a warm phone throttles everything; wait
@@ -318,7 +329,10 @@ final class KnowledgeCatchUp {
                     return
                 }
                 // Assets being evicted mid-loop is the same kind of "not now":
-                // the model is gone, not this meeting's fault.
+                // the model is gone, not this meeting's fault. Worth a retry
+                // where the top-of-run guard isn't, because the model answered
+                // this pass before it vanished — that is the device taking it
+                // away, never the phone's permanent verdict.
                 if case .assetsUnavailable = error {
                     scheduleRetry()
                     return

@@ -682,6 +682,7 @@ struct KnowledgeCatchUpTests {
         #expect(meeting.knowledgeExtractedAt != nil)
         #expect(catchUp.skippedChunksByMeeting.isEmpty)
     }
+
     @Test func coolingDownRestartsALoopTheDeviceStopped() async throws {
         let context = try makeContext()
         let meeting = meetingWithTranscript("A", createdAt: .now)
@@ -766,5 +767,64 @@ struct KnowledgeCatchUpTests {
         await catchUp.waitUntilIdle()
         #expect(calls == 2)
         #expect(meeting.knowledgeExtractedAt != nil)
+    }
+
+    @Test func anUnavailableModelSchedulesNoRepeatingPoll() async throws {
+        let context = try makeContext()
+        context.insert(meetingWithTranscript("Unread", createdAt: .now))
+        try context.save()
+
+        // One availability check per run() pass — a retry that re-arms itself
+        // shows up here as passes climbing with nothing touching the loop.
+        var passes = 0
+        var calls = 0
+        let catchUp = KnowledgeCatchUp(
+            availabilityMessage: { passes += 1; return "This iPhone doesn't support Apple Intelligence." },
+            retryDelay: .milliseconds(20),
+            extract: { _, _ in calls += 1; return .empty }
+        )
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(passes == 1)
+
+        // An ineligible iPhone never becomes eligible. A retry on this guard
+        // re-arms itself on the next pass, so it would refetch every unstamped
+        // meeting once a delay for the whole foreground lifetime — on exactly
+        // the phones whose pending set can only grow.
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(passes == 1)
+        #expect(calls == 0)
+        // Bailing still has to leave the Brain tab an honest count.
+        #expect(catchUp.pendingCount == 1)
+    }
+
+    @Test func aPendingRetryStartsNothingWhileTheAppIsAway() async throws {
+        let context = try makeContext()
+        let meeting = meetingWithTranscript("A", createdAt: .now)
+        context.insert(meeting)
+        try context.save()
+
+        var calls = 0
+        let catchUp = KnowledgeCatchUp(
+            availabilityMessage: { nil },
+            retryDelay: .milliseconds(50),
+            extract: { _, _ in
+                calls += 1
+                throw LanguageModelSession.GenerationError.rateLimited(.init(debugDescription: "test"))
+            }
+        )
+        catchUp.nudge(context: context)
+        await catchUp.waitUntilIdle()
+        #expect(calls == 1)
+
+        // The scene left before the retry came due. Extraction is
+        // foreground-only, so the timer must not resurrect the loop there —
+        // waking a rate-limited model in the background is how the app gets
+        // suspended mid-request.
+        catchUp.pause()
+        try await Task.sleep(for: .milliseconds(200))
+        await catchUp.waitUntilIdle()
+        #expect(calls == 1)
+        #expect(meeting.knowledgeExtractedAt == nil)
     }
 }
