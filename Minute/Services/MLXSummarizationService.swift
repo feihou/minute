@@ -251,7 +251,22 @@ final class MLXSummarizationService: SummarizationEngine {
         guard !chunks.isEmpty else { throw SummarizerError.emptyTranscript }
 
         onProgress?("Loading the summary model…")
-        let container = try await loadedContainer()
+        // Outside the do/catch below, which only wraps generation: a corrupt
+        // or half-downloaded snapshot would otherwise reach the summary
+        // section as a raw MLX or URL error.
+        let container: ModelContainer
+        do {
+            container = try await loadedContainer()
+        } catch let error as SummarizerError {
+            throw error
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            Self.logger.error("Local summary model load failed: \(error.localizedDescription)")
+            throw SummarizerError.generationFailed(
+                "The local summary model couldn't be loaded. Delete and re-download it in Settings → Summary Model, or switch to Apple Intelligence."
+            )
+        }
         let contextBlock = SummarizationService.contextBlock(from: context).map { "\n\($0)\n" } ?? ""
 
         do {
