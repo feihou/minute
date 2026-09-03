@@ -24,6 +24,7 @@ struct MeetingListView: View {
     @Environment(\.modelContext) private var context
     @Environment(KnowledgeCatchUp.self) private var catchUp
     @Environment(MeetingJobs.self) private var jobs
+    @Environment(\.scenePhase) private var scenePhase
     @Query(sort: \Meeting.createdAt, order: .reverse) private var meetings: [Meeting]
 
     @State private var searchText = ""
@@ -49,6 +50,9 @@ struct MeetingListView: View {
     /// Why an otherwise-successful import came back without a transcript.
     @State private var transcriptionNote: String?
     @State private var deepLinkState = MeetingDeepLinkState()
+    /// The pending widget publish, cancelled and replaced by each new
+    /// snapshot so a burst of changes produces one write.
+    @State private var widgetPublishTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -165,7 +169,15 @@ struct MeetingListView: View {
             KnowledgeStore.reconcile(context: context)
         }
         .onChange(of: widgetSnapshot, initial: true) { _, snapshot in
-            WidgetSnapshotPublisher.publish(snapshot)
+            scheduleWidgetPublish(snapshot)
+        }
+        .onChange(of: scenePhase) {
+            // Leaving the app is the last moment a coalescing window can still
+            // finish — the process may be suspended before it expires — and it
+            // is also the moment the Home Screen widget is about to be looked
+            // at, so publish the current snapshot outright.
+            guard scenePhase != .active else { return }
+            publishWidgetSnapshotNow()
         }
         .onChange(of: meetings.map(\.id), initial: true) {
             resolvePendingMeetingDeepLink()
@@ -332,6 +344,27 @@ struct MeetingListView: View {
 
     private var widgetSnapshot: WidgetSnapshot {
         storeIsEphemeral ? .empty : WidgetSnapshotPublisher.snapshot(from: meetings)
+    }
+
+    /// Coalesces publishes into one write per window instead of one per
+    /// change. Each new snapshot cancels the pending publish and starts the
+    /// window again, so the last value in a burst is the one that lands.
+    private func scheduleWidgetPublish(_ snapshot: WidgetSnapshot) {
+        widgetPublishTask?.cancel()
+        widgetPublishTask = Task {
+            try? await Task.sleep(for: WidgetSnapshotPublisher.coalescingWindow)
+            guard !Task.isCancelled else { return }
+            WidgetSnapshotPublisher.publish(snapshot)
+        }
+    }
+
+    /// Publishes the current snapshot immediately, dropping any pending
+    /// window. `publish` is same-value suppressed, so calling this when
+    /// nothing changed costs one comparison and no WidgetKit reload.
+    private func publishWidgetSnapshotNow() {
+        widgetPublishTask?.cancel()
+        widgetPublishTask = nil
+        WidgetSnapshotPublisher.publish(widgetSnapshot)
     }
 
     // MARK: - Empty state
