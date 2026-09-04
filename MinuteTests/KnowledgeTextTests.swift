@@ -64,6 +64,18 @@ struct KnowledgeTextTests {
         let russian = "[0:03] Иван: я не собственник плана."
         #expect(!KnowledgeText.contains(transcript: russian, quote: "обственник плана"))
         #expect(KnowledgeText.contains(transcript: russian, quote: "собственник плана"))
+
+        // Arabic and Hebrew have no letter case but do separate words with
+        // spaces, so cutting into one of their words is the same abuse — the
+        // leniency belongs to unsegmented scripts, not to uncased ones.
+        // Both fixtures are written without harakat/niqqud so the diacritic
+        // fold `tokens` applies is a no-op and the fixture is what is matched.
+        let arabic = "[0:05] سارة: المدرسة جاهزة اليوم."
+        #expect(!KnowledgeText.contains(transcript: arabic, quote: "درسة جاهزة"))
+        #expect(KnowledgeText.contains(transcript: arabic, quote: "المدرسة جاهزة"))
+        let hebrew = "[0:07] דנה: בית הספר מוכן היום."
+        #expect(!KnowledgeText.contains(transcript: hebrew, quote: "ית הספר"))
+        #expect(KnowledgeText.contains(transcript: hebrew, quote: "בית הספר"))
     }
 
     @Test func fingerprintIsStablePerInstallAndEntity() {
