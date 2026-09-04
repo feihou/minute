@@ -81,4 +81,31 @@ struct SummaryFallbackTests {
         #expect(SummarizationService.chunkBudget(transcriptChars: 100_000, transcriptTokens: 1_000) == 12_000)
         #expect(SummarizationService.chunkBudget(transcriptChars: 100, transcriptTokens: 0) == TranscriptChunker.defaultMaxChars)
     }
+
+    // The MLX engine has this same pair (SummarizationEngineSettingsTests),
+    // so both names say which engine they cover — otherwise a failure report
+    // shows two identically-named tests and no way to tell them apart.
+    @Test("Notes that fold to nothing fail instead of blanking the meeting (Apple engine)")
+    func emptyFoldStillFails() {
+        // Every chunk prompt says "Empty if none", so explicitly empty arrays
+        // are an honest "nothing noteworthy in this part" — every part can
+        // succeed and still leave nothing to fold. Saving that would replace
+        // the meeting's Generate empty-state, the affordance the user needs
+        // to retry, with blank notes and no error anywhere.
+        #expect(throws: SummarizerError.self) {
+            _ = try SummarizationService().degradedSummary(from: [notes(), notes()])
+        }
+    }
+
+    @Test("A fold that rescued something is kept (Apple engine)")
+    func foldWithContentIsReturned() throws {
+        let summary = try SummarizationService().degradedSummary(from: [
+            notes(keyPoints: ["Pricing is behind"]),
+            notes(),
+        ])
+        #expect(summary.keyPoints == ["Pricing is behind"])
+        // No model wrote these, so the summary must not pretend otherwise.
+        #expect(summary.overview.isEmpty)
+        #expect(summary.suggestedTitle == nil)
+    }
 }

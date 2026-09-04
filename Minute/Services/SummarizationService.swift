@@ -300,10 +300,12 @@ struct SummarizationService {
                 // finish line degrades the summary (no overview, title, or
                 // template sections) instead of destroying it. Anything
                 // else — overflow, assets, rate limits — is retryable and
-                // keeps its user-facing error.
+                // keeps its user-facing error. A degrade that rescued
+                // nothing is not a summary: degradedSummary rethrows rather
+                // than save blank notes over the Generate empty-state.
                 switch error {
                 case .guardrailViolation, .refusal:
-                    summary = mechanicalSummary(from: notes)
+                    summary = try degradedSummary(from: notes)
                 default:
                     throw error
                 }
@@ -431,9 +433,10 @@ struct SummarizationService {
         // Mechanical condenses shrink the note count but not necessarily the
         // rendered size. A final prompt that no longer fits would overflow
         // and send the whole meeting back through the halving restart, so
-        // fall back to the code-level merge instead.
+        // fall back to the code-level merge instead — and, as above, only
+        // when that merge actually has something in it.
         if rendered(current).count > maxChars {
-            return mechanicalSummary(from: current)
+            return try degradedSummary(from: current)
         }
 
         let session = makeSession()
@@ -550,6 +553,43 @@ struct SummarizationService {
             suggestedTitle: nil,
             speakerPerspectives: normalizedPerspectives(combined.speakerPerspectives)
         )
+    }
+
+    /// What an empty fold reports. Not the refusal wording ("declined to
+    /// summarize"), which would be only half true on the overflow path: the
+    /// honest statement is that nothing came back and trying again is worth
+    /// it. Mirrors MLXSummarizationService.unreadableMessage, pointing at the
+    /// other engine the way that one points back here.
+    private static let emptySummaryMessage =
+        "The on-device model returned no notes for this meeting. Try again, or switch engines in Settings → Summary Model."
+
+    /// A summary with nothing in it at all must never be saved: it would
+    /// replace the meeting's Generate empty-state — the affordance the user
+    /// needs to retry — with blank notes and no error anywhere. Same guard,
+    /// and same field list, as MLXSummarizationService.validated, so both
+    /// engines refuse the same thing.
+    private static func validated(_ summary: MeetingSummary) throws -> MeetingSummary {
+        let hasContent = !summary.overview.isEmpty
+            || !summary.keyPoints.isEmpty
+            || !summary.decisions.isEmpty
+            || !summary.actionItems.isEmpty
+            || !summary.openQuestions.isEmpty
+            || (summary.sections ?? []).contains { !$0.items.isEmpty }
+            || summary.speakerPerspectives != nil
+        guard hasContent else {
+            throw SummarizerError.generationFailed(emptySummaryMessage)
+        }
+        return summary
+    }
+
+    /// The refusal/overflow rescue: the code-level fold, but only when it
+    /// actually rescued something. Every chunk prompt says "Empty if none",
+    /// so explicitly empty arrays are a valid answer and a fold of parts that
+    /// all succeeded can still come out with nothing in it. An instance
+    /// method, unlike MLX's static counterpart, because mechanicalSummary
+    /// here calls the instance normalizers.
+    func degradedSummary(from notes: [ChunkNotes]) throws -> MeetingSummary {
+        try Self.validated(mechanicalSummary(from: notes))
     }
 
     private func rendered(_ notes: [ChunkNotes]) -> String {
