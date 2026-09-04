@@ -105,4 +105,27 @@ struct KnowledgeExtractionServiceTests {
         let padded = KnowledgeCandidateDraft(entityName: "Sarah", entityKind: " person ", fact: "Sarah spoke", supportingQuote: "")
         #expect(KnowledgeExtractionService.candidate(from: padded, transcript: transcript)?.entityKind == .person)
     }
+
+    /// The Me page is a resolution decision this device makes, never a model
+    /// output. EntityKind declares a `.me` case, so a draft whose entityKind
+    /// reads "me" is one unchecked line away from minting a `.me` entity — and
+    /// every downstream exemption (KnowledgeIngest's review routing,
+    /// KnowledgeStore's orphan prune, which both skip `.me`) would then guard
+    /// the bogus one. Only the unknown-kind default was pinned before this.
+    @Test func aModelWrittenMeKindCollapsesToTopic() {
+        let transcript = "[00:01] Sarah: I will own the Atlas redesign."
+        let me = KnowledgeCandidateDraft(
+            entityName: "Atlas", entityKind: "me",
+            fact: "Atlas ships in Q3", supportingQuote: ""
+        )
+        #expect(KnowledgeExtractionService.candidate(from: me, transcript: transcript)?.entityKind == .topic)
+
+        // The trim-and-lowercase path reaches the same raw value, so it has to
+        // collapse there too — a model that writes " Me " must not slip past.
+        let padded = KnowledgeCandidateDraft(
+            entityName: "Atlas", entityKind: " Me ",
+            fact: "Atlas ships in Q3", supportingQuote: ""
+        )
+        #expect(KnowledgeExtractionService.candidate(from: padded, transcript: transcript)?.entityKind == .topic)
+    }
 }
