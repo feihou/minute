@@ -50,6 +50,13 @@ struct MeetingListView: View {
     /// Why an otherwise-successful import came back without a transcript.
     @State private var transcriptionNote: String?
     @State private var deepLinkState = MeetingDeepLinkState()
+    /// Set when a New Meeting deep link arrives while Settings is open, so the
+    /// swap happens across two updates instead of one. SwiftUI is unreliable at
+    /// replacing one sheet with another inside a single transaction: flipping
+    /// `showingSettings` false and `showingNewMeeting` true together can end
+    /// with neither sheet on screen, and the widget's New Meeting button then
+    /// looks like it did nothing at all.
+    @State private var presentNewMeetingAfterSettings = false
     /// The pending widget publish, cancelled and replaced by each new
     /// snapshot so a burst of changes produces one write.
     @State private var widgetPublishTask: Task<Void, Never>?
@@ -218,9 +225,18 @@ struct MeetingListView: View {
                 activeSession = RecordingSession(title: draftTitle, prefilledDefaultTitle: draftDefaultTitle)
             }
         }
-        .sheet(isPresented: $showingSettings) {
+        // `content:` spelled out rather than trailing: `.sheet` then takes two
+        // closure arguments, and SwiftLint's multiple_closures_with_trailing_closure
+        // — live in this repo, fatal under --strict — rejects the trailing form
+        // as soon as a second closure is passed.
+        .sheet(isPresented: $showingSettings, onDismiss: {
+            if presentNewMeetingAfterSettings {
+                presentNewMeetingAfterSettings = false
+                beginNewMeeting()
+            }
+        }, content: {
             SettingsView()
-        }
+        })
         .fullScreenCover(item: $activeSession) { session in
             RecordingView(session: session) { finished in
                 activeSession = nil
@@ -512,8 +528,17 @@ struct MeetingListView: View {
         case .ignore:
             break
         case .presentNewMeeting:
-            dismissPresentedSheets()
-            beginNewMeeting()
+            if showingSettings {
+                // Not in this update — see `presentNewMeetingAfterSettings`.
+                // dismissPresentedSheets() still runs: it is what takes
+                // Settings down, and the onDismiss above is what opens the
+                // sheet the link actually asked for.
+                presentNewMeetingAfterSettings = true
+                dismissPresentedSheets()
+            } else {
+                dismissPresentedSheets()
+                beginNewMeeting()
+            }
         case .openMeeting:
             dismissPresentedSheets()
             resolvePendingMeetingDeepLink()
