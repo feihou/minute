@@ -366,6 +366,36 @@ struct MeetingStoreTests {
         #expect(applied == [base.lastPathComponent, "meeting.m4a", "default.store"])
     }
 
+    /// The other half of F34/F35, and the reason the Recordings step sits in a
+    /// scope of its own: a failure reaching the audio — a stray file where the
+    /// directory belongs, a full disk — must cost only the audio. The store
+    /// files still get the class, because those are what the locked-phone reads
+    /// need just as much. `dataProtectionKeepsGoingAfterOneTargetFails` throws
+    /// from the applier, which is the per-target loop; this is the step before
+    /// it, and collapsing its do/catch back into the outer one would stay green
+    /// without this test.
+    @Test func dataProtectionStillStampsTheStoreWhenTheRecordingsStepFails() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("protection-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        // A regular file where the directory belongs. `createDirectory` with
+        // `withIntermediateDirectories: true` tolerates an existing *directory*
+        // and throws on this — the first statement of the scoped step.
+        try Data("not a directory".utf8).write(to: base.appendingPathComponent("Recordings"))
+        try Data("db".utf8).write(to: base.appendingPathComponent("default.store"))
+
+        var applied: [String] = []
+        let succeeded = MeetingStore.applyDataProtection(base: base, appGroup: nil) { url, _ in
+            applied.append(url.lastPathComponent)
+        }
+
+        // Reported as a failure — the audio really did not get the class — and
+        // the store files were stamped anyway.
+        #expect(!succeeded)
+        #expect(applied == [base.lastPathComponent, "default.store"])
+    }
+
     @Test func ephemeralModeRoutesAudioToTemporaryDirectoryAndWipesIt() throws {
         MeetingStore.useEphemeralStorage = true
         defer { MeetingStore.useEphemeralStorage = false }
