@@ -84,6 +84,43 @@ struct KnowledgeExtractionServiceTests {
         )
     }
 
+    /// The substring probe is for scripts that write no inter-word spaces.
+    /// Latin writes them, so a bare substring probe there is noise, not a fix:
+    /// the roster is uncapped and carries aliases and topic entities, so short
+    /// rows are expected, and "Tom" sits inside "tomorrow", "PR" inside
+    /// "approve", "SLA" inside "Slack". Each such hit would rank as a name
+    /// spoken in full, and twenty of them would fill hintCap — the eviction
+    /// this function's ordering exists to prevent — under a prompt that tells
+    /// the model to reuse the spellings it is given.
+    @Test func aLatinNameBuriedInsideALongerWordIsNotHinted() {
+        let chunk = "[00:02] Tomorrow the same team will approve the estimate; the Atlas quality guide is available in Slack, and the program build ships."
+        let buried = ["Tom", "Sam", "PR", "Tim", "AI", "SLA", "UI", "Ali"]
+        for name in buried {
+            #expect(KnowledgeExtractionService.hintNames(for: chunk, from: [name]).isEmpty)
+        }
+        // Spoken in full, the same script still matches — the gate narrows the
+        // new probe, it does not touch the two the function already had.
+        #expect(KnowledgeExtractionService.hintNames(for: chunk, from: ["Slack"]) == ["Slack"])
+        // And the buried rows do not outrank, or crowd out, the roster name
+        // whose every long token was actually spoken.
+        #expect(
+            KnowledgeExtractionService.hintNames(for: chunk, from: buried + ["Atlas Program"]) == ["Atlas Program"]
+        )
+    }
+
+    /// The other half of the same script problem: a Japanese full name is
+    /// commonly written with a space between family and given name, while the
+    /// sentence that says it has none. The name is present in full, just
+    /// without the delimiter its script does not write, so it is matched on
+    /// its characters rather than on a boundary the chunk cannot supply.
+    @Test func anUnspacedChunkStillMatchesARosterNameWrittenWithASpace() {
+        let chunk = "[00:20] 明日山田太郎が発表します。"
+        #expect(KnowledgeExtractionService.hintNames(for: chunk, from: ["山田 太郎"]) == ["山田 太郎"])
+        // Order still has to hold: this is a contiguous match, not a bag of
+        // characters, so the reversed name is a different name.
+        #expect(KnowledgeExtractionService.hintNames(for: chunk, from: ["太郎 山田"]).isEmpty)
+    }
+
     @Test func candidateValidatesQuoteAndMapsKind() {
         let transcript = "[00:01] Sarah: I will own the Atlas redesign."
         let good = KnowledgeCandidateDraft(
