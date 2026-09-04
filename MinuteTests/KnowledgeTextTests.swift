@@ -47,6 +47,17 @@ struct KnowledgeTextTests {
         // Whole tokens in order still do, anywhere in the sentence.
         #expect(KnowledgeText.contains(transcript: transcript, quote: "the atlas plan"))
         #expect(KnowledgeText.contains(transcript: transcript, quote: "Priya owns the mercury plan"))
+
+        // Unspaced scripts have no token boundary for a fragment to land on:
+        // ideographs are alphanumerics, so a whole Chinese clause is one token
+        // and a verbatim fragment of it must still validate.
+        let chinese = "[00:12] 今天张伟负责发布 Atlas。"
+        #expect(KnowledgeText.contains(transcript: chinese, quote: "张伟负责发布"))
+        #expect(
+            KnowledgeText.contains(transcript: "[00:30] 我下周负责atlas的发布。", quote: "负责atlas的发布")
+        )
+        // Words the transcript never says are still refused.
+        #expect(!KnowledgeText.contains(transcript: chinese, quote: "李娜"))
     }
 
     @Test func fingerprintIsStablePerInstallAndEntity() {

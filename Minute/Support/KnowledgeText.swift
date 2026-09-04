@@ -68,12 +68,38 @@ enum KnowledgeText {
     /// a token boundary: a quote that only matches by cutting into a word
     /// ("own the atlas plan" inside "I disown the atlas plan") would let the
     /// model ground a fact in text the transcript does not say.
+    ///
+    /// Unspaced scripts have no such boundary to land on. `tokens` splits on
+    /// non-alphanumerics and ideographs are alphanumerics, so a whole Chinese
+    /// clause is a single token, and the padded form would validate a quote
+    /// only when it spans complete punctuation-delimited clauses — routing
+    /// every ordinary fragment to `.suggested` with no sourceQuote. So a
+    /// second pass accepts an unpadded occurrence whose neighbouring
+    /// characters are not ASCII alphanumerics: that is still a word boundary
+    /// wherever words are spelled out, so "own the atlas plan" stays refused
+    /// inside "disown", while a verbatim CJK fragment validates.
     static func contains(transcript: String, quote: String) -> Bool {
         let q = tokens(quote).joined(separator: " ")
         guard !q.isEmpty else { return false }
-        let needle = " " + q + " "
-        let haystack = " " + tokens(transcript).joined(separator: " ") + " "
-        return haystack.contains(needle)
+        let haystack = tokens(transcript).joined(separator: " ")
+        if (" " + haystack + " ").contains(" " + q + " ") { return true }
+        // Every occurrence, not just the first: the one that cuts into a word
+        // can precede the one that does not.
+        var searchFrom = haystack.startIndex
+        while let found = haystack.range(of: q, range: searchFrom..<haystack.endIndex) {
+            let before = found.lowerBound == haystack.startIndex
+                ? nil
+                : haystack[haystack.index(before: found.lowerBound)]
+            let after = found.upperBound == haystack.endIndex ? nil : haystack[found.upperBound]
+            if !isASCIIAlphanumeric(before), !isASCIIAlphanumeric(after) { return true }
+            searchFrom = haystack.index(after: found.lowerBound)
+        }
+        return false
+    }
+
+    private static func isASCIIAlphanumeric(_ character: Character?) -> Bool {
+        guard let character else { return false }
+        return character.isASCII && (character.isLetter || character.isNumber)
     }
 
     /// Salted SHA-256 of the normalized text + entity ID — all a rejected
