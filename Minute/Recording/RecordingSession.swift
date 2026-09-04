@@ -93,26 +93,37 @@ final class RecordingSession: Identifiable {
     /// has no way to be made to do, so that branch is unreachable otherwise.
     private let deleteMeeting: @MainActor (Meeting, ModelContext) -> Bool
 
-    /// `transcription` is injectable for tests; it defaults to nil rather than
-    /// to `TranscriptionEngines.current()` because a default argument is
-    /// evaluated outside this type's main-actor isolation.
+    /// How microphone permission is asked for — `AudioRecorder.requestPermission`
+    /// in the app. Injectable because a denial is the only thing that produces
+    /// `canOpenSettings: true`, the flag that puts the Open Settings button on
+    /// the recording screen, and a real system prompt can't be answered from a
+    /// test. Unlike the rest of the recording path this branch needs no audio
+    /// hardware: it returns before the recorder is touched.
+    private let requestPermission: @Sendable () async -> Bool
+
+    /// `transcription` and `requestPermission` are injectable for tests; both
+    /// default to nil rather than to their real implementations because a
+    /// default argument is evaluated outside this type's main-actor isolation
+    /// and both real values are main-actor isolated.
     init(
         title: String,
         prefilledDefaultTitle: String = RecordingSession.defaultTitle(),
         transcription: (any TranscriptionEngine)? = nil,
-        deleteMeeting: @escaping @MainActor (Meeting, ModelContext) -> Bool = MeetingStore.delete
+        deleteMeeting: @escaping @MainActor (Meeting, ModelContext) -> Bool = MeetingStore.delete,
+        requestPermission: (@Sendable () async -> Bool)? = nil
     ) {
         self.title = title
         self.prefilledDefaultTitle = prefilledDefaultTitle
         self.transcription = transcription ?? TranscriptionEngines.current()
         self.deleteMeeting = deleteMeeting
+        self.requestPermission = requestPermission ?? { await AudioRecorder.requestPermission() }
     }
 
     func start() async {
         guard phase == .idle else { return }
         phase = .preparing
 
-        guard await AudioRecorder.requestPermission() else {
+        guard await requestPermission() else {
             phase = .failed(
                 "Microphone access is off. Enable it in Settings › Privacy & Security › Microphone.",
                 canOpenSettings: true
