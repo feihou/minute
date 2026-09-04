@@ -63,10 +63,17 @@ enum KnowledgeText {
 
     /// Whether `quote` appears in `transcript`, ignoring case, diacritics,
     /// punctuation, and whitespace runs — the sourceQuote validation gate.
+    ///
+    /// Both sides are padded with spaces so a match can only start and end on
+    /// a token boundary: a quote that only matches by cutting into a word
+    /// ("own the atlas plan" inside "I disown the atlas plan") would let the
+    /// model ground a fact in text the transcript does not say.
     static func contains(transcript: String, quote: String) -> Bool {
         let q = tokens(quote).joined(separator: " ")
         guard !q.isEmpty else { return false }
-        return tokens(transcript).joined(separator: " ").contains(q)
+        let needle = " " + q + " "
+        let haystack = " " + tokens(transcript).joined(separator: " ") + " "
+        return haystack.contains(needle)
     }
 
     /// Salted SHA-256 of the normalized text + entity ID — all a rejected

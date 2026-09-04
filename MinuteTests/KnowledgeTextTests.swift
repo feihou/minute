@@ -40,6 +40,15 @@ struct KnowledgeTextTests {
         #expect(!KnowledgeText.contains(transcript: transcript, quote: ""))
     }
 
+    @Test func quoteValidationIsTokenAligned() {
+        let transcript = "[0:12] Sarah: I disown the atlas plan, and Priya owns the mercury plan."
+        // A quote that only matches by cutting into a word must not validate.
+        #expect(!KnowledgeText.contains(transcript: transcript, quote: "own the atlas plan"))
+        // Whole tokens in order still do, anywhere in the sentence.
+        #expect(KnowledgeText.contains(transcript: transcript, quote: "the atlas plan"))
+        #expect(KnowledgeText.contains(transcript: transcript, quote: "Priya owns the mercury plan"))
+    }
+
     @Test func fingerprintIsStablePerInstallAndEntity() {
         let entity = UUID()
         let a = KnowledgeText.fingerprint("Alice leads Atlas", entityID: entity)
