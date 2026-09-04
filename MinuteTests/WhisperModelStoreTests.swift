@@ -6,6 +6,59 @@ import Testing
 /// variant with partial files must be deletable without ever being offered
 /// as a usable model.
 struct WhisperModelStoreTests {
+    // MARK: Fixture variants
+    //
+    // A fixture that exercises the tokenizer half of the store has to name a
+    // real Whisper SIZE — tokenizerVariant matches by substring, and a name
+    // that maps to no size makes tokenizerFolder nil, which skips exactly the
+    // code under test. But the tokenizer folder is per size, not per variant:
+    // "openai_whisper-small-test-<UUID>" resolves to the very folder the
+    // catalog's Small model uses, so on a machine that has Small downloaded
+    // the test reads the user's real tokenizer AND its `delete` wipes it,
+    // leaving the app claiming Small "needs a small one-time update". Two
+    // fixtures sharing a size collide with each other the same way, because
+    // this suite is not .serialized and Swift Testing runs its tests in
+    // parallel. fixtureVariantsOwnTheirTokenizerFolders holds both rules.
+
+    /// tokenizerIsRequiredForADownloadedModel
+    private static let downloadedFixture = "openai_whisper-medium-test"
+    /// modelWithoutItsTokenizerNeedsAnUpdate. NOT "small": that is a catalog
+    /// size, and this test both reads and deletes the tokenizer folder.
+    private static let tokenizerUpdateFixture = "openai_whisper-large-v2-test"
+    /// tokenizerOnlyLeftoverCountsAsLocalData
+    private static let leftoverFixture = "openai_whisper-tiny-test"
+    /// deleteRemovesTheTokenizer. NOT "tiny": leftoverFixture owns that size,
+    /// and this test deletes the folder while that one is asserting on it.
+    private static let deleteFixture = "openai_whisper-base.en-test"
+
+    private static let fixtureVariants = [
+        downloadedFixture, tokenizerUpdateFixture, leftoverFixture, deleteFixture,
+    ]
+
+    /// A variant name under one of those fixtures, unique per run so two
+    /// executions can never share a model folder.
+    private static func fixture(_ base: String) -> String {
+        "\(base)-\(UUID().uuidString)"
+    }
+
+    @Test("No fixture shares a tokenizer folder with a catalog model or another fixture")
+    func fixtureVariantsOwnTheirTokenizerFolders() throws {
+        let catalogFolders = Set(WhisperModelCatalog.models.compactMap {
+            WhisperModelStore.tokenizerFolder(for: $0.variant)?.path
+        })
+        // Every catalog model maps to a size, and to a folder of its own.
+        #expect(catalogFolders.count == WhisperModelCatalog.models.count)
+
+        var fixtureFolders: Set<String> = []
+        for base in Self.fixtureVariants {
+            let folder = try #require(WhisperModelStore.tokenizerFolder(for: Self.fixture(base))).path
+            // A fixture must never touch a folder a real download owns…
+            #expect(!catalogFolders.contains(folder))
+            // …nor one another fixture owns, since they run in parallel.
+            #expect(fixtureFolders.insert(folder).inserted)
+        }
+    }
+
     @Test("Partial downloads are deletable but never report as downloaded")
     func partialDownloadLifecycle() throws {
         let variant = "test-variant-\(UUID().uuidString)"
@@ -60,7 +113,7 @@ struct WhisperModelStoreTests {
     func tokenizerIsRequiredForADownloadedModel() throws {
         // A variant name that maps to a size the catalog never offers, so a
         // real download on this machine can't collide with the fixture.
-        let variant = "openai_whisper-medium-test-\(UUID().uuidString)"
+        let variant = Self.fixture(Self.downloadedFixture)
         defer { WhisperModelStore.delete(variant) }
 
         let folder = WhisperModelStore.folder(for: variant)
@@ -82,7 +135,7 @@ struct WhisperModelStoreTests {
 
     @Test("A model from before the tokenizer counted needs an update, not a download")
     func modelWithoutItsTokenizerNeedsAnUpdate() throws {
-        let variant = "openai_whisper-small-test-\(UUID().uuidString)"
+        let variant = Self.fixture(Self.tokenizerUpdateFixture)
         defer { WhisperModelStore.delete(variant) }
 
         // Nothing on disk: this is a plain "not downloaded", and offering a
@@ -110,7 +163,7 @@ struct WhisperModelStoreTests {
 
     @Test("A leftover tokenizer folder keeps the model deletable")
     func tokenizerOnlyLeftoverCountsAsLocalData() throws {
-        let variant = "openai_whisper-tiny-test-\(UUID().uuidString)"
+        let variant = Self.fixture(Self.leftoverFixture)
         defer { WhisperModelStore.delete(variant) }
 
         let tokenizer = try #require(WhisperModelStore.tokenizerFolder(for: variant))
@@ -126,7 +179,7 @@ struct WhisperModelStoreTests {
 
     @Test("Deleting a model removes its tokenizer too")
     func deleteRemovesTheTokenizer() throws {
-        let variant = "openai_whisper-tiny-test-\(UUID().uuidString)"
+        let variant = Self.fixture(Self.deleteFixture)
         defer { WhisperModelStore.delete(variant) }
 
         let tokenizer = try #require(WhisperModelStore.tokenizerFolder(for: variant))
