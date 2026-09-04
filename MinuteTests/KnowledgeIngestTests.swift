@@ -57,6 +57,36 @@ struct KnowledgeIngestTests {
         #expect(try context.fetch(FetchDescriptor<KnowledgeEntity>()).count == 1)
     }
 
+    /// Two identical candidates from one meeting. The dedup scan reads
+    /// `entity.facts`, and for a fact inserted earlier in this same apply()
+    /// call that relationship is populated only by SwiftData's inverse-update
+    /// before the save — an unverified framework assumption the whole loop
+    /// rests on. The closest existing test gives its two candidates different
+    /// fact texts, so it exercises the `known` entity array, not `entity.facts`.
+    /// If the assumption ever failed, the entity page would show one claim
+    /// twice.
+    @Test func twoIdenticalCandidatesInOneMeetingLandOnce() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "m")
+        context.insert(meeting)
+
+        let result = try KnowledgeIngest.apply(
+            [candidate("Sarah", "Sarah leads Atlas"), candidate("Sarah", "Sarah leads Atlas")],
+            from: meeting, context: context
+        )
+
+        #expect(result.suggested == 1)
+        #expect(result.duplicatesDropped == 1)
+        // Not auto-captured either: on the second pass through the loop the
+        // entity is no longer new (`resolve` finds it in `known`), and a
+        // quoted candidate on a known entity is exactly the shape that earns
+        // auto-capture. Dropping it as a repeat is the only thing standing
+        // between a re-stated claim and a row nobody reviewed.
+        #expect(result.autoCaptured == 0)
+        #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).count == 1)
+        #expect(try context.fetch(FetchDescriptor<KnowledgeEntity>()).count == 1)
+    }
+
     @Test func knownEntityHighConfidenceFactIsAutoCaptured() throws {
         let context = try makeContext()
         let meeting = Meeting(title: "m")

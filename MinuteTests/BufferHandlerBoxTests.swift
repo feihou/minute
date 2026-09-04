@@ -7,6 +7,12 @@ struct BufferHandlerBoxTests {
     /// One buffer of `seconds` of audio, marked in its first sample so the
     /// test can identify it after the box has copied it.
     private func buffer(marker: Float, seconds: Double = 0.1, sampleRate: Double = 8_000) -> AVAudioPCMBuffer {
+        Self.makeBuffer(marker: marker, seconds: seconds, sampleRate: sampleRate)
+    }
+
+    /// Static so the re-entrancy test below can build a buffer from inside a
+    /// `@Sendable` handler without capturing the test struct.
+    private static func makeBuffer(marker: Float, seconds: Double = 0.1, sampleRate: Double = 8_000) -> AVAudioPCMBuffer {
         let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
         let frames = AVAudioFrameCount(sampleRate * seconds)
         let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
@@ -111,5 +117,39 @@ struct BufferHandlerBoxTests {
         // The new recording's lead-in is held and replayed; the old
         // recording's buffer is gone.
         #expect(received.withLock { $0 } == [2])
+    }
+
+    /// The interlock that makes the ordering claim in the box's doc comment
+    /// true. A live buffer arriving *during* the replay has to queue behind the
+    /// rest of the lead-in: `install` sets `isDraining`, and while it is set
+    /// `offer` enqueues instead of delivering. Every other test here is
+    /// single-threaded with the drain already finished before the next offer,
+    /// so deleting `isDraining` leaves them green. Re-entering `offer` from
+    /// inside the handler is the tap thread delivering mid-replay, without a
+    /// second thread to make it flaky: without the interlock the fourth buffer
+    /// is delivered nested inside the first delivery, i.e. [1, 4, 2, 3].
+    @Test func aBufferOfferedDuringTheReplayQueuesBehindTheRestOfTheLeadIn() {
+        let box = BufferHandlerBox()
+        box.offer(buffer(marker: 1))
+        box.offer(buffer(marker: 2))
+        box.offer(buffer(marker: 3))
+
+        let received = OSAllocatedUnfairLock(initialState: [Float]())
+        let liveBufferOffered = OSAllocatedUnfairLock(initialState: false)
+        box.install { buffer in
+            received.withLock { $0.append(buffer.floatChannelData![0][0]) }
+            let isFirstDelivery = liveBufferOffered.withLock { offered -> Bool in
+                guard !offered else { return false }
+                offered = true
+                return true
+            }
+            if isFirstDelivery {
+                box.offer(Self.makeBuffer(marker: 4))
+            }
+        }
+
+        #expect(received.withLock { $0 } == [1, 2, 3, 4])
+        // Drop the handler so the box no longer holds a closure that holds it.
+        box.install(nil)
     }
 }

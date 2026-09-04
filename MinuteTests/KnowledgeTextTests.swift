@@ -40,6 +40,32 @@ struct KnowledgeTextTests {
         #expect(!KnowledgeText.contains(transcript: transcript, quote: ""))
     }
 
+    @Test func quoteValidationIsTokenAligned() {
+        let transcript = "[0:12] Sarah: I disown the atlas plan, and Priya owns the mercury plan."
+        // A quote that only matches by cutting into a word must not validate.
+        #expect(!KnowledgeText.contains(transcript: transcript, quote: "own the atlas plan"))
+        // Whole tokens in order still do, anywhere in the sentence.
+        #expect(KnowledgeText.contains(transcript: transcript, quote: "the atlas plan"))
+        #expect(KnowledgeText.contains(transcript: transcript, quote: "Priya owns the mercury plan"))
+
+        // Unspaced scripts have no token boundary for a fragment to land on:
+        // ideographs are alphanumerics, so a whole Chinese clause is one token
+        // and a verbatim fragment of it must still validate.
+        let chinese = "[00:12] 今天张伟负责发布 Atlas。"
+        #expect(KnowledgeText.contains(transcript: chinese, quote: "张伟负责发布"))
+        #expect(
+            KnowledgeText.contains(transcript: "[00:30] 我下周负责atlas的发布。", quote: "负责atlas的发布")
+        )
+        // Words the transcript never says are still refused.
+        #expect(!KnowledgeText.contains(transcript: chinese, quote: "李娜"))
+
+        // Cyrillic spells words out, so the cut-into-a-word rule has to hold
+        // there too — the fragment leniency is only for unspaced scripts.
+        let russian = "[0:03] Иван: я не собственник плана."
+        #expect(!KnowledgeText.contains(transcript: russian, quote: "обственник плана"))
+        #expect(KnowledgeText.contains(transcript: russian, quote: "собственник плана"))
+    }
+
     @Test func fingerprintIsStablePerInstallAndEntity() {
         let entity = UUID()
         let a = KnowledgeText.fingerprint("Alice leads Atlas", entityID: entity)

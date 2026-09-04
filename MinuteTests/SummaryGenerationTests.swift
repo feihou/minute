@@ -70,6 +70,24 @@ struct SummaryGenerationTests {
         func transcribe(file: AVAudioFile) async throws -> [TranscriptSegment] { [] }
     }
 
+    /// An engine that recognizes one line. This file's only fixture for a job
+    /// that actually succeeds — every other one fails, stops, or produces
+    /// nothing, so nothing here ever reached the tail of `start`'s do block.
+    @MainActor
+    private final class OneSegmentTranscriptionEngine: TranscriptionEngine {
+        var availability: TranscriptionAvailability = .available
+        var volatileText = ""
+        var segments: [TranscriptSegment] = []
+        var timestampOffset: TimeInterval = 0
+        func prepare() async {}
+        func start(inputFormat: AVAudioFormat) async -> (@Sendable (AVAudioPCMBuffer) -> Void)? { nil }
+        func finish() async -> [TranscriptSegment] { [] }
+        func cancel() async {}
+        func transcribe(file: AVAudioFile) async throws -> [TranscriptSegment] {
+            [TranscriptSegment(text: "Atlas ships in Q3.", start: 0, end: 1)]
+        }
+    }
+
     @Test func failedGenerationClearsInFlightStateAndRecordsError() async throws {
         let (container, meeting) = try makeMeeting()
         defer { _ = container }
@@ -219,8 +237,10 @@ struct SummaryGenerationTests {
 
         var started = 0
         var ended = 0
+        var changed = 0
         jobs.onWorkStarted = { started += 1 }
         jobs.onWorkEnded = { ended += 1 }
+        jobs.onContentChanged = { changed += 1 }
 
         // No transcript: the summary throws. Nothing else speaks for this job
         // — onContentChanged fires only on success — so the catch-up pause it
@@ -230,6 +250,10 @@ struct SummaryGenerationTests {
 
         #expect(started == 1)
         #expect(ended == 1)
+        // The other half of that sentence, and the whole basis of the catch-up
+        // loop's "only success nudges" reasoning: a failed job wrote nothing,
+        // so there is nothing new for the Brain to read.
+        #expect(changed == 0)
         #expect(jobs.error(.summary, for: meeting) != nil)
     }
 
@@ -242,7 +266,9 @@ struct SummaryGenerationTests {
         let jobs = MeetingJobs()
 
         var ended = 0
+        var changed = 0
         jobs.onWorkEnded = { ended += 1 }
+        jobs.onContentChanged = { changed += 1 }
 
         let engine = ParkedTranscriptionEngine()
         let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
@@ -257,6 +283,31 @@ struct SummaryGenerationTests {
         await task?.value
 
         #expect(ended == 1)
+        // A cancelled job left the transcript exactly as it was.
+        #expect(changed == 0)
+        #expect(!jobs.isBusy(meeting))
+    }
+
+    @Test func aSuccessfulJobAnnouncesThatTheContentChanged() async throws {
+        let (container, meeting) = try makeMeeting()
+        defer { _ = container }
+        let source = try makeWavFixture()
+        defer { try? FileManager.default.removeItem(at: source) }
+        let jobs = MeetingJobs()
+
+        var changed = 0
+        var ended = 0
+        jobs.onContentChanged = { changed += 1 }
+        jobs.onWorkEnded = { ended += 1 }
+
+        await jobs.retranscribe(meeting, audioAt: source, transcription: OneSegmentTranscriptionEngine())?.value
+
+        // The knowledge catch-up loop reads this as "there is new text to
+        // extract" — exactly once, for a job that really wrote something.
+        #expect(changed == 1)
+        #expect(ended == 1)
+        #expect(meeting.segments.count == 1)
+        #expect(jobs.error(.transcription, for: meeting) == nil)
         #expect(!jobs.isBusy(meeting))
     }
 }

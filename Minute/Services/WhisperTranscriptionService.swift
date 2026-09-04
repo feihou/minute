@@ -86,9 +86,27 @@ enum WhisperModelStore {
 
     /// Whisper sizes, most specific name first: "large-v3" must win over
     /// "large", and "base.en" over "base".
-    private static let tokenizerVariants: [ModelVariant] = [
-        .largev3, .largev2, .large, .mediumEn, .medium, .smallEn, .small, .baseEn, .base, .tinyEn, .tiny,
-    ]
+    ///
+    /// Derived from WhisperKit's own enum rather than listed by hand, because
+    /// a hand-written list fails WRONG rather than open. A catalog row added
+    /// later — say "openai_whisper-large-v4-…" — contains "large", so a stale
+    /// list answers .large, hasTokenizer checks the whisper-large folder,
+    /// isDownloaded reports true, and the load quietly gets the wrong
+    /// tokenizer with no error path anywhere.
+    ///
+    /// Longest description first IS the most-specific-first rule: a size's
+    /// name can only be contained in a strictly longer one, so the longest
+    /// match is always the most specific. Ties are between distinct
+    /// equal-length names, which cannot contain each other, so `sorted`
+    /// making no promise about their order is harmless.
+    ///
+    /// Computed, not stored: eleven cases sort in nanoseconds, and a stored
+    /// static of a public enum from another module (ModelVariant is not
+    /// Sendable) is a concurrency-checking question this simply doesn't have.
+    /// Internal rather than private so the derivation itself is testable.
+    static var tokenizerVariants: [ModelVariant] {
+        ModelVariant.allCases.sorted { $0.description.count > $1.description.count }
+    }
 
     /// The Whisper size a catalog folder name belongs to
     /// ("openai_whisper-large-v3-v20240930_626MB" → .largev3), or nil when
@@ -455,6 +473,10 @@ final class WhisperTranscriptionService: TranscriptionEngine {
         // audio is purged from the tail, so adding the current pass's
         // segments double-counts nothing.
         var decodedSpeechSeconds: TimeInterval = 0
+        // Failed passes since the last good one. Consecutive, not total: a
+        // decoder that hiccups once an hour is fine, one that fails every
+        // pass is dead.
+        var consecutiveFailures = 0
 
         while !feed.isStopped, !Task.isCancelled {
             let snapshot = feed.snapshot()
@@ -494,6 +516,7 @@ final class WhisperTranscriptionService: TranscriptionEngine {
                 // below, so the final pass only re-decodes the shrunken tail
                 // instead of repeating this whole pass's work.
                 guard !Task.isCancelled else { break }
+                consecutiveFailures = 0
                 let mapped = Self.mapSegments(results, timeBase: timeBase)
                 // Pin only on evidence: the same detection twice in a row and
                 // at least five seconds of speech actually decoded. A wrong
@@ -528,7 +551,47 @@ final class WhisperTranscriptionService: TranscriptionEngine {
             } catch is CancellationError {
                 break
             } catch {
-                Self.logger.error("Live whisper pass failed: \(error.localizedDescription)")
+                consecutiveFailures += 1
+                Self.logger.error("Live whisper pass failed (\(consecutiveFailures) in a row): \(error.localizedDescription)")
+                if Self.liveLoopShouldStop(consecutiveFailures: consecutiveFailures) {
+                    // Losing live results is non-fatal for the recording — but
+                    // retrying forever left the panel showing stale segments
+                    // (or "Listening…") for the rest of the meeting while the
+                    // saved transcript stopped mid-sentence. Say it where the
+                    // user is looking, and stop burning a decode every half
+                    // second. `segments` keeps everything confirmed so far,
+                    // and `volatileText` is deliberately left alone: unlike
+                    // the Apple engine, finish() promotes it into a saved
+                    // segment (promoteVolatileText), so clearing it here would
+                    // throw away the last thing heard.
+                    //
+                    // Guarded exactly as the Apple engine guards its own write
+                    // (TranscriptionService.swift:143-144): only over
+                    // "everything is fine", and never onto a session the user
+                    // discarded — cancel() stops the feed and cancels the
+                    // task, and a non-CancellationError thrown out of the
+                    // decode that raced it must not stamp "Live transcription
+                    // stopped" on a recording that is already gone.
+                    if !Task.isCancelled, availability == .available {
+                        availability = Self.liveStoppedAvailability(error)
+                    }
+                    // Retire the feed for the same reason the model-load
+                    // failure above does: the recorder's tap holds it strongly
+                    // and keeps appending for the rest of the meeting, and the
+                    // 5-minute cap that bounds that lives INSIDE this `while`
+                    // — leaving the loop removes the only thing purging it, so
+                    // ~230 MB/hour of Float32 samples would pile up with
+                    // nobody left to decode them, behind a decoder that just
+                    // failed three times in a row. stop() gates append only:
+                    // the final tail pass below still reads snapshot(), and
+                    // finish()'s own liveFeed?.stop() is idempotent. The saved
+                    // audio file is the recorder's, not the feed's, so
+                    // re-transcribing after saving still works.
+                    feed.stop()
+                    // `defer { gate.open() }` at the top of this method
+                    // releases any finisher waiting on the loop.
+                    break
+                }
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
         }
@@ -558,7 +621,31 @@ final class WhisperTranscriptionService: TranscriptionEngine {
     /// crossed the old threshold on its very first decoded second.
     static let languagePinMinimumSpeechSeconds: TimeInterval = 5
     /// The most unconfirmed audio the live feed retains (5 minutes ≈ 19 MB).
+    /// Enforced inside the decode loop, so any exit from that loop has to
+    /// retire the feed rather than leave it growing unbounded.
     private static let maximumTailSamples = 5 * 60 * WhisperKit.sampleRate
+
+    /// Consecutive failed decode passes that end the live loop. One failure
+    /// is usually transient — a decode that raced a purge, a moment of memory
+    /// pressure — and costs half a second to retry, so a single bad pass must
+    /// not cost the meeting its live transcript. Three in a row is a decoder
+    /// that is not coming back, and retrying it silently for the rest of the
+    /// recording is exactly the failure this replaces.
+    static let liveFailureLimit = 3
+
+    /// Whether `consecutiveFailures` failed passes should end the loop.
+    static func liveLoopShouldStop(consecutiveFailures: Int) -> Bool {
+        consecutiveFailures >= liveFailureLimit
+    }
+
+    /// What the recording screen shows once the live decoder has given up.
+    /// Deliberately the Apple engine's own sentence rather than a second
+    /// wording: the recording is unaffected on both engines, and a user
+    /// watching the panel has to be told that in the same breath as what
+    /// stopped, or they assume the meeting is being lost and stop it.
+    static func liveStoppedAvailability(_ error: any Error) -> TranscriptionAvailability {
+        .unavailable(TranscriptionService.liveStoppedMessage(error))
+    }
 
     /// Seconds of speech in a pass's segments — the measure the language pin
     /// waits on.

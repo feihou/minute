@@ -93,26 +93,37 @@ final class RecordingSession: Identifiable {
     /// has no way to be made to do, so that branch is unreachable otherwise.
     private let deleteMeeting: @MainActor (Meeting, ModelContext) -> Bool
 
-    /// `transcription` is injectable for tests; it defaults to nil rather than
-    /// to `TranscriptionEngines.current()` because a default argument is
-    /// evaluated outside this type's main-actor isolation.
+    /// How microphone permission is asked for — `AudioRecorder.requestPermission`
+    /// in the app. Injectable because a denial is the only thing that produces
+    /// `canOpenSettings: true`, the flag that puts the Open Settings button on
+    /// the recording screen, and a real system prompt can't be answered from a
+    /// test. Unlike the rest of the recording path this branch needs no audio
+    /// hardware: it returns before the recorder is touched.
+    private let requestPermission: @Sendable () async -> Bool
+
+    /// `transcription` and `requestPermission` are injectable for tests; both
+    /// default to nil rather than to their real implementations because a
+    /// default argument is evaluated outside this type's main-actor isolation
+    /// and both real values are main-actor isolated.
     init(
         title: String,
         prefilledDefaultTitle: String = RecordingSession.defaultTitle(),
         transcription: (any TranscriptionEngine)? = nil,
-        deleteMeeting: @escaping @MainActor (Meeting, ModelContext) -> Bool = MeetingStore.delete
+        deleteMeeting: @escaping @MainActor (Meeting, ModelContext) -> Bool = MeetingStore.delete,
+        requestPermission: (@Sendable () async -> Bool)? = nil
     ) {
         self.title = title
         self.prefilledDefaultTitle = prefilledDefaultTitle
         self.transcription = transcription ?? TranscriptionEngines.current()
         self.deleteMeeting = deleteMeeting
+        self.requestPermission = requestPermission ?? { await AudioRecorder.requestPermission() }
     }
 
     func start() async {
         guard phase == .idle else { return }
         phase = .preparing
 
-        guard await AudioRecorder.requestPermission() else {
+        guard await requestPermission() else {
             phase = .failed(
                 "Microphone access is off. Enable it in Settings › Privacy & Security › Microphone.",
                 canOpenSettings: true
@@ -120,15 +131,10 @@ final class RecordingSession: Identifiable {
             return
         }
 
-        recorder.onAutoPause = { [weak self] in
+        recorder.onAutoPause = { [weak self] cause in
             guard let self, self.phase == .recording else { return }
             self.phase = .paused
-            // Names what actually gets here: a call or Siri taking the
-            // microphone. A route change restarts capture in place now, and
-            // the transient "Microphone changed — still recording" notice says
-            // so; blaming an "audio change" here sent people looking at their
-            // headphones for a pause a phone call caused.
-            self.notice = "Recording was paused by the system (a call or Siri). Tap resume to continue."
+            self.notice = Self.autoPauseNotice(for: cause)
         }
 
         recorder.onAutoResume = { [weak self] in
@@ -354,6 +360,20 @@ final class RecordingSession: Identifiable {
         }
     }
 
+    /// Whether "Save without transcript" still has anything to do. The phase
+    /// stays `.saving` until the parked finalization returns, so the phase
+    /// alone can't drive the button: without this it stays lit behind the same
+    /// ProgressView after the first tap has already banked the segments, and
+    /// every further tap hits the guard below and does nothing — which is what
+    /// the user with a slow engine keeps doing. It is also already false on
+    /// the retry-after-a-failed-transcript-save path, where the transcript is
+    /// banked and there is nothing left to skip, so the dead case is never
+    /// offered at all. Mirrors the guard exactly, and the guard reads it, so
+    /// the two cannot drift apart.
+    var canSaveWithoutTranscript: Bool {
+        phase == .saving && pendingSegments == nil
+    }
+
     /// Stops waiting for the transcript and finishes the save with whatever the
     /// engine has already produced. Nothing bounds a finalization — Whisper's
     /// final pass covers up to five minutes of retained tail, and Apple Speech
@@ -361,7 +381,7 @@ final class RecordingSession: Identifiable {
     /// controls, so without this the user has no way out of a recording that is
     /// already safely on disk.
     func saveWithoutTranscript() async {
-        guard phase == .saving, pendingSegments == nil else { return }
+        guard canSaveWithoutTranscript else { return }
         // Bank first: cancelling clears the engine's own collection, and the
         // whole point of this action is to keep what it heard.
         var banked = transcription.segments
@@ -504,5 +524,21 @@ final class RecordingSession: Identifiable {
     static func savedTitles(draft: String, prefilledDefault: String) -> (title: String, defaultTitle: String) {
         let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         return (trimmed.isEmpty ? prefilledDefault : trimmed, prefilledDefault)
+    }
+
+    /// What the recording screen says after the system paused capture. The two
+    /// causes send the user to two different places, so they must not share a
+    /// sentence: a call or Siri resolves itself and the system offers the
+    /// resume, while a failed restart is the audio device that just changed
+    /// under them. Blaming a call for a headset that switched away sent people
+    /// looking at their phone, and naming an "audio change" for a call sent
+    /// them to their headphones — the recorder knows which it was, so say it.
+    static func autoPauseNotice(for cause: AutoPauseCause) -> String {
+        switch cause {
+        case .interruption:
+            "Recording was paused by the system (a call or Siri). Tap resume to continue."
+        case .restartFailed:
+            "Recording paused — the audio device changed and capture couldn't restart. Tap resume to continue."
+        }
     }
 }

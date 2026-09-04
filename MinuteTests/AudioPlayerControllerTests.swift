@@ -15,6 +15,19 @@ private final class StartingPlayer: AVAudioPlayer {
     override func play() -> Bool { true }
 }
 
+/// A player that refuses the first start and accepts every one after it: the
+/// call that held the hardware ends, and the user taps Play again on the same
+/// loaded player. Nothing reloads in that flow.
+private final class RefusingThenStartingPlayer: AVAudioPlayer {
+    private var refusalsLeft = 1
+
+    override func play() -> Bool {
+        guard refusalsLeft > 0 else { return true }
+        refusalsLeft -= 1
+        return false
+    }
+}
+
 /// `play()` used to discard AVAudioPlayer's Bool: when the player refused to
 /// start, the bar showed the pause icon and "Pause playback" over silence with
 /// a frozen clock, and nothing ever corrected it.
@@ -55,6 +68,29 @@ struct AudioPlayerControllerTests {
         #expect(controller.lastError != nil)
 
         try controller.load(url: url) { try StartingPlayer(contentsOf: $0) }
+        controller.play()
+
+        #expect(controller.isPlaying)
+        #expect(controller.lastError == nil)
+        controller.stop()
+    }
+
+    /// The real recovery path. The test above reloads between the two taps,
+    /// and `load()` calls `stop()`, which clears `lastError` — so it stays
+    /// green even with `play()`'s own clearing deleted. Here the player is
+    /// loaded once: the only thing that can take the stale "couldn't start"
+    /// notice off screen is the successful `play()` itself.
+    @Test func retryingPlayOnTheSameLoadedPlayerClearsTheNotice() throws {
+        let url = try makeWavFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let controller = AudioPlayerController()
+        try controller.load(url: url) { try RefusingThenStartingPlayer(contentsOf: $0) }
+
+        controller.play()
+        #expect(controller.isPlaying == false)
+        #expect(controller.lastError == AudioPlayerController.playbackFailedMessage)
+
+        // Same loaded player, no reload — exactly what the second tap does.
         controller.play()
 
         #expect(controller.isPlaying)

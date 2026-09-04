@@ -63,10 +63,52 @@ enum KnowledgeText {
 
     /// Whether `quote` appears in `transcript`, ignoring case, diacritics,
     /// punctuation, and whitespace runs — the sourceQuote validation gate.
+    ///
+    /// Both sides are padded with spaces so a match can only start and end on
+    /// a token boundary: a quote that only matches by cutting into a word
+    /// ("own the atlas plan" inside "I disown the atlas plan") would let the
+    /// model ground a fact in text the transcript does not say.
+    ///
+    /// Unspaced scripts have no such boundary to land on. `tokens` splits on
+    /// non-alphanumerics and ideographs are alphanumerics, so a whole Chinese
+    /// clause is a single token, and the padded form would validate a quote
+    /// only when it spans complete punctuation-delimited clauses — routing
+    /// every ordinary fragment to `.suggested` with no sourceQuote. So a
+    /// second pass accepts an unpadded occurrence whose neighbouring
+    /// characters are not word-internal — cased letters and ASCII digits.
+    /// Case is what separates the two families: a script with letter case
+    /// spells its words out (Latin, Cyrillic, Greek), so cutting into one is
+    /// the abuse the gate exists to refuse, while the uncased scripts (Han,
+    /// kana, Hangul, Thai, Arabic, Hebrew, Devanagari) are the ones with no
+    /// boundary to land on. So "own the atlas plan" stays refused inside
+    /// "disown" and "обственник" inside "собственник", while a verbatim CJK
+    /// fragment validates.
     static func contains(transcript: String, quote: String) -> Bool {
         let q = tokens(quote).joined(separator: " ")
         guard !q.isEmpty else { return false }
-        return tokens(transcript).joined(separator: " ").contains(q)
+        let haystack = tokens(transcript).joined(separator: " ")
+        if (" " + haystack + " ").contains(" " + q + " ") { return true }
+        // Every occurrence, not just the first: the one that cuts into a word
+        // can precede the one that does not.
+        var searchFrom = haystack.startIndex
+        while let found = haystack.range(of: q, range: searchFrom..<haystack.endIndex) {
+            let before = found.lowerBound == haystack.startIndex
+                ? nil
+                : haystack[haystack.index(before: found.lowerBound)]
+            let after = found.upperBound == haystack.endIndex ? nil : haystack[found.upperBound]
+            if !isWordInternal(before), !isWordInternal(after) { return true }
+            searchFrom = haystack.index(after: found.lowerBound)
+        }
+        return false
+    }
+
+    /// Whether a neighbouring character means the occurrence cut into a word.
+    /// `isCased` covers every script that has words to cut — including the
+    /// letters diacritic folding leaves alone (ø, æ, ł, đ) — and digits ride
+    /// along so "plan" can't be carved out of "plan2".
+    private static func isWordInternal(_ character: Character?) -> Bool {
+        guard let character else { return false }
+        return character.isCased || (character.isASCII && character.isNumber)
     }
 
     /// Salted SHA-256 of the normalized text + entity ID — all a rejected

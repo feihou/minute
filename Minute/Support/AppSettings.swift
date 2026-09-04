@@ -31,6 +31,11 @@ enum AppSettings {
     /// identically until the user does something about it, and Settings is
     /// where they can.
     static let persistentStoreFailureKey = "storage.persistentStoreFailure"
+    /// The data protection class the last fully successful pass stamped on this
+    /// install's files, or absent when no pass has finished one. Holds the
+    /// class name rather than a Bool so that changing
+    /// `MeetingStore.dataProtectionClass` re-runs the pass by itself.
+    static let dataProtectionClassKey = "storage.dataProtectionClass"
 
     /// Whether meeting data (audio, transcripts, summaries) is included in the
     /// iPhone's iCloud/computer device backup. Off by default — private by
@@ -62,6 +67,21 @@ enum AppSettings {
                 UserDefaults.standard.set(newValue, forKey: persistentStoreFailureKey)
             } else {
                 UserDefaults.standard.removeObject(forKey: persistentStoreFailureKey)
+            }
+        }
+    }
+
+    /// The data protection class already applied to this install's files — see
+    /// `MeetingStore.applyDataProtection`, which is the only writer. Absent
+    /// until a pass has fully succeeded, so a failed one is retried at the next
+    /// launch.
+    static var appliedDataProtectionClass: String? {
+        get { UserDefaults.standard.string(forKey: dataProtectionClassKey) }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(newValue, forKey: dataProtectionClassKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: dataProtectionClassKey)
             }
         }
     }

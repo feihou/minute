@@ -168,6 +168,37 @@ enum MeetingStore {
     /// `apply` is injected so tests can assert what gets which class: the
     /// simulator accepts `.protectionKey` and then reports it back as nil, so
     /// reading the attribute afterwards would assert nothing.
+    ///
+    /// One-shot per install per class. Everything above is a walk of the whole
+    /// recording library — a `contentsOfDirectory` plus one `setAttributes` per
+    /// file — on the main thread of the launch path, and it is worth exactly
+    /// once: afterwards every one of those files carries the class, and new
+    /// ones inherit it from the directories this stamped. So a fully successful
+    /// pass records the class it applied and the next launch returns
+    /// immediately. A pass that failed anywhere records nothing, which is what
+    /// makes the next launch retry — and the first use the returned `Bool` has
+    /// ever had, since `MinuteApp` discards it. Changing
+    /// `dataProtectionClass` changes the recorded value, so the walk runs again
+    /// for the new class without anyone remembering to reset anything, and
+    /// `resetPersistentStore` needs no reset either: what it removes is
+    /// recreated inside a root that already carries the class.
+    ///
+    /// The marker describes the install's own tree, so it is read and written
+    /// only for a pass over that tree. A caller that injects `base` is stamping
+    /// some other directory, and what happened there says nothing about whether
+    /// this install still needs the walk.
+    ///
+    /// Two residuals the marker freezes, both accepted. The class-B files a
+    /// pass could not reach are one — that is what the failure path and its
+    /// retry are for. The other is the App Group half: a pass that ran with
+    /// `appGroup` nil (the entitlement not in force) still records success for
+    /// a tree that never contained the group container, so a later launch where
+    /// the container *is* available skips the walk and leaves the group root,
+    /// its Library/Preferences and the widget snapshot plist unstamped. What
+    /// sits there is the widget's snapshot, not meeting audio or the database,
+    /// and reaching that state takes a provisioning change between two launches
+    /// of the same install. Encoding the group's coverage into the marker is
+    /// the fix if that ever stops being true.
     @discardableResult
     static func applyDataProtection(
         base: URL? = nil,
@@ -178,6 +209,10 @@ enum MeetingStore {
             try FileManager.default.setAttributes([.protectionKey: protection], ofItemAtPath: url.path)
         }
     ) -> Bool {
+        let describesTheInstall = base == nil
+        if describesTheInstall, AppSettings.appliedDataProtectionClass == dataProtectionClass.rawValue {
+            return true
+        }
         let root: URL
         do {
             root = try base ?? FileManager.default.url(
@@ -260,7 +295,59 @@ enum MeetingStore {
                 succeeded = false
             }
         }
+        // Only on a clean sweep: a partial one leaves files this pass believed
+        // it had covered, and the marker is what would stop anybody looking
+        // again.
+        if describesTheInstall, succeeded {
+            AppSettings.appliedDataProtectionClass = dataProtectionClass.rawValue
+        }
         return succeeded
+    }
+
+    /// The container the app runs on, plus what the launch has to record about
+    /// how it got there. A named type rather than a tuple because a three-member
+    /// tuple is a `large_tuple` lint error, and `isEphemeral` is computed
+    /// because it is exactly "the persistent store did not open" — one fact, one
+    /// place.
+    struct ResolvedContainer {
+        let container: ModelContainer
+        /// The persistent store's error when it would not open, else nil.
+        let failure: String?
+        /// Whether meetings now live only in memory: drives the session-only
+        /// recordings directory and the warning banner the whole app shows.
+        var isEphemeral: Bool { failure != nil }
+    }
+
+    /// Opens the app's container, falling back to a session-only one when the
+    /// persistent store will not open.
+    ///
+    /// Extracted from `MinuteApp.init` because that initializer is `@main`
+    /// scaffolding no test can drive, and both of its outcomes are load-bearing
+    /// and silent when wrong. The error is recorded, not swallowed: this is the
+    /// one failure the user can neither see nor act on, the same open is
+    /// retried identically at every launch, and so a deterministic cause (a
+    /// lightweight migration that cannot run, the case `KnowledgeFact`
+    /// documents) strands the store and every recording forever unless Settings
+    /// can say what went wrong and offer the reset. And a launch that succeeds
+    /// has to clear it again, or a store that recovered keeps a destructive
+    /// reset button on screen.
+    ///
+    /// Both constructors are injected so a test can drive either branch; the
+    /// app passes the real `ModelContainer` initializers.
+    static func resolveContainer(
+        makePersistent: () throws -> ModelContainer,
+        makeInMemory: () throws -> ModelContainer
+    ) -> ResolvedContainer {
+        do {
+            return ResolvedContainer(container: try makePersistent(), failure: nil)
+        } catch {
+            // ponytail: corrupt store falls back to a session-only container so
+            // recording still works; the list view shows a warning banner.
+            guard let inMemory = try? makeInMemory() else {
+                fatalError("Unable to create a SwiftData container")
+            }
+            return ResolvedContainer(container: inMemory, failure: error.localizedDescription)
+        }
     }
 
     /// A local-only SwiftData configuration. The iCloud Documents

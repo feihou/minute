@@ -107,6 +107,12 @@ struct RecordingView: View {
                 }
                 .buttonStyle(.bordered)
                 .font(.footnote)
+                // Greys out the moment the segments are banked. The phase
+                // stays `.saving` while the parked finalization runs, so
+                // without this the tap looks live and silently does nothing —
+                // and on the retry-after-a-failed-transcript-save path the
+                // action is dead from the very first tap.
+                .disabled(!session.canSaveWithoutTranscript)
             }
             .padding(.vertical, 20)
         case .failed(let message, let canOpenSettings):

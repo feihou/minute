@@ -69,6 +69,14 @@ struct TranscriptionEngineSettingsTests {
         // The default must be one of the offered models, or the picker would
         // show a selection the user can never see.
         #expect(variants.contains(WhisperModelCatalog.defaultModel.variant))
+        // The catalog is ordered smallest → most accurate, and two behaviours
+        // read it that way without saying so: defaultModel is models.last, and
+        // WhisperDownloadCenter.replacementSelection takes the LAST still-
+        // downloaded variant when the selected model is deleted. A reorder for
+        // display would quietly hand both the least accurate model.
+        #expect(WhisperModelCatalog.models.last == WhisperModelCatalog.defaultModel)
+        let sizes = WhisperModelCatalog.models.map(\.approximateMegabytes)
+        #expect(sizes == sizes.sorted())
     }
 
     @Test("Model store folder follows the hub layout WhisperKit writes into")

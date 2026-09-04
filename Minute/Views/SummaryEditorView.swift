@@ -223,6 +223,19 @@ struct SummaryEditorView: View {
     /// task, silently and with no undo. A line with a single separator still
     /// means task + owner, which is what a user typing one row expects.
     ///
+    /// A row left ending in a separator — "Ship it | Alice |", typed left to
+    /// right by someone who never filled the third field — opens a field with
+    /// nothing in it. The backwards search finds the whole separator before it
+    /// first, so that empty tail used to come back attached to the owner:
+    /// "Alice |" saved as the person's name, dangling pipe and all, with no
+    /// undo. It is dropped instead, which is what "nothing typed there" means.
+    /// Trailing spaces are shed with it, so a line ending " | " reads the same
+    /// as one ending " |", and the shedding repeats so "Ship it | |" leaves a
+    /// clean task rather than one carrying a pipe. The cost is that a deadline
+    /// which is *itself* a bare "|" no longer survives the round trip — the
+    /// same class of accepted limit as a separator typed inside a deadline, and
+    /// pinned by a test for the same reason.
+    ///
     /// Two adjacent separators share the one space between their pipes, which
     /// is how "task | | deadline" — a row with a deadline and no owner — is
     /// typed. Taking the second separator takes that shared space with it, so
@@ -232,10 +245,14 @@ struct SummaryEditorView: View {
     /// has been consumed, its leading space is lent back and a trailing " |"
     /// closes a separator too. A whole separator is still preferred, or an owner
     /// that is itself a bare "|" ("task | | | deadline") would read as an empty
-    /// one.
+    /// one — which is why that preference stays inside the loop while the
+    /// shedding above happens once, at the line's end, before any of it.
     static func splitActionItemLine(_ line: String) -> [String] {
         var fields: [String] = []
         var head = Substring(line)
+        while head.hasSuffix(" ") || head.hasSuffix(" |") {
+            head = head.hasSuffix(" ") ? head.dropLast() : head.dropLast(2)
+        }
         while fields.count < 2 {
             if let range = head.range(of: actionItemSeparator, options: .backwards) {
                 fields.insert(String(head[range.upperBound...]), at: 0)

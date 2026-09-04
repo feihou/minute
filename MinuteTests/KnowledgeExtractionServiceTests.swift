@@ -57,6 +57,70 @@ struct KnowledgeExtractionServiceTests {
         #expect(KnowledgeExtractionService.hintNames(for: "Atlas ships", from: ["—", "Atlas"]) == ["Atlas"])
     }
 
+    /// CJK is written without inter-word spaces, so KnowledgeText normalizes a
+    /// whole sentence to one token. Both existing probes — the padded phrase
+    /// and the per-token one — need a space boundary the script never
+    /// provides, so a Chinese or Japanese roster name could never be offered:
+    /// the model then invents a second spelling, and KnowledgeIngest.resolve,
+    /// which matches on exact normalized text, mints a duplicate entity for it.
+    @Test func anUnspacedRosterNameIsHintedAsASubstring() {
+        // "张伟" is inside the run "今天张伟负责发布", never a token of its own.
+        let chunk = "[00:12] 今天张伟负责发布 Atlas。"
+        #expect(KnowledgeExtractionService.hintNames(for: chunk, from: ["张伟"]) == ["张伟"])
+
+        // A roster name this chunk does not contain is still not offered.
+        #expect(KnowledgeExtractionService.hintNames(for: chunk, from: ["李娜"]).isEmpty)
+
+        // One character is below the floor: it appears in almost any sentence,
+        // and it would spend one of the twenty hint slots on nothing.
+        #expect(KnowledgeExtractionService.hintNames(for: chunk, from: ["天"]).isEmpty)
+
+        // The substring match ranks with the names spoken in full, ahead of a
+        // name matched only token by token — "mercury atlas" is not contiguous
+        // in this chunk, so it comes through the partial path.
+        #expect(
+            KnowledgeExtractionService.hintNames(for: chunk + " Mercury", from: ["Mercury Atlas", "张伟"])
+                == ["张伟", "Mercury Atlas"]
+        )
+    }
+
+    /// The substring probe is for scripts that write no inter-word spaces.
+    /// Latin writes them, so a bare substring probe there is noise, not a fix:
+    /// the roster is uncapped and carries aliases and topic entities, so short
+    /// rows are expected, and "Tom" sits inside "tomorrow", "PR" inside
+    /// "approve", "SLA" inside "Slack". Each such hit would rank as a name
+    /// spoken in full, and twenty of them would fill hintCap — the eviction
+    /// this function's ordering exists to prevent — under a prompt that tells
+    /// the model to reuse the spellings it is given.
+    @Test func aLatinNameBuriedInsideALongerWordIsNotHinted() {
+        let chunk = "[00:02] Tomorrow the same team will approve the estimate; the Atlas quality guide is available in Slack, and the program build ships."
+        let buried = ["Tom", "Sam", "PR", "Tim", "AI", "SLA", "UI", "Ali"]
+        for name in buried {
+            #expect(KnowledgeExtractionService.hintNames(for: chunk, from: [name]).isEmpty)
+        }
+        // Spoken in full, the same script still matches — the gate narrows the
+        // new probe, it does not touch the two the function already had.
+        #expect(KnowledgeExtractionService.hintNames(for: chunk, from: ["Slack"]) == ["Slack"])
+        // And the buried rows do not outrank, or crowd out, the roster name
+        // whose every long token was actually spoken.
+        #expect(
+            KnowledgeExtractionService.hintNames(for: chunk, from: buried + ["Atlas Program"]) == ["Atlas Program"]
+        )
+    }
+
+    /// The other half of the same script problem: a Japanese full name is
+    /// commonly written with a space between family and given name, while the
+    /// sentence that says it has none. The name is present in full, just
+    /// without the delimiter its script does not write, so it is matched on
+    /// its characters rather than on a boundary the chunk cannot supply.
+    @Test func anUnspacedChunkStillMatchesARosterNameWrittenWithASpace() {
+        let chunk = "[00:20] 明日山田太郎が発表します。"
+        #expect(KnowledgeExtractionService.hintNames(for: chunk, from: ["山田 太郎"]) == ["山田 太郎"])
+        // Order still has to hold: this is a contiguous match, not a bag of
+        // characters, so the reversed name is a different name.
+        #expect(KnowledgeExtractionService.hintNames(for: chunk, from: ["太郎 山田"]).isEmpty)
+    }
+
     @Test func candidateValidatesQuoteAndMapsKind() {
         let transcript = "[00:01] Sarah: I will own the Atlas redesign."
         let good = KnowledgeCandidateDraft(
@@ -104,5 +168,28 @@ struct KnowledgeExtractionServiceTests {
         let transcript = "[00:01] Sarah: hi"
         let padded = KnowledgeCandidateDraft(entityName: "Sarah", entityKind: " person ", fact: "Sarah spoke", supportingQuote: "")
         #expect(KnowledgeExtractionService.candidate(from: padded, transcript: transcript)?.entityKind == .person)
+    }
+
+    /// The Me page is a resolution decision this device makes, never a model
+    /// output. EntityKind declares a `.me` case, so a draft whose entityKind
+    /// reads "me" is one unchecked line away from minting a `.me` entity — and
+    /// every downstream exemption (KnowledgeIngest's review routing,
+    /// KnowledgeStore's orphan prune, which both skip `.me`) would then guard
+    /// the bogus one. Only the unknown-kind default was pinned before this.
+    @Test func aModelWrittenMeKindCollapsesToTopic() {
+        let transcript = "[00:01] Sarah: I will own the Atlas redesign."
+        let me = KnowledgeCandidateDraft(
+            entityName: "Atlas", entityKind: "me",
+            fact: "Atlas ships in Q3", supportingQuote: ""
+        )
+        #expect(KnowledgeExtractionService.candidate(from: me, transcript: transcript)?.entityKind == .topic)
+
+        // The trim-and-lowercase path reaches the same raw value, so it has to
+        // collapse there too — a model that writes " Me " must not slip past.
+        let padded = KnowledgeCandidateDraft(
+            entityName: "Atlas", entityKind: " Me ",
+            fact: "Atlas ships in Q3", supportingQuote: ""
+        )
+        #expect(KnowledgeExtractionService.candidate(from: padded, transcript: transcript)?.entityKind == .topic)
     }
 }

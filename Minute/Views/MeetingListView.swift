@@ -50,6 +50,13 @@ struct MeetingListView: View {
     /// Why an otherwise-successful import came back without a transcript.
     @State private var transcriptionNote: String?
     @State private var deepLinkState = MeetingDeepLinkState()
+    /// Set when a New Meeting deep link arrives while Settings is open, so the
+    /// swap happens across two updates instead of one. SwiftUI is unreliable at
+    /// replacing one sheet with another inside a single transaction: flipping
+    /// `showingSettings` false and `showingNewMeeting` true together can end
+    /// with neither sheet on screen, and the widget's New Meeting button then
+    /// looks like it did nothing at all.
+    @State private var presentNewMeetingAfterSettings = false
     /// The pending widget publish, cancelled and replaced by each new
     /// snapshot so a burst of changes produces one write.
     @State private var widgetPublishTask: Task<Void, Never>?
@@ -218,9 +225,23 @@ struct MeetingListView: View {
                 activeSession = RecordingSession(title: draftTitle, prefilledDefaultTitle: draftDefaultTitle)
             }
         }
-        .sheet(isPresented: $showingSettings) {
+        // `content:` spelled out rather than trailing: `.sheet` then takes two
+        // closure arguments, and SwiftLint's multiple_closures_with_trailing_closure
+        // — live in this repo, fatal under --strict — rejects the trailing form
+        // as soon as a second closure is passed.
+        // `!showingNewMeeting` for the same reason MeetingDeepLinkState ignores
+        // a New Meeting link while that sheet is up: dismissal takes ~0.3 s, and
+        // a second link arriving inside it opens the sheet directly — Settings
+        // is already down by then — so firing the latch afterwards would reset
+        // `draftTitle` under a sheet the user is already typing in.
+        .sheet(isPresented: $showingSettings, onDismiss: {
+            if presentNewMeetingAfterSettings {
+                presentNewMeetingAfterSettings = false
+                if !showingNewMeeting { beginNewMeeting() }
+            }
+        }, content: {
             SettingsView()
-        }
+        })
         .fullScreenCover(item: $activeSession) { session in
             RecordingView(session: session) { finished in
                 activeSession = nil
@@ -459,11 +480,11 @@ struct MeetingListView: View {
         showingNewMeeting = true
     }
 
-    /// Lets the Brain read a meeting that has just arrived from a recording or
-    /// an import. The loop is otherwise only nudged by a finished job or a
-    /// scene activation, so with Auto-Summarize off (the default) neither
-    /// happens and the meeting goes unread until the app is backgrounded and
-    /// reopened.
+    /// Whether a meeting that has just arrived from a recording or an import
+    /// should nudge the Brain now. The loop is otherwise only nudged by a
+    /// finished job or a scene activation, so with Auto-Summarize off (the
+    /// default) neither happens and the meeting goes unread until the app is
+    /// backgrounded and reopened.
     ///
     /// Two cases skip the nudge. A meeting with no transcript (a silent save,
     /// an import whose transcription failed) has nothing to read, and the loop
@@ -483,8 +504,21 @@ struct MeetingListView: View {
     /// claimed — since no job means no end to nudge from. The meeting then
     /// waits for the Brain tab's own `.task` or the next scene activation to be
     /// read: later than a nudge here, but never lost.
+    ///
+    /// Static and parameterized rather than folded into the call below, because
+    /// both skips are silent when they regress and a private view method is
+    /// unreachable from the tests that would say so.
+    static func shouldNudgeBrain(hasTranscript: Bool, destinationAutoSummarizes: Bool) -> Bool {
+        hasTranscript && !destinationAutoSummarizes
+    }
+
+    /// Lets the Brain read a meeting that has just arrived — see
+    /// `shouldNudgeBrain` for which arrivals qualify and why.
     private func nudgeBrain(for meeting: Meeting) {
-        guard meeting.hasTranscript, !destinationAutoSummarizes else { return }
+        guard Self.shouldNudgeBrain(
+            hasTranscript: meeting.hasTranscript,
+            destinationAutoSummarizes: destinationAutoSummarizes
+        ) else { return }
         catchUp.nudge(context: context)
     }
 
@@ -512,8 +546,17 @@ struct MeetingListView: View {
         case .ignore:
             break
         case .presentNewMeeting:
-            dismissPresentedSheets()
-            beginNewMeeting()
+            if showingSettings {
+                // Not in this update — see `presentNewMeetingAfterSettings`.
+                // dismissPresentedSheets() still runs: it is what takes
+                // Settings down, and the onDismiss above is what opens the
+                // sheet the link actually asked for.
+                presentNewMeetingAfterSettings = true
+                dismissPresentedSheets()
+            } else {
+                dismissPresentedSheets()
+                beginNewMeeting()
+            }
         case .openMeeting:
             dismissPresentedSheets()
             resolvePendingMeetingDeepLink()

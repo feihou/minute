@@ -135,6 +135,23 @@ final class TranscriptionService: TranscriptionEngine {
                 // `segments` and is still saved.
                 Self.logger.error("Transcriber results stream failed: \(error.localizedDescription)")
                 self?.volatileText = ""
+                // Close the analyzer's input as well. The recorder still holds
+                // the handler returned below and keeps yielding into this
+                // stream for the rest of the meeting; with nothing consuming
+                // it, an AsyncStream buffers without bound — the ~230 MB/hour
+                // WhisperTranscriptionService guards against, which on a long
+                // meeting is a jetsam risk on a recording the user believes is
+                // safe. Yields to a finished continuation are dropped, so the
+                // tap handler becomes a no-op, and `finish()`'s
+                // `finalizeAndFinishThroughEndOfInput` returns promptly
+                // instead of waiting on a stream that never ends. Nothing is
+                // lost: results had already stopped arriving.
+                //
+                // Not reachable from a unit test — provoking it needs a real
+                // SpeechTranscriber whose results stream throws, and
+                // SpeechTranscriber.isAvailable is false on the simulator.
+                self?.inputContinuation?.finish()
+                self?.inputContinuation = nil
                 // Only over "everything is fine". `start()` writes its own,
                 // more specific message when the analyzer refuses to start —
                 // and it cancels this task right afterwards, so the generic

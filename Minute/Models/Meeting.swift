@@ -121,4 +121,29 @@ extension Meeting {
     var titleFallback: String {
         defaultTitle ?? RecordingSession.defaultTitle(for: createdAt)
     }
+
+    /// Whether writing `name` as speaker `index`'s display name would actually
+    /// change this meeting.
+    ///
+    /// Asked before the write because the write is expensive in a way the
+    /// gesture does not suggest: `MeetingJobs.applySpeakerName` resets
+    /// `knowledgeExtractedAt`, which re-queues the entire meeting for on-device
+    /// extraction — one LLM pass per chunk — and nudges the catch-up loop. That
+    /// is the right price for a real rename, because the Brain reads the
+    /// transcript with names in it, and no price at all for opening the Rename
+    /// Speaker alert and tapping Save without typing.
+    ///
+    /// Trimmed the same way the write trims before it stores, and an index the
+    /// array does not reach yet counts as the empty name that its padding would
+    /// have written there.
+    func speakerRenameChangesAnything(at index: Int, to name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let existing: String
+        if let names = speakerNames, names.indices.contains(index) {
+            existing = names[index]
+        } else {
+            existing = ""
+        }
+        return trimmed != existing
+    }
 }

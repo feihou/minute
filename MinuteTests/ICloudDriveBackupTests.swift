@@ -323,6 +323,44 @@ struct ICloudDriveBackupTests {
         #expect(try String(contentsOf: keptFolder.appendingPathComponent("notes.md"), encoding: .utf8) == "# kept")
     }
 
+    /// The promise SyncOutcome exists for: a deleted meeting's bytes still
+    /// sitting in iCloud Drive are reported, not swallowed, so the caller does
+    /// not clear the backup warning over them. Every other deletion test
+    /// asserts `.complete`, so takeBack's false branch — and the fileExists
+    /// guard that sits directly in it — was otherwise unexercised.
+    @Test func aFailedTakeBackReportsTheMirrorIncomplete() throws {
+        let documents = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: documents) }
+
+        let deletedID = UUID()
+        let deleted = item(
+            id: deletedID.uuidString,
+            folderName: "2026-08-03 09.30 Deleted",
+            notes: "# secret transcript"
+        )
+        #expect(try ICloudDriveBackup.mirror([deleted], into: documents) == .complete)
+        let folder = documents.appendingPathComponent(deleted.folderName, isDirectory: true)
+        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("notes.md").path))
+
+        // Unlinking an entry needs write permission on the directory that
+        // holds it, so a read-only folder makes every removal inside it fail
+        // for real — no seam, no stub. Restored before the scratch tree is
+        // torn down: this defer is registered second, so it runs first.
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: folder.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path) }
+
+        ICloudDriveBackup.noteMeetingDeleted(deletedID)
+        let outcome = try ICloudDriveBackup.mirror([deleted], into: documents)
+
+        // The notes of a meeting the user deleted are still in iCloud Drive.
+        #expect(outcome == .incomplete)
+        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("notes.md").path))
+        // removeMirror drops the marker last and only if everything else went,
+        // so the marker survives and a later sync can still find this folder
+        // and finish the job.
+        #expect(ICloudDriveBackup.meetingID(inFolder: folder) == deletedID.uuidString)
+    }
+
     @Test func mirrorNeverWritesADeletedMeetingsNotesInTheFirstPlace() throws {
         let documents = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: documents) }

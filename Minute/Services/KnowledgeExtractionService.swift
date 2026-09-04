@@ -178,6 +178,36 @@ struct KnowledgeExtractionService {
                 phrases.append(name)
                 continue
             }
+            // Unspaced scripts (CJK) normalize to one giant token, so neither
+            // the padded probe above nor the per-token probe below can ever
+            // find a boundary the writing system never provides, and a Chinese
+            // or Japanese roster name could never be hinted at all — the model
+            // invents a second spelling and resolution, which matches exact
+            // normalized text, mints a duplicate entity for it.
+            // KnowledgeText.tokenOverlap already carries a bigram fallback for
+            // this same script problem; this is the matcher that lacked one.
+            // The name's characters, contiguous and in order, count as a
+            // phrase: the whole name is present, just without the delimiters
+            // its script does not write — which also covers the roster row
+            // written "山田 太郎" against a sentence that spaces neither.
+            //
+            // Only for a name whose characters are all non-ASCII — tested on
+            // the joined form, since the separator inOrder writes between
+            // tokens is itself ASCII. inOrder casefolds and strips
+            // diacritics, so every Latin name reduces to ASCII, and a bare
+            // substring probe there is noise rather than a fix: the roster is
+            // uncapped and holds aliases and topics, so short rows are
+            // expected, and "Tom" sits inside "tomorrow", "PR" inside
+            // "approve", "SLA" inside "Slack". Each would rank as a name
+            // spoken in full and twenty would fill hintCap — the eviction this
+            // ordering exists to prevent — under a prompt that tells the model
+            // to reuse the spellings it is given. Two characters minimum: one
+            // ideograph appears in nearly every sentence.
+            let undelimited = normalized.replacingOccurrences(of: " ", with: "")
+            if !undelimited.contains(where: \.isASCII), undelimited.count >= 2, haystack.contains(undelimited) {
+                phrases.append(name)
+                continue
+            }
             let tokens = normalized
                 .split(separator: " ")
                 .filter { $0.count >= minimumHintTokenLength }

@@ -366,6 +366,141 @@ struct MeetingStoreTests {
         #expect(applied == [base.lastPathComponent, "meeting.m4a", "default.store"])
     }
 
+    /// The other half of F34/F35, and the reason the Recordings step sits in a
+    /// scope of its own: a failure reaching the audio — a stray file where the
+    /// directory belongs, a full disk — must cost only the audio. The store
+    /// files still get the class, because those are what the locked-phone reads
+    /// need just as much. `dataProtectionKeepsGoingAfterOneTargetFails` throws
+    /// from the applier, which is the per-target loop; this is the step before
+    /// it, and collapsing its do/catch back into the outer one would stay green
+    /// without this test.
+    @Test func dataProtectionStillStampsTheStoreWhenTheRecordingsStepFails() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("protection-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        // A regular file where the directory belongs. `createDirectory` with
+        // `withIntermediateDirectories: true` tolerates an existing *directory*
+        // and throws on this — the first statement of the scoped step.
+        try Data("not a directory".utf8).write(to: base.appendingPathComponent("Recordings"))
+        try Data("db".utf8).write(to: base.appendingPathComponent("default.store"))
+
+        var applied: [String] = []
+        let succeeded = MeetingStore.applyDataProtection(base: base, appGroup: nil) { url, _ in
+            applied.append(url.lastPathComponent)
+        }
+
+        // Reported as a failure — the audio really did not get the class — and
+        // the store files were stamped anyway.
+        #expect(!succeeded)
+        #expect(applied == [base.lastPathComponent, "default.store"])
+    }
+
+    /// B10: the pass walked every recording in the library, one `setAttributes`
+    /// per file, on the main thread, at every cold launch — forever, long after
+    /// every file already carried the right class. Once a full pass has
+    /// succeeded, new files inherit the class from the directories it stamped,
+    /// so there is nothing left for the walk to do: the marker turns it into a
+    /// one-shot per install per class.
+    ///
+    /// Driven against the app's own tree (`base: nil`) because that is the only
+    /// pass the marker describes — a caller that injects `base` is stamping
+    /// some other directory, which says nothing about this install. The nine
+    /// injected-base tests above are what pin that they still run in full: the
+    /// test host's own launch sets this marker before any of them run.
+    @Test func dataProtectionWalksOncePerInstallAndThenSkipsTheWalk() {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: AppSettings.dataProtectionClassKey)
+        defer {
+            if let previous {
+                defaults.set(previous, forKey: AppSettings.dataProtectionClassKey)
+            } else {
+                defaults.removeObject(forKey: AppSettings.dataProtectionClassKey)
+            }
+        }
+        AppSettings.appliedDataProtectionClass = nil
+
+        var firstPass: [String] = []
+        let firstSucceeded = MeetingStore.applyDataProtection(base: nil, appGroup: nil) { url, _ in
+            firstPass.append(url.lastPathComponent)
+        }
+
+        #expect(firstSucceeded)
+        // The Application Support root at least; whatever else this install
+        // holds rides along.
+        #expect(!firstPass.isEmpty)
+        #expect(AppSettings.appliedDataProtectionClass == MeetingStore.dataProtectionClass.rawValue)
+
+        var secondPass: [String] = []
+        let secondSucceeded = MeetingStore.applyDataProtection(base: nil, appGroup: nil) { url, _ in
+            secondPass.append(url.lastPathComponent)
+        }
+
+        // Not one target, and — the point of the fix — not one listing of the
+        // Recordings directory either.
+        #expect(secondSucceeded)
+        #expect(secondPass.isEmpty)
+    }
+
+    /// A pass that could not finish must not be remembered as one that did, or
+    /// a transient refusal at one launch would leave the files unstamped for
+    /// the life of the install. This is also the first reader the pass's
+    /// `Bool` has ever had: `MinuteApp` discards it.
+    @Test func aFailedDataProtectionPassLeavesTheMarkerUnsetSoTheNextLaunchRetries() {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: AppSettings.dataProtectionClassKey)
+        defer {
+            if let previous {
+                defaults.set(previous, forKey: AppSettings.dataProtectionClassKey)
+            } else {
+                defaults.removeObject(forKey: AppSettings.dataProtectionClassKey)
+            }
+        }
+        AppSettings.appliedDataProtectionClass = nil
+
+        let succeeded = MeetingStore.applyDataProtection(base: nil, appGroup: nil) { _, _ in
+            throw CocoaError(.fileWriteNoPermission)
+        }
+
+        #expect(!succeeded)
+        #expect(AppSettings.appliedDataProtectionClass == nil)
+    }
+
+    /// The other half of the marker's contract: it is per install *per class*,
+    /// so raising `MeetingStore.dataProtectionClass` in a future build has to
+    /// send the walk back over a tree already stamped with the old one. A
+    /// marker naming a different class must therefore read as "not done", not
+    /// merely as "set".
+    @Test func aMarkerNamingAnotherProtectionClassSendsTheWalkRoundAgain() {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: AppSettings.dataProtectionClassKey)
+        defer {
+            if let previous {
+                defaults.set(previous, forKey: AppSettings.dataProtectionClassKey)
+            } else {
+                defaults.removeObject(forKey: AppSettings.dataProtectionClassKey)
+            }
+        }
+        // Stands in for the class a previous build pinned. `.complete` is the
+        // one this app deliberately does not use — it would lock recording out
+        // of its own audio the moment the screen went dark.
+        let stale = FileProtectionType.complete
+        #expect(stale != MeetingStore.dataProtectionClass)
+        AppSettings.appliedDataProtectionClass = stale.rawValue
+
+        var applied: [FileProtectionType] = []
+        let succeeded = MeetingStore.applyDataProtection(base: nil, appGroup: nil) { _, protection in
+            applied.append(protection)
+        }
+
+        #expect(succeeded)
+        // The walk ran, and stamped the class the app asks for today.
+        #expect(!applied.isEmpty)
+        #expect(applied.allSatisfy { $0 == MeetingStore.dataProtectionClass })
+        // And the marker now names that class, so the next launch skips again.
+        #expect(AppSettings.appliedDataProtectionClass == MeetingStore.dataProtectionClass.rawValue)
+    }
+
     @Test func ephemeralModeRoutesAudioToTemporaryDirectoryAndWipesIt() throws {
         MeetingStore.useEphemeralStorage = true
         defer { MeetingStore.useEphemeralStorage = false }
