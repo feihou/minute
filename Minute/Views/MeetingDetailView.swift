@@ -515,6 +515,18 @@ struct MeetingDetailView: View {
                 // so the tap was a silent no-op the user could repeat forever.
                 .disabled(isBusy)
                 .padding(.top, 2)
+                if isBusy {
+                    // A disabled button with no reason on screen is still a
+                    // dead end: the row that explains the wait — "Re-transcribing
+                    // on device…" — lives on the Transcript tab, and the tab
+                    // picker means a user sitting on Summary never sees it.
+                    // Same text the transcript row shows, with a fixed fallback
+                    // for a job that reports no progress string.
+                    Text(jobStatus ?? "Available once the current job finishes.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 16)
