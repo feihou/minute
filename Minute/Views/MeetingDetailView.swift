@@ -109,6 +109,17 @@ struct MeetingDetailView: View {
                 SummarizationEngines.prewarm(language: AppSettings.summaryLanguage)
             }
         }
+        // On the Group, not on the field: the field lives inside the page's
+        // LazyVStack, and a lazy stack destroys and rebuilds the rows it
+        // scrolls out of view — taking a handler attached down there with it.
+        // The commit it performs is what makes every toolbar action (Copy
+        // Notes, Share Notes, Edit Summary) read the title the user just
+        // typed, so it belongs to the same view that owns the @FocusState.
+        .onChange(of: titleFocused) { _, focused in
+            if !focused {
+                commitTitle()
+            }
+        }
         .onChange(of: meeting.isGone) { _, gone in
             // The delete that happened elsewhere — the list's row, or the
             // Brain tab's copy of this meeting — swaps the page below for the
@@ -320,11 +331,6 @@ struct MeetingDetailView: View {
                 .font(.largeTitle.bold())
                 .textFieldStyle(.plain)
                 .focused($titleFocused)
-                .onChange(of: titleFocused) { _, focused in
-                    if !focused {
-                        commitTitle()
-                    }
-                }
                 .accessibilityLabel("Meeting title")
 
             Text(metaLine)
