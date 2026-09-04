@@ -139,7 +139,7 @@ struct MeetingDetailView: View {
             // app is terminated. An edit still sitting in the draft would be
             // mirrored stale and then lost, so it is committed and saved here.
             if phase != .active, !meeting.isGone {
-                commitTitle()
+                commitTitle(keepEditing: titleFocused)
                 saveQuietly()
             }
         }
@@ -748,12 +748,27 @@ struct MeetingDetailView: View {
     /// keeps the widget snapshot from being rewritten for a visit. Clearing
     /// the draft before the `isGone` check is what keeps a pending edit from
     /// being re-applied to a meeting deleted between two of those calls.
-    private func commitTitle() {
+    ///
+    /// `keepEditing` is for the callers that are not the end of the edit: a
+    /// scene change is Control Center, a system alert, or a glance at another
+    /// app, and the field can still be focused with a half-typed title in it.
+    /// Committing there is what makes the value safe to mirror; ending the
+    /// user's edit session is not part of that.
+    private func commitTitle(keepEditing: Bool = false) {
         guard let draft = titleDraft else { return }
         titleDraft = nil
         guard !meeting.isGone else { return }
         if let committed = Meeting.titleCommit(draft: draft, current: meeting.title, fallback: meeting.titleFallback) {
             meeting.title = committed
+        }
+        if keepEditing {
+            // The user's own text, never the committed value: an emptied field
+            // commits the fallback, and writing that back would put "Meeting
+            // Sep 2, 2026 at 9:41 AM" under the cursor of someone who had just
+            // cleared it to retype. Restored after the write and after the
+            // isGone guard, so a meeting deleted mid-edit still ends with no
+            // draft to re-apply.
+            titleDraft = draft
         }
     }
 
