@@ -41,4 +41,21 @@ struct WhisperDownloadSelectionTests {
             downloaded: ["openai_whisper-large-v3"]
         ) == nil)
     }
+
+    @Test("Deleting the real catalog's most accurate model falls back to the one below it")
+    func picksTheSurvivorFromTheRealCatalog() throws {
+        // The cases above use invented variant names — none of them is a
+        // shipping variant, so nothing in this suite proved the function
+        // works on the strings it is actually handed. This one runs it over
+        // the real catalog.
+        let variants = WhisperModelCatalog.models.map(\.variant)
+        try #require(variants.count >= 2)
+        let deleted = try #require(variants.last)
+
+        #expect(WhisperDownloadCenter.replacementSelection(
+            after: deleted,
+            selected: deleted,
+            downloaded: Array(variants.dropLast())
+        ) == variants[variants.count - 2])
+    }
 }
