@@ -720,6 +720,10 @@ struct MeetingDetailView: View {
     }
 
     private func renameSpeaker(_ index: Int, to name: String) {
+        // Save on an unchanged field is a gesture that changed nothing, and the
+        // write below is not free: it resets the extraction cursor, so the
+        // whole meeting would be re-read on device, a model pass per chunk.
+        guard meeting.speakerRenameChangesAnything(at: index, to: name) else { return }
         MeetingJobs.applySpeakerName(name, at: index, to: meeting)
         saveQuietly()
         // The rename changed the text the Brain reads; let it catch up.
