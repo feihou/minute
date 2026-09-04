@@ -178,6 +178,24 @@ struct KnowledgeExtractionService {
                 phrases.append(name)
                 continue
             }
+            // Unspaced scripts (CJK) normalize to one giant token, so neither
+            // the padded probe above nor the per-token probe below can ever
+            // find a boundary, and a Chinese or Japanese roster name could
+            // never be hinted at all — the model invents a second spelling and
+            // resolution, which matches exact normalized text, mints a
+            // duplicate entity for it. KnowledgeText.tokenOverlap already
+            // carries a bigram fallback for this same script problem; this is
+            // the matcher that lacked one. A name that is itself a single
+            // token is matched as a bare substring, and counts as a phrase:
+            // the whole name is present, just without delimiters. Two
+            // characters minimum — one appears in nearly every sentence. The
+            // known cost is over-offering a short single-token Latin name
+            // ("Ann" inside "annual"): one of twenty hint slots, against a
+            // name that otherwise can never be offered.
+            if !normalized.contains(" "), normalized.count >= 2, haystack.contains(normalized) {
+                phrases.append(name)
+                continue
+            }
             let tokens = normalized
                 .split(separator: " ")
                 .filter { $0.count >= minimumHintTokenLength }

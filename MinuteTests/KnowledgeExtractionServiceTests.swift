@@ -57,6 +57,33 @@ struct KnowledgeExtractionServiceTests {
         #expect(KnowledgeExtractionService.hintNames(for: "Atlas ships", from: ["—", "Atlas"]) == ["Atlas"])
     }
 
+    /// CJK is written without inter-word spaces, so KnowledgeText normalizes a
+    /// whole sentence to one token. Both existing probes — the padded phrase
+    /// and the per-token one — need a space boundary the script never
+    /// provides, so a Chinese or Japanese roster name could never be offered:
+    /// the model then invents a second spelling, and KnowledgeIngest.resolve,
+    /// which matches on exact normalized text, mints a duplicate entity for it.
+    @Test func anUnspacedRosterNameIsHintedAsASubstring() {
+        // "张伟" is inside the run "今天张伟负责发布", never a token of its own.
+        let chunk = "[00:12] 今天张伟负责发布 Atlas。"
+        #expect(KnowledgeExtractionService.hintNames(for: chunk, from: ["张伟"]) == ["张伟"])
+
+        // A roster name this chunk does not contain is still not offered.
+        #expect(KnowledgeExtractionService.hintNames(for: chunk, from: ["李娜"]).isEmpty)
+
+        // One character is below the floor: it appears in almost any sentence,
+        // and it would spend one of the twenty hint slots on nothing.
+        #expect(KnowledgeExtractionService.hintNames(for: chunk, from: ["天"]).isEmpty)
+
+        // The substring match ranks with the names spoken in full, ahead of a
+        // name matched only token by token — "mercury atlas" is not contiguous
+        // in this chunk, so it comes through the partial path.
+        #expect(
+            KnowledgeExtractionService.hintNames(for: chunk + " Mercury", from: ["Mercury Atlas", "张伟"])
+                == ["张伟", "Mercury Atlas"]
+        )
+    }
+
     @Test func candidateValidatesQuoteAndMapsKind() {
         let transcript = "[00:01] Sarah: I will own the Atlas redesign."
         let good = KnowledgeCandidateDraft(
