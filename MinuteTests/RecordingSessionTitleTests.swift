@@ -33,4 +33,17 @@ struct RecordingSessionTitleTests {
         let session = RecordingSession(title: "Meeting Sep 2, 2026 at 9:30 AM", prefilledDefaultTitle: "Meeting Sep 2, 2026 at 9:30 AM")
         #expect(session.prefilledDefaultTitle == "Meeting Sep 2, 2026 at 9:30 AM")
     }
+
+    /// ActivityAttributes are immutable for the life of the activity, so the
+    /// title handed to `start` is the only one the lock screen will ever show —
+    /// it has to be the same string the saved meeting gets, not the raw draft.
+    @Test func liveActivityTitleFallsBackToThePrefilledDefaultWhenTheDraftIsEmpty() {
+        let session = RecordingSession(title: "   ", prefilledDefaultTitle: "Meeting Sep 2, 2026 at 9:30 AM")
+        #expect(session.liveActivityTitle == "Meeting Sep 2, 2026 at 9:30 AM")
+    }
+
+    @Test func liveActivityTitleTrimsTheDraftTheUserTyped() {
+        let session = RecordingSession(title: "  Q3 roadmap  ", prefilledDefaultTitle: "Meeting Sep 2, 2026 at 9:30 AM")
+        #expect(session.liveActivityTitle == "Q3 roadmap")
+    }
 }

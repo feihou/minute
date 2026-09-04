@@ -25,6 +25,12 @@ enum AppSettings {
     /// mirror self-heals, but without this a permanently broken backup (signed
     /// out of iCloud, say) looks identical to a working one.
     static let iCloudDriveLastSyncFailedKey = "backup.iCloudDriveLastSyncFailed"
+    /// Why the persistent meeting store could not be opened at the last
+    /// launch, or absent when it opened. Written at every launch — including
+    /// the successful one that clears it — because the fallback repeats
+    /// identically until the user does something about it, and Settings is
+    /// where they can.
+    static let persistentStoreFailureKey = "storage.persistentStoreFailure"
 
     /// Whether meeting data (audio, transcripts, summaries) is included in the
     /// iPhone's iCloud/computer device backup. Off by default — private by
@@ -44,6 +50,20 @@ enum AppSettings {
     static var iCloudDriveLastSyncFailed: Bool {
         get { UserDefaults.standard.bool(forKey: iCloudDriveLastSyncFailedKey) }
         set { UserDefaults.standard.set(newValue, forKey: iCloudDriveLastSyncFailedKey) }
+    }
+
+    /// The last launch's persistent-store error, or nil when it opened.
+    /// Setting nil removes the key rather than storing an empty string, so
+    /// "healthy" and "failed with no message" can't be confused.
+    static var persistentStoreFailure: String? {
+        get { UserDefaults.standard.string(forKey: persistentStoreFailureKey) }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(newValue, forKey: persistentStoreFailureKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: persistentStoreFailureKey)
+            }
+        }
     }
 
     /// Encoder quality applied to new recordings.

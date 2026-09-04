@@ -8,6 +8,14 @@ struct KnowledgeTextTests {
         #expect(KnowledgeText.normalized("  Atlas   Redesign ") == "atlas redesign")
     }
 
+    @Test func inOrderKeepsWritingOrderWhileNormalizedSorts() {
+        // Hint matching needs adjacency: after sorting, the two words of a
+        // name sit next to each other only by accident of the alphabet.
+        #expect(KnowledgeText.inOrder("Zhang, Wei") == "zhang wei")
+        #expect(KnowledgeText.normalized("Zhang, Wei") == "wei zhang")
+        #expect(KnowledgeText.inOrder("  Atlas   Redesign! ") == "atlas redesign")
+    }
+
     @Test func tokenOverlapIsJaccardOnNormalizedTokens() {
         #expect(KnowledgeText.tokenOverlap("Alice leads Atlas", "alice leads atlas") == 1.0)
         #expect(KnowledgeText.tokenOverlap("Alice leads Atlas", "Bob owns Mercury") == 0.0)

@@ -24,6 +24,7 @@ struct MeetingListView: View {
     @Environment(\.modelContext) private var context
     @Environment(KnowledgeCatchUp.self) private var catchUp
     @Environment(MeetingJobs.self) private var jobs
+    @Environment(\.scenePhase) private var scenePhase
     @Query(sort: \Meeting.createdAt, order: .reverse) private var meetings: [Meeting]
 
     @State private var searchText = ""
@@ -49,6 +50,9 @@ struct MeetingListView: View {
     /// Why an otherwise-successful import came back without a transcript.
     @State private var transcriptionNote: String?
     @State private var deepLinkState = MeetingDeepLinkState()
+    /// The pending widget publish, cancelled and replaced by each new
+    /// snapshot so a burst of changes produces one write.
+    @State private var widgetPublishTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -165,7 +169,15 @@ struct MeetingListView: View {
             KnowledgeStore.reconcile(context: context)
         }
         .onChange(of: widgetSnapshot, initial: true) { _, snapshot in
-            WidgetSnapshotPublisher.publish(snapshot)
+            scheduleWidgetPublish(snapshot)
+        }
+        .onChange(of: scenePhase) {
+            // Leaving the app is the last moment a coalescing window can still
+            // finish — the process may be suspended before it expires — and it
+            // is also the moment the Home Screen widget is about to be looked
+            // at, so publish the current snapshot outright.
+            guard scenePhase != .active else { return }
+            publishWidgetSnapshotNow()
         }
         .onChange(of: meetings.map(\.id), initial: true) {
             resolvePendingMeetingDeepLink()
@@ -334,6 +346,27 @@ struct MeetingListView: View {
         storeIsEphemeral ? .empty : WidgetSnapshotPublisher.snapshot(from: meetings)
     }
 
+    /// Coalesces publishes into one write per window instead of one per
+    /// change. Each new snapshot cancels the pending publish and starts the
+    /// window again, so the last value in a burst is the one that lands.
+    private func scheduleWidgetPublish(_ snapshot: WidgetSnapshot) {
+        widgetPublishTask?.cancel()
+        widgetPublishTask = Task {
+            try? await Task.sleep(for: WidgetSnapshotPublisher.coalescingWindow)
+            guard !Task.isCancelled else { return }
+            WidgetSnapshotPublisher.publish(snapshot)
+        }
+    }
+
+    /// Publishes the current snapshot immediately, dropping any pending
+    /// window. `publish` is same-value suppressed, so calling this when
+    /// nothing changed costs one comparison and no WidgetKit reload.
+    private func publishWidgetSnapshotNow() {
+        widgetPublishTask?.cancel()
+        widgetPublishTask = nil
+        WidgetSnapshotPublisher.publish(widgetSnapshot)
+    }
+
     // MARK: - Empty state
 
     private var emptyState: some View {
@@ -438,10 +471,18 @@ struct MeetingListView: View {
     /// the transcript a later Re-transcribe Audio produces would never be
     /// extracted. Nothing is lost by waiting there: that job nudges the loop
     /// itself when it lands. And with Auto-Summarize on, the summary starting
-    /// on the next screen already nudges when it finishes
-    /// (`MeetingJobs.onContentChanged`), as does the Brain tab's own `.task`;
-    /// nudging now would only make extraction and that summary contend for the
-    /// single on-device model.
+    /// on the next screen nudges the loop when it ends, however it ends:
+    /// `MeetingJobs.onWorkEnded` fires on success, on the cancel a Stop tap
+    /// produces, and on failure alike, and `KnowledgeCatchUp.workEnded(context:)`
+    /// starts reading again once the last outstanding job is gone. Nudging now
+    /// would only make extraction and that summary contend for the single
+    /// on-device model.
+    ///
+    /// The gap left in that second case is a summary that never starts at all
+    /// — the selected engine is unavailable, or the auto-summary was already
+    /// claimed — since no job means no end to nudge from. The meeting then
+    /// waits for the Brain tab's own `.task` or the next scene activation to be
+    /// read: later than a nudge here, but never lost.
     private func nudgeBrain(for meeting: Meeting) {
         guard meeting.hasTranscript, !destinationAutoSummarizes else { return }
         catchUp.nudge(context: context)
@@ -462,15 +503,33 @@ struct MeetingListView: View {
 
     private func handleDeepLink(_ url: URL) {
         guard let deepLink = MinuteDeepLink(url: url) else { return }
-        switch deepLink {
-        case .newMeeting:
-            deepLinkState.receive(deepLink)
-            guard activeSession == nil else { return }
+        deepLinkState.receive(deepLink)
+        switch MeetingDeepLinkState.action(
+            for: deepLink,
+            isRecording: activeSession != nil,
+            isShowingNewMeeting: showingNewMeeting
+        ) {
+        case .ignore:
+            break
+        case .presentNewMeeting:
+            dismissPresentedSheets()
             beginNewMeeting()
-        case .meeting:
-            deepLinkState.receive(deepLink)
+        case .openMeeting:
+            dismissPresentedSheets()
             resolvePendingMeetingDeepLink()
         }
+    }
+
+    /// Clears anything modal covering the navigation stack, so a deep link's
+    /// destination is what the user actually sees. A meeting link used to push
+    /// the detail *underneath* an open Settings sheet — the user who tapped a
+    /// widget row got Settings until they found Done. Clearing
+    /// `showingNewMeeting` here is safe for the new-meeting link too: that
+    /// case only reaches this when the sheet is already down.
+    private func dismissPresentedSheets() {
+        showingSettings = false
+        showingImporter = false
+        showingNewMeeting = false
     }
 
     private func resolvePendingMeetingDeepLink() {

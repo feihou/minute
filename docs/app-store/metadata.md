@@ -86,6 +86,7 @@ Minute brings private meeting notes to your iPhone:
 - Confirm the App Store price before adding any pricing language; the product copy above makes no free/paid claim.
 - Test live transcription for the release device languages. Recording still works when transcription is unavailable or its model is not ready.
 - Confirm the archived app still contains FluidAudio 0.15.5 and inspect the archive's privacy report before upload.
+- The iCloud Drive device folder is named `iPhone` plus four characters (e.g. `iPhone 3F1A`), never the name the user gave the iPhone: that needs the `com.apple.developer.device-information.user-assigned-device-name` entitlement, which Minute does not hold. Support copy, screenshots, and answers to reviewers must not promise a device name.
 - Verify the FluidAudio model size/host and the model host's request-data retention practices for the exact release dependency. The copy intentionally does not promise that connection metadata is never retained.
 - Speaker perspectives are conditional: they appear only after the transcript has speaker labels.
 - Imported audio can be saved without a transcript when Apple Speech is unavailable or transcription fails.

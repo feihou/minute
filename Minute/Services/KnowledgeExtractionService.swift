@@ -34,6 +34,19 @@ struct KnowledgeCandidate: Sendable, Equatable {
     var validatedQuote: String?
 }
 
+/// What one extraction pass produced. The refused count rides along because a
+/// meeting the guardrails only partly read must not be stamped as read: the
+/// caller has to tell "this transcript held no durable facts" from "part of it
+/// was refused", the same distinction the summarizer records as skippedParts.
+struct KnowledgeExtractionResult: Sendable, Equatable {
+    var candidates: [KnowledgeCandidate]
+    /// Chunks the on-device guardrails refused. Non-zero means the transcript
+    /// was only partly read.
+    var refusedChunkCount: Int = 0
+
+    static let empty = KnowledgeExtractionResult(candidates: [])
+}
+
 /// Extracts durable facts from a transcript with the on-device model.
 /// Mirrors SummarizationService: same model, guardrails, chunker, and
 /// context-overflow halving. Nothing leaves the device.
@@ -61,7 +74,7 @@ struct KnowledgeExtractionService {
     func extract(
         transcript: String,
         knownEntityNames: [String]
-    ) async throws -> [KnowledgeCandidate] {
+    ) async throws -> KnowledgeExtractionResult {
         if let message = Self.availabilityMessage {
             throw SummarizerError.unavailable(message)
         }
@@ -84,12 +97,11 @@ struct KnowledgeExtractionService {
         transcript: String,
         knownEntityNames: [String],
         maxChars: Int
-    ) async throws -> [KnowledgeCandidate] {
+    ) async throws -> KnowledgeExtractionResult {
         let chunks = TranscriptChunker.chunks(from: transcript, maxChars: maxChars)
-        guard !chunks.isEmpty else { return [] }
+        guard !chunks.isEmpty else { return .empty }
         var candidates: [KnowledgeCandidate] = []
         var refusals = 0
-        var lastRefusal: Error?
         for chunk in chunks {
             try Task.checkCancellation()
             do {
@@ -98,9 +110,17 @@ struct KnowledgeExtractionService {
             } catch let error as LanguageModelSession.GenerationError {
                 switch error {
                 case .guardrailViolation, .refusal:
-                    // One refused chunk shouldn't cost the meeting's other facts.
+                    // One refused chunk shouldn't cost the meeting's other
+                    // facts — and a transcript refused end to end is counted
+                    // the same way, never rethrown. Surfacing the last refusal
+                    // instead reached the caller as a bare GenerationError,
+                    // indistinguishable from a pass that failed outright: the
+                    // meeting was skip-listed for the session with the count
+                    // thrown away, so the Brain tab could only offer the
+                    // generic "still to read" text for a meeting nothing would
+                    // read again today. A counted result says both halves —
+                    // no facts, and how much was refused.
                     refusals += 1
-                    lastRefusal = error
                 case .exceededContextWindowSize:
                     throw error  // handled by the halving loop above
                 default:
@@ -108,11 +128,7 @@ struct KnowledgeExtractionService {
                 }
             }
         }
-        // Every chunk refused → surface it so the caller can skip visibly.
-        if candidates.isEmpty, refusals == chunks.count, let lastRefusal {
-            throw lastRefusal
-        }
-        return candidates
+        return KnowledgeExtractionResult(candidates: candidates, refusedChunkCount: refusals)
     }
 
     private func extractChunk(_ chunk: String, knownEntityNames: [String]) async throws -> KnowledgeChunkDraft {
@@ -139,16 +155,38 @@ struct KnowledgeExtractionService {
     /// the roster lives in the app, never in the context window (spec §2).
     static let hintCap = 20
 
+    /// Tokens shorter than this ("the" is three, but "of", "a", "b", "q3" are
+    /// not) prove nothing on their own: a roster name is offered only when the
+    /// chunk holds the whole phrase, or every token of it long enough to mean
+    /// something.
+    static let minimumHintTokenLength = 3
+
+    /// Hints in match-strength order — the name spoken in full first, then
+    /// names whose every long token appears — so `hintCap` cuts the weakest
+    /// matches rather than whichever names the fetch happened to return last.
+    /// Without this, twenty roster names sharing an ordinary word with the
+    /// chunk could push out the one name actually said, and the model would
+    /// invent a second spelling that resolution cannot match.
     static func hintNames(for chunk: String, from names: [String]) -> [String] {
-        let haystack = " " + KnowledgeText.normalized(chunk) + " "
-        return Array(
-            names.filter { name in
-                KnowledgeText.normalized(name)
-                    .split(separator: " ")
-                    .contains { haystack.contains(" \($0) ") }
+        let haystack = " " + KnowledgeText.inOrder(chunk) + " "
+        var phrases: [String] = []
+        var partials: [String] = []
+        for name in names {
+            let normalized = KnowledgeText.inOrder(name)
+            guard !normalized.isEmpty else { continue }
+            if haystack.contains(" \(normalized) ") {
+                phrases.append(name)
+                continue
             }
-            .prefix(hintCap)
-        )
+            let tokens = normalized
+                .split(separator: " ")
+                .filter { $0.count >= minimumHintTokenLength }
+            guard !tokens.isEmpty else { continue }
+            if tokens.allSatisfy({ haystack.contains(" \($0) ") }) {
+                partials.append(name)
+            }
+        }
+        return Array((phrases + partials).prefix(hintCap))
     }
 
     /// Diarization labels unnamed voices "Speaker N" (Meeting.speakerName).

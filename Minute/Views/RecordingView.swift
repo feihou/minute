@@ -1,5 +1,6 @@
 import SwiftData
 import SwiftUI
+import UIKit
 
 /// Full-screen recording studio: title, status, elapsed time, live waveform,
 /// live transcript, and pause/resume/stop controls on a dark backdrop.
@@ -58,8 +59,14 @@ struct RecordingView: View {
             ) {
                 Button("Discard Recording", role: .destructive) {
                     Task {
-                        await session.discard()
-                        onFinish(nil)
+                        // false = the meeting row couldn't be deleted, so it is
+                        // still in the library with its audio; the session goes
+                        // to .failed rather than dismissing on a discard that
+                        // didn't happen. That state offers Keep in Library and
+                        // Try Again, so staying put is never a dead end.
+                        if await session.discard(in: context) {
+                            onFinish(nil)
+                        }
                     }
                 }
                 Button("Keep Recording", role: .cancel) {}
@@ -90,42 +97,90 @@ struct RecordingView: View {
             ProgressView("Preparing…")
                 .padding(.vertical, 20)
         case .saving:
-            ProgressView("Finishing transcript…")
-                .padding(.vertical, 20)
-        case .failed(let message):
+            VStack(spacing: 12) {
+                ProgressView("Finishing transcript…")
+                // The final pass is unbounded and everything else on this
+                // screen is disabled while it runs. Never leave the user
+                // without a way to finish a recording that is already saved.
+                Button("Save without transcript") {
+                    Task { await session.saveWithoutTranscript() }
+                }
+                .buttonStyle(.bordered)
+                .font(.footnote)
+            }
+            .padding(.vertical, 20)
+        case .failed(let message, let canOpenSettings):
             VStack(spacing: 12) {
                 Label(message, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.red)
                     .font(.callout)
                     .multilineTextAlignment(.center)
                 HStack(spacing: 12) {
-                    if session.didStartRecording {
-                        // Never force the user to throw away captured audio.
-                        Button("Save Recording") {
-                            Task {
-                                // nil = save failed; the session stays in
-                                // .failed so this screen remains for a retry.
-                                if let meeting = await session.finish(in: context) {
-                                    onFinish(meeting)
-                                }
+                    if canOpenSettings {
+                        // The only failure the user can fix without leaving
+                        // the meeting behind — don't make them hunt through
+                        // iOS Settings by hand on every attempt.
+                        Button("Open Settings") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) {
+                                UIApplication.shared.open(url)
                             }
                         }
                         .buttonStyle(.borderedProminent)
                     }
-                    Button(session.didStartRecording ? "Discard" : "Close", role: .destructive) {
-                        if session.didStartRecording {
-                            // Captured audio deserves the same confirmation the
-                            // toolbar Discard has; this button sits 12pt from
-                            // Save Recording.
-                            confirmingDiscard = true
-                        } else {
+                    if session.discardFailed {
+                        // The way out, and prominent for the same reason Save
+                        // Recording is: it's the choice that keeps data. This
+                        // sheet can't be swiped away and the failure is storage
+                        // that won't free itself while the user is held here,
+                        // so without this button every remaining control
+                        // retries the same failing delete and the only escape
+                        // is force-quitting. Leaving is safe — the delete
+                        // didn't commit, so the meeting and the audio it points
+                        // at both survived together, and the meeting is
+                        // deletable from the list whenever they like.
+                        Button("Keep in Library") { onFinish(nil) }
+                            .buttonStyle(.borderedProminent)
+                        Button("Try Again", role: .destructive) {
                             Task {
-                                await session.discard()
-                                onFinish(nil)
+                                // Dismiss only once the row is really gone.
+                                if await session.discard(in: context) {
+                                    onFinish(nil)
+                                }
                             }
                         }
+                        .buttonStyle(.bordered)
+                    } else {
+                        if session.didStartRecording {
+                            // Never force the user to throw away captured audio.
+                            Button("Save Recording") {
+                                Task {
+                                    // nil = save failed; the session stays in
+                                    // .failed so this screen remains for a retry.
+                                    if let meeting = await session.finish(in: context) {
+                                        onFinish(meeting)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                        Button(session.didStartRecording ? "Discard" : "Close", role: .destructive) {
+                            if session.didStartRecording {
+                                // Captured audio deserves the same confirmation
+                                // the toolbar Discard has; this button sits 12pt
+                                // from Save Recording.
+                                confirmingDiscard = true
+                            } else {
+                                Task {
+                                    // Nothing was captured, so there is nothing
+                                    // to delete and this always dismisses.
+                                    if await session.discard(in: context) {
+                                        onFinish(nil)
+                                    }
+                                }
+                            }
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.bordered)
                 }
             }
             .padding(.horizontal)
@@ -251,6 +306,15 @@ struct RecordingView: View {
                 VStack(spacing: 10) {
                     ProgressView("Downloading transcription model…")
                     Text("Recording continues while the model downloads — the live transcript starts once it's ready. This only happens once.")
+                        .font(.footnote)
+                        .foregroundStyle(.white.opacity(0.5))
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .loadingModel:
+                VStack(spacing: 10) {
+                    ProgressView("Loading the transcription model…")
+                    Text("Recording continues while the model loads — the live transcript starts once it's ready.")
                         .font(.footnote)
                         .foregroundStyle(.white.opacity(0.5))
                         .multilineTextAlignment(.center)

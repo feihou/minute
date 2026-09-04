@@ -670,12 +670,68 @@ struct SummarizationService {
     }
 
     /// Shared with the local-model engine so both honor one output contract.
+    ///
+    /// The model is told to write the exact literal when an owner or deadline
+    /// was never stated (groundingRules, the @Guide text, and the same rules
+    /// reused by the MLX engine), so anything else is the model disobeying —
+    /// which the free-form-JSON local engine does, and which a Summary Language
+    /// makes more likely still because the placeholder gets translated too.
+    /// Whatever only means "nobody said" has to land on the literal, or the
+    /// detail caption and the exported notes present it as a real owner.
     static func normalizedField(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty || trimmed.lowercased() == "not specified" || trimmed.lowercased() == "none" || trimmed.lowercased() == "unknown" {
-            return ActionItem.notSpecified
-        }
-        return trimmed
+        return isPlaceholder(trimmed) ? ActionItem.notSpecified : trimmed
+    }
+
+    /// Punctuation and quote marks a model wraps a placeholder in, trimmed off
+    /// both ends before matching so "Not specified.", "「未定」" and "-" all
+    /// reduce to something the set below can answer.
+    private static let placeholderTrimming = CharacterSet(
+        charactersIn: " \t.。!?！？,、;:；：\"'“”‘’「」『』()（）[]{}-–—_…"
+    )
+
+    /// Spellings of "we don't know" this normalizer maps to the literal. The
+    /// non-English entries cover every AppSettings.summaryLanguageOptions
+    /// value; matching is on the lowercased, punctuation-stripped form, so
+    /// only one casing of each needs listing.
+    private static let placeholders: Set<String> = [
+        // English
+        "not specified", "none", "unknown", "n/a", "na", "tbd", "tba",
+        "unspecified", "not stated", "not mentioned", "not given",
+        "not assigned", "not applicable", "nobody", "no one", "no owner",
+        "no deadline", "to be determined",
+        // Spanish
+        "no especificado", "no especificada", "sin especificar", "ninguno",
+        "ninguna", "desconocido", "nadie", "sin asignar", "sin responsable",
+        "sin fecha", "por determinar",
+        // French
+        "non spécifié", "non spécifiée", "non précisé", "aucun", "aucune",
+        "inconnu", "personne", "non attribué", "sans responsable",
+        "sans échéance", "à déterminer",
+        // German
+        "nicht angegeben", "nicht spezifiziert", "kein", "keine", "keiner",
+        "unbekannt", "niemand", "nicht zugewiesen", "ohne frist",
+        // Italian
+        "non specificato", "non specificata", "nessuno", "nessuna",
+        "sconosciuto", "non assegnato", "da definire", "senza scadenza",
+        // Portuguese
+        "não especificado", "não especificada", "nenhum", "nenhuma",
+        "desconhecido", "ninguém", "não atribuído", "a definir", "sem prazo",
+        // Japanese and Chinese share these spellings
+        "未指定", "未定", "不明",
+        // Japanese
+        "なし", "指定なし", "未割り当て", "担当者なし", "期限なし",
+        // Korean
+        "지정되지 않음", "미지정", "미정", "알 수 없음", "없음", "담당자 없음", "기한 없음",
+        // Chinese
+        "待定", "未知", "无", "無", "暂无", "暫無", "未指明", "无负责人", "无截止日期",
+    ]
+
+    private static func isPlaceholder(_ value: String) -> Bool {
+        let stripped = value.lowercased().trimmingCharacters(in: placeholderTrimming)
+        // Empty, or nothing but punctuation ("-", "—", "…"): no answer either way.
+        guard !stripped.isEmpty else { return true }
+        return placeholders.contains(stripped)
     }
 
     /// Shared with the local-model engine so both honor one output contract.

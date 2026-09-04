@@ -55,6 +55,44 @@ enum ICloudDriveBackup {
     private static let deviceIdentityKey = "backup.deviceIdentity"
     private static let deviceVendorKey = "backup.deviceVendorID"
 
+    /// Meetings deleted since some snapshot was taken. A snapshot is captured
+    /// on the main actor and mirrored on a background task, so the user can
+    /// delete a meeting while the run is still copying earlier ones — and each
+    /// Item carries that meeting's full notes text in memory. One UUID per
+    /// deletion for the life of the process is nothing beside writing a deleted
+    /// transcript to iCloud, so nothing here is aged out; the only way an id
+    /// leaves is `noteMeetingDeleteFailed`, when the delete did not commit.
+    private nonisolated(unsafe) static var deletedMeetingIDs: Set<String> = []
+    private static let deletedMeetingLock = NSLock()
+
+    /// Tells any mirror run in flight that this meeting is gone. Safe from any
+    /// thread and at any point around the delete — the mirror only reads.
+    nonisolated static func noteMeetingDeleted(_ id: UUID) {
+        deletedMeetingLock.lock()
+        defer { deletedMeetingLock.unlock() }
+        deletedMeetingIDs.insert(id.uuidString)
+    }
+
+    /// Takes that back when the delete did not commit. `MeetingStore.delete`
+    /// re-inserts the meeting and returns false if the save throws, and the
+    /// user is told the delete failed — so a noted deletion is a prediction,
+    /// not a fact, and the caller must retract it on that rollback path.
+    /// Without this the mirror would skip a meeting the user still has for the
+    /// rest of the process, and the folder a run had already removed would stay
+    /// gone from iCloud Drive with the backup still reported complete. The next
+    /// sync re-creates it, the way it would for any meeting not mirrored yet.
+    nonisolated static func noteMeetingDeleteFailed(_ id: UUID) {
+        deletedMeetingLock.lock()
+        defer { deletedMeetingLock.unlock() }
+        deletedMeetingIDs.remove(id.uuidString)
+    }
+
+    private nonisolated static func isDeletedSinceSnapshot(_ meetingID: String) -> Bool {
+        deletedMeetingLock.lock()
+        defer { deletedMeetingLock.unlock() }
+        return deletedMeetingIDs.contains(meetingID)
+    }
+
     /// Everything the mirror needs from one meeting, captured on the main
     /// actor so the file work can run in the background.
     struct Item: Sendable {
@@ -597,6 +635,27 @@ enum ICloudDriveBackup {
 
         for item in items {
             guard shouldContinue() else { return Swift.max(outcome, .interrupted) }
+            // The snapshot is minutes old by the time a large library reaches
+            // its last meetings, and every Item still holds that meeting's
+            // whole notes text in memory: a meeting deleted since must not have
+            // it written now, and must lose the folder an earlier sync gave it.
+            // Everything it owns goes here rather than through the sweep below,
+            // which judges by `chosen` and cannot see a folder this run parked
+            // under a staging name — and which, handed URLs this loop already
+            // removed, would report the run incomplete over folders that are
+            // correctly gone.
+            if isDeletedSinceSnapshot(item.meetingID) {
+                if !takeBack(item.meetingID, owned: owned, parked: &parked, live: &live) {
+                    outcome = .incomplete
+                }
+                continue
+            }
+            // Held rather than judged here: the recheck below is what decides
+            // whether a failure is one. The user's delete can remove the
+            // recording between the size check `write` makes and the copy that
+            // reads it, and that copy's failure is the delete working, not the
+            // backup breaking.
+            var writeError: Error?
             do {
                 let placed = try place(item, existing: live[item.meetingID], in: documents)
                 live[item.meetingID] = placed.url
@@ -605,14 +664,35 @@ enum ICloudDriveBackup {
                     into: placed.url,
                     created: placed.created,
                     verifyRecordingContents: (owned[item.meetingID]?.count ?? 0) > 1,
-                    shouldContinue: shouldContinue
+                    // A recording can be hundreds of megabytes and the copy
+                    // runs to completion once started, so this is where a run
+                    // spends nearly all of its time — and where a deletion is
+                    // most likely to land. Let it stop the copy at the next
+                    // check rather than finish writing a meeting that is
+                    // already gone.
+                    shouldContinue: { shouldContinue() && !isDeletedSinceSnapshot(item.meetingID) }
                 )
             } catch {
+                writeError = error
+            }
+            // The check above is minutes old by the time a large recording has
+            // finished copying, so ask again with the folder already written:
+            // otherwise the meeting stays in `chosen`, the sweep below skips
+            // it on that basis, and the run reports a complete backup with a
+            // deleted transcript sitting in iCloud Drive until a later sync.
+            // Failing to write it changes nothing about that — a partly
+            // written folder is exactly what has to go — and a run that took
+            // one back is only incomplete if something it owns survived.
+            if isDeletedSinceSnapshot(item.meetingID) {
+                if !takeBack(item.meetingID, owned: owned, parked: &parked, live: &live) {
+                    outcome = .incomplete
+                }
+            } else if let writeError {
                 // One unmirrorable meeting still must not block the rest — but
                 // the run is no longer a complete backup, and the caller has to
                 // know that before it tells the user everything is safe.
                 outcome = .incomplete
-                logger.error("Mirroring \(item.folderName) failed: \(error.localizedDescription)")
+                logger.error("Mirroring \(item.folderName) failed: \(writeError.localizedDescription)")
             }
         }
 
@@ -649,6 +729,39 @@ enum ICloudDriveBackup {
             }
         }
         return outcome
+    }
+
+    /// Removes everything one meeting owns and forgets it, for a meeting the
+    /// user deleted while this run was mirroring it. Deliberately kept out of
+    /// the sweep below, which judges by `chosen`: the sweep cannot see a folder
+    /// this run parked under a staging name, and — handed URLs already removed
+    /// here — would report the run incomplete over folders that are correctly
+    /// gone. Forgetting the meeting in `live` is what stops the duplicate prune
+    /// from looking at it afterwards.
+    ///
+    /// Returns whether every removal succeeded; false means a deleted
+    /// meeting's bytes are still in iCloud Drive, which the caller reports.
+    private nonisolated static func takeBack(
+        _ meetingID: String,
+        owned: [String: [URL]],
+        parked: inout [String: URL],
+        live: inout [String: URL]
+    ) -> Bool {
+        let movedFrom = parked.removeValue(forKey: meetingID)
+        var folders = (owned[meetingID] ?? []).filter { $0 != movedFrom }
+        if let current = live.removeValue(forKey: meetingID), !folders.contains(current) {
+            folders.append(current)
+        }
+        var removed = true
+        for url in folders {
+            // `owned` was read before this run renamed anything, so a folder
+            // it names may since have moved to the name the item asked for —
+            // and removing what is no longer there would count a folder that
+            // is correctly gone as a removal that failed.
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            if !removeMirror(at: url) { removed = false }
+        }
+        return removed
     }
 
     /// Whether the kept folder is safe enough for duplicate copies to go.

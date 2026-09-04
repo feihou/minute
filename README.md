@@ -39,7 +39,7 @@ Meeting audio is some of the most sensitive data on your phone. Most meeting-not
 
 | Guarantee | How |
 |---|---|
-| Audio, transcripts, summaries stay on device by default | Stored in the app sandbox (Application Support + SwiftData), excluded from iCloud/computer device backups by default; opt-in Settings toggles can include them in the iPhone's device backup (**iCloud Backup**) or mirror a browsable per-meeting folder into iCloud Drive (**iCloud Drive Folder**, under `Minute/<this device>/`); turning a toggle back off stops future copies but leaves existing iCloud copies for you to manage — **meeting content is never sent to the developer or a model service** |
+| Audio, transcripts, summaries stay on device by default | Stored in the app sandbox (Application Support + SwiftData), excluded from iCloud/computer device backups by default; opt-in Settings toggles can include them in the iPhone's device backup (**iCloud Backup**) or mirror a browsable per-meeting folder into iCloud Drive (**iCloud Drive Folder**, under `Minute/iPhone <4 characters>/`); turning a toggle back off stops future copies but leaves existing iCloud copies for you to manage — **meeting content is never sent to the developer or a model service** |
 | No account, analytics, or tracking | There is no backend or telemetry SDK. The third-party packages are all on-device model runtimes — FluidAudio (speaker identification), WhisperKit (optional transcription), and MLX (optional local summaries) — never clients for a service that sees your meetings |
 | Transcription is local | Apple `SpeechTranscriber` with on-device model assets, or an optional WhisperKit model running offline after download |
 | Summarization is local | Apple `FoundationModels` (Apple Intelligence on-device model), or an optional local model run through MLX |
@@ -47,14 +47,14 @@ Meeting audio is some of the most sensitive data on your phone. Most meeting-not
 | Speaker identification is local after setup | FluidAudio's CoreML models download from Hugging Face when first used and are then cached; the request does not include recordings, transcripts, or other meeting content |
 | Delete means delete | Removing a meeting removes its saved audio file, its database row, and the Brain facts extracted from it — including any entity left with nothing else to say, since its name was learned from that meeting too. A fact a surviving meeting also states is re-pointed at that meeting rather than dropped. Orphaned audio and orphaned facts are both swept at launch |
 
-> Network activity is limited to model setup and user-chosen iCloud features: iOS may fetch Apple's on-device speech assets, FluidAudio fetches its speaker-identification models from Hugging Face when you first use that feature, and any Whisper or local summary model you pick in Settings is downloaded from Hugging Face when you tap Get. None of these paths uploads recordings, transcripts, summaries, or other meeting content — they are file downloads.
+> Network activity is limited to model setup and user-chosen iCloud features: iOS may fetch Apple's on-device speech assets, FluidAudio fetches its speaker-identification models from Hugging Face when you first use that feature, and any Whisper or local summary model you pick in Settings is downloaded from Hugging Face when you tap Get (or Update, for a model that only needs its tokenizer). None of these paths uploads recordings, transcripts, summaries, or other meeting content — they are file downloads.
 
 ### Where the two backup options put your data
 
 | | **iCloud Backup** | **iCloud Drive Folder** |
 |---|---|---|
-| Where it lands | Inside the iPhone's device backup blob — not browsable | `Files → iCloud Drive → Minute → <your iPhone>/<date> <title>/` |
-| What you see | Nothing in Files; the app appears in Settings → iCloud → iCloud Backup with its size | One folder per meeting containing `notes.md` and the audio file (plus a hidden `.minute-<id>` marker the sync uses to recognize its own folders) |
+| Where it lands | Inside the iPhone's device backup blob — not browsable | `Files → iCloud Drive → Minute → iPhone 3F1A/<date> <title>/` — the device folder is always named `iPhone` plus four characters. Showing the name you gave the iPhone needs an Apple entitlement Minute does not hold, so two iPhones appear as two four-character folders |
+| What you see | Nothing in Files; the app appears in Settings → iCloud → iCloud Backup with its size | One folder per meeting containing `notes.md` and the audio file, plus three hidden marker files the sync uses to recognize its own folders: `.minute-<meeting id>` and `.minute-notes-<fingerprint>` in each meeting folder, and `.minute-device-<uuid>` in the device folder. None of them contains meeting content — the fingerprint is a truncated SHA-256 of the notes and the others are identifiers |
 | When it updates | On iOS's normal device-backup schedule | When you enable it, and again when the app enters the background |
 | Getting data back | Only by restoring the whole iPhone from that backup | Open or copy any file directly, on iPhone or Mac |
 

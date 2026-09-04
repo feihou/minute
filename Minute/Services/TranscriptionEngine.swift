@@ -7,6 +7,11 @@ enum TranscriptionAvailability: Equatable {
     case unknown
     case available
     case downloadingModel
+    /// Model files are on disk but not loaded yet. Whisper's first load
+    /// compiles the Core ML weights for this device, which takes tens of
+    /// seconds to minutes; the recorder is already capturing, so the UI must
+    /// be able to say "loading" instead of an empty "Listening…".
+    case loadingModel
     case unavailable(String)
 }
 

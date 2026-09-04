@@ -112,7 +112,7 @@ enum AudioImporter {
             }
         case .unavailable(let message):
             transcriptionNote = "The audio was imported without a transcript. \(message)"
-        case .unknown, .downloadingModel:
+        case .unknown, .downloadingModel, .loadingModel:
             transcriptionNote = "The audio was imported without a transcript because the speech model wasn't ready."
         }
 

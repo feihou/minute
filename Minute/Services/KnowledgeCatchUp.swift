@@ -10,7 +10,7 @@ import SwiftData
 @MainActor
 @Observable
 final class KnowledgeCatchUp {
-    typealias Extractor = @MainActor (_ transcript: String, _ knownEntityNames: [String]) async throws -> [KnowledgeCandidate]
+    typealias Extractor = @MainActor (_ transcript: String, _ knownEntityNames: [String]) async throws -> KnowledgeExtractionResult
 
     /// Unstamped meetings remaining, for the m2 "catching up" row.
     private(set) var pendingCount = 0
@@ -19,6 +19,12 @@ final class KnowledgeCatchUp {
     /// catch-up row keys on this, not on pendingCount — pending work can sit
     /// skip-listed while the loop is idle, and a spinner would be a lie.
     private(set) var isWorking = false
+
+    /// Chunks the guardrails refused, per meeting, as of the last read of it.
+    /// Such a meeting stays unstamped so a later launch retries it; this is
+    /// what a Brain surface can show meanwhile, the way a summary shows
+    /// "N parts couldn't be summarized".
+    private(set) var skippedChunksByMeeting: [UUID: Int] = [:]
 
     private let availabilityMessage: @MainActor () -> String?
     private let extract: Extractor
@@ -30,6 +36,38 @@ final class KnowledgeCatchUp {
     /// otherwise hand the restart nudge to a task that is about to exit,
     /// and nothing would run again until the next scene transition.
     private var restartRequested: ModelContext?
+    /// True between `pause()` and `resume(context:)` — the app is not
+    /// foreground. The loop is foreground-only (spec §5): FoundationModels
+    /// rate-limits background apps, and once a finished job's background token
+    /// ends the app is suspended mid-request. Only the scene coming back lifts
+    /// this, so a job that completes in the background cannot restart reading
+    /// there by nudging.
+    private var pausedByScene = false
+    /// Jobs the user started that are still holding the on-device model. A
+    /// COUNT, not a flag: a flag can only be cleared by something that happens
+    /// afterwards, and the exits that never nudge — a summary the user stopped,
+    /// an unreadable local merge, a re-transcription that produced no text —
+    /// would leave it set for the rest of the foreground session with the Brain
+    /// silent behind it. Counting also survives the local-model gate queueing
+    /// job B behind job A: A finishing must not speak for B.
+    private var outstandingWork = 0
+    /// The loop may run only while neither reason to stop is in force.
+    private var isPaused: Bool { pausedByScene || outstandingWork > 0 }
+    /// The context of the most recent nudge, so a loop the device paused
+    /// (thermal, rate limit) can restart itself without waiting for the next
+    /// scene transition. Every caller nudges with the same main-actor context.
+    private var lastContext: ModelContext?
+    /// How long a loop the device stopped waits before nudging itself. Only
+    /// the failures the model reports mid-extraction earn one: a rate limit
+    /// and evicted assets are "not now" by construction, since the model was
+    /// there when the pass started. Unavailability at the top of the loop is
+    /// not — see the guard in `run` — so it is deliberately not retried.
+    /// Injectable so tests don't wait a minute.
+    private let retryDelay: Duration
+    /// At most one delayed retry outstanding: the loop's own guards are cheap,
+    /// but a timer per stalled pass would pile up.
+    private var retryTask: Task<Void, Never>?
+    @ObservationIgnored nonisolated(unsafe) private var observerTokens: [any NSObjectProtocol] = []
     /// Meetings that failed or were empty this session, keyed by the
     /// transcript they had at the time. Skipped, not retried hot, so one
     /// permanently-refusing meeting can't head-of-line-block the queue —
@@ -71,22 +109,87 @@ final class KnowledgeCatchUp {
 
     init(
         availabilityMessage: @escaping @MainActor () -> String? = { KnowledgeExtractionService.availabilityMessage },
+        retryDelay: Duration = .seconds(60),
         extract: @escaping Extractor = { transcript, names in
             try await KnowledgeExtractionService().extract(transcript: transcript, knownEntityNames: names)
         }
     ) {
         self.availabilityMessage = availabilityMessage
+        self.retryDelay = retryDelay
         self.extract = extract
+        observerTokens.append(NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.thermalStateDidChange()
+            }
+        })
+    }
+
+    deinit {
+        for token in observerTokens {
+            NotificationCenter.default.removeObserver(token)
+        }
+    }
+
+    /// The device cooled back to nominal or fair: the only signal that the
+    /// loop's thermal guard no longer holds. Tests call this directly — the
+    /// notification itself cannot be provoked, and the observer above is one
+    /// line of wiring.
+    func thermalStateDidChange() {
+        let thermal = ProcessInfo.processInfo.thermalState
+        guard thermal == .nominal || thermal == .fair else { return }
+        guard !isPaused, let lastContext else { return }
+        nudge(context: lastContext)
+    }
+
+    /// One delayed re-nudge after the model said "not now" mid-extraction.
+    /// Weak, so a discarded loop is not kept alive by a pending timer. Only
+    /// for conditions that clear on their own: a caller that can also be
+    /// permanent would arm this again on every retried pass, forever.
+    private func scheduleRetry() {
+        guard retryTask == nil, !isPaused, lastContext != nil else { return }
+        let delay = retryDelay
+        retryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            retryTask = nil
+            guard !isPaused, let lastContext else { return }
+            // The loop that armed this retry may still be unwinding —
+            // scheduleRetry() runs inside run(), before the task that owns it
+            // clears `running` — and a nudge into a live loop arms nothing.
+            // Hand that loop a restart instead; its tail consumes it.
+            if running != nil {
+                restartRequested = lastContext
+                return
+            }
+            nudge(context: lastContext)
+        }
     }
 
     /// Starts the loop if it isn't running. Cheap to call often.
+    ///
+    /// Every caller is a moment reading is wanted: a job finishing
+    /// (`MeetingJobs.onContentChanged`), the Brain tab appearing, the scene
+    /// coming back. None of them lifts a pause: while a job holds the model
+    /// only that job ending may start reading again (`workEnded(context:)`),
+    /// and only the scene coming back lifts the scene pause — a nudge under
+    /// either one records the context and waits.
     func nudge(context: ModelContext) {
+        lastContext = context
+        guard !isPaused else { return }
         if let running {
             if running.isCancelled {
                 restartRequested = context
             }
             return
         }
+        // A loop is starting now, so a timer waiting to start one is spent —
+        // and leaving it armed would block the next retry the loop needs.
+        retryTask?.cancel()
+        retryTask = nil
         running = Task { [self] in
             isWorking = true
             await run(context: context)
@@ -99,15 +202,50 @@ final class KnowledgeCatchUp {
         }
     }
 
-    /// Stops after the in-flight meeting. Call when the scene deactivates.
-    /// Also disarms any restart a mid-teardown nudge queued: that nudge
-    /// belonged to a foreground moment this pause has already ended, and
-    /// consuming it later would start an uncancelled loop while the app is
-    /// inactive — burning rate-limited FoundationModels calls and
+    /// What both pauses do: stop after the in-flight meeting, and disarm any
+    /// restart a mid-teardown nudge queued — that nudge belonged to a moment
+    /// the pause has already ended, and consuming it later would start an
+    /// uncancelled loop, burning rate-limited FoundationModels calls and
     /// skip-listing every meeting they fail on until the next launch.
-    func pause() {
+    private func stopLoop() {
         running?.cancel()
         restartRequested = nil
+        retryTask?.cancel()
+        retryTask = nil
+    }
+
+    /// The scene left `.active`. Call from the scene-phase handler; only
+    /// `resume(context:)` lifts it.
+    func pause() {
+        pausedByScene = true
+        stopLoop()
+    }
+
+    /// A job the user started wants the on-device model. Extraction gets out
+    /// of the way until every such job has ended (`workEnded(context:)`).
+    func pauseForWork() {
+        outstandingWork += 1
+        stopLoop()
+    }
+
+    /// One job left the field, whatever it did there — MeetingJobs fires this
+    /// on success, on failure, and on the cancel a Stop tap produces. Reading
+    /// resumes once the last of them is gone; while another is still running
+    /// this only decrements, so a queued job keeps the model to itself.
+    /// Balanced against `pauseForWork()`, and guarded so an unpaired call (a
+    /// job that started before this instance existed) can't drive the count
+    /// negative and park the loop forever.
+    func workEnded(context: ModelContext) {
+        guard outstandingWork > 0 else { return }
+        outstandingWork -= 1
+        guard outstandingWork == 0 else { return }
+        nudge(context: context)
+    }
+
+    /// The scene came back to `.active`: the one door out of `pause()`.
+    func resume(context: ModelContext) {
+        pausedByScene = false
+        nudge(context: context)
     }
 
     /// Test hook: resolves when the loop (and any restart it queued) has
@@ -125,6 +263,16 @@ final class KnowledgeCatchUp {
         // Not a per-meeting failure: when the model isn't ready, leave the
         // queue untouched and wait for a later nudge (mirrors the thermal
         // guard's return-without-consuming semantics).
+        //
+        // Deliberately no scheduleRetry() here. This message is as often
+        // permanent as transient — an iPhone that can't run Apple Intelligence
+        // never becomes one that can — and a retry re-arms itself from this
+        // same guard on the next pass, so it would refetch every unstamped
+        // meeting once a delay for the whole foreground lifetime, on exactly
+        // the phones whose pending set can only grow. The reasons that do
+        // clear already have a door: turning Apple Intelligence on happens in
+        // Settings, which backgrounds the app, and the scene coming back
+        // nudges — as does the Brain tab appearing, or any job finishing.
         guard availabilityMessage() == nil else { return }
 
         while !Task.isCancelled {
@@ -144,7 +292,7 @@ final class KnowledgeCatchUp {
             let transcript = meeting.timestampedTranscriptText
             do {
                 let names = knownEntityNames(context: context)
-                let candidates = try await extract(transcript, names)
+                let result = try await extract(transcript, names)
                 // Deleted while the model was reading it — routine, since
                 // saving a recording is both what nudges this loop and when a
                 // botched take gets deleted. `isGone`, not `isDeleted`: the
@@ -160,8 +308,42 @@ final class KnowledgeCatchUp {
                 // unstamped and un-skipped, so this same loop picks it up again
                 // with the fresh transcript.
                 guard meeting.timestampedTranscriptText == transcript else { continue }
-                try KnowledgeIngest.apply(candidates, from: meeting, context: context)
-                meeting.knowledgeExtractedAt = .now
+                // Only a pass that read the whole transcript speaks for the
+                // meeting. A partial one may add but never replace: which
+                // chunks the guardrails refuse can differ between reads, so
+                // taking a retry's candidates as the meeting's whole extraction
+                // would delete the facts an earlier pass found in the passage
+                // this one never reached — every launch, since a partly read
+                // meeting is never stamped, until nothing was left.
+                try KnowledgeIngest.apply(
+                    result.candidates,
+                    from: meeting,
+                    context: context,
+                    replacingExisting: result.refusedChunkCount == 0
+                )
+                if result.refusedChunkCount > 0 {
+                    // Stamping would retire the meeting with those passages
+                    // never read — and the meetings richest in durable facts
+                    // are exactly the ones a guardrail refuses. Keep what was
+                    // extracted, remember how much was missed, and skip-list
+                    // the text that was read: a refusal is near-deterministic,
+                    // so retrying it inside this session would only spin, while
+                    // the next launch (or a re-transcription, which changes the
+                    // key) reads the meeting again.
+                    //
+                    // A transcript refused end to end lands here too: the
+                    // extractor counts those chunks rather than throwing the
+                    // last refusal, so the ingest above is a no-op and the
+                    // meeting is recorded in the refused-parts row instead of
+                    // dropping into the GenerationError catch below, which
+                    // would skip-list it just as silently but with nothing to
+                    // show for it.
+                    skippedChunksByMeeting[meeting.id] = result.refusedChunkCount
+                    skip(meeting, key: Self.contentKey(for: transcript))
+                } else {
+                    meeting.knowledgeExtractedAt = .now
+                    skippedChunksByMeeting[meeting.id] = nil
+                }
                 try context.save()
             } catch is CancellationError {
                 return
@@ -175,11 +357,21 @@ final class KnowledgeCatchUp {
             } catch let error as LanguageModelSession.GenerationError {
                 // Rate limiting is the device saying "not now", not a verdict
                 // on this meeting: stop without skip-listing (spec §5
-                // pause-and-resume) — the next nudge retries from here.
-                if case .rateLimited = error { return }
+                // pause-and-resume), and ask again after a delay — while the
+                // app stays open nothing else would.
+                if case .rateLimited = error {
+                    scheduleRetry()
+                    return
+                }
                 // Assets being evicted mid-loop is the same kind of "not now":
-                // the model is gone, not this meeting's fault.
-                if case .assetsUnavailable = error { return }
+                // the model is gone, not this meeting's fault. Worth a retry
+                // where the top-of-run guard isn't, because the model answered
+                // this pass before it vanished — that is the device taking it
+                // away, never the phone's permanent verdict.
+                if case .assetsUnavailable = error {
+                    scheduleRetry()
+                    return
+                }
                 // Permanent (refusal, etc.) failures skip for this session
                 // and retry at next launch.
                 skip(meeting, key: Self.contentKey(for: transcript))
@@ -205,14 +397,34 @@ final class KnowledgeCatchUp {
         return unstamped.filter(\.hasTranscript)
     }
 
-    private func nextPending(context: ModelContext) -> Meeting? {
+    /// The pending list, with the refused-parts record pruned to it. A meeting
+    /// leaves `pendingMeetings` when it is deleted or finally read through, and
+    /// a refusal recorded before that would otherwise sit in the Brain tab's
+    /// row for the rest of the session — telling the user that parts of a
+    /// meeting they deleted are still waiting to be read. Every read of the
+    /// queue goes through here, so the record can't outlive its subject.
+    private func livePendingMeetings(context: ModelContext) -> [Meeting] {
         let pending = pendingMeetings(context: context)
+        guard !skippedChunksByMeeting.isEmpty else { return pending }
+        let ids = Set(pending.map(\.id))
+        let kept = skippedChunksByMeeting.filter { ids.contains($0.key) }
+        // Assigned only when the filter actually dropped something: this runs
+        // on every loop iteration, and reassigning an `@Observable` property
+        // invalidates BrainView even when nothing about it changed.
+        if kept.count != skippedChunksByMeeting.count {
+            skippedChunksByMeeting = kept
+        }
+        return pending
+    }
+
+    private func nextPending(context: ModelContext) -> Meeting? {
+        let pending = livePendingMeetings(context: context)
         pendingCount = pending.count
         return pending.first { !isSkipped($0) }
     }
 
     private func refreshPendingCount(context: ModelContext) {
-        pendingCount = pendingMeetings(context: context).count
+        pendingCount = livePendingMeetings(context: context).count
     }
 
     private func knownEntityNames(context: ModelContext) -> [String] {

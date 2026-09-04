@@ -242,6 +242,43 @@ struct KnowledgeDeletionTests {
         #expect(try entities(in: context).isEmpty)
     }
 
+    @Test func launchReconcileRemovesEntitiesNamedAfterADiarizationPlaceholder() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "Standup")
+        context.insert(meeting)
+        // Written by a build from before the extractor filtered the label out.
+        let placeholder = KnowledgeEntity(name: "Speaker 2", kind: .person)
+        let real = KnowledgeEntity(name: "Priya", kind: .person)
+        context.insert(placeholder)
+        context.insert(real)
+        addFact("Owns the Japan launch", to: placeholder, from: meeting, context: context)
+        addFact("Owns the Japan launch", to: real, from: meeting, context: context)
+        try context.save()
+
+        // "Speaker 2" is a different person in every meeting, so a page under
+        // that name mixes strangers. It goes with its facts even though the
+        // meeting that produced them is still here.
+        #expect(KnowledgeStore.reconcile(context: context))
+
+        #expect(try entities(in: context).map(\.name) == ["Priya"])
+        #expect(try facts(in: context).count == 1)
+    }
+
+    @Test func launchReconcileKeepsARealNameThatMerelyStartsWithSpeaker() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "Standup")
+        context.insert(meeting)
+        let person = KnowledgeEntity(name: "Speaker Chen", kind: .person)
+        context.insert(person)
+        addFact("Runs the reading group", to: person, from: meeting, context: context)
+        try context.save()
+
+        #expect(KnowledgeStore.reconcile(context: context))
+
+        // Only the numbered diarization label is a placeholder.
+        #expect(try entities(in: context).map(\.name) == ["Speaker Chen"])
+    }
+
     // MARK: - Facts several meetings support
 
     @Test func aFactAnotherMeetingRestatedIsKeptAndRepointed() throws {

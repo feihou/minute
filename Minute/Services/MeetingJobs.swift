@@ -51,6 +51,23 @@ final class MeetingJobs {
     /// leave it unset.
     var onContentChanged: (@MainActor () -> Void)?
 
+    /// Fired on the main actor when a job actually starts, before its work
+    /// begins — the knowledge catch-up loop's work pause. Extraction and a
+    /// user-tapped summary otherwise issue FoundationModels requests against
+    /// the same on-device model at the same time, which is exactly the
+    /// competition the README promises the Brain avoids. Optional so tests and
+    /// previews can leave it unset.
+    var onWorkStarted: (@MainActor () -> Void)?
+
+    /// Fired on the main actor when a job leaves the field, however it ended —
+    /// the counterpart of `onWorkStarted`. Success alone cannot stand for this:
+    /// a summary the user stopped, an MLX merge that came back unreadable, a
+    /// re-transcription that produced no text and an unavailable engine all end
+    /// without ever reaching `onContentChanged`, and the pause `onWorkStarted`
+    /// took would then never be given back. Optional so tests and previews can
+    /// leave it unset.
+    var onWorkEnded: (@MainActor () -> Void)?
+
     /// True while any job holds this meeting — the guard every entry point and
     /// every menu item shares.
     func isBusy(_ meeting: Meeting) -> Bool {
@@ -119,10 +136,18 @@ final class MeetingJobs {
         }
     }
 
+    /// `transcription` is injectable for tests; it defaults to nil rather than
+    /// to `TranscriptionEngines.current()` because a default argument is
+    /// evaluated outside this type's main-actor isolation (same pattern as
+    /// AudioImporter.importAudio).
     @discardableResult
-    func retranscribe(_ meeting: Meeting, audioAt url: URL) -> Task<Void, Never>? {
+    func retranscribe(
+        _ meeting: Meeting,
+        audioAt url: URL,
+        transcription: (any TranscriptionEngine)? = nil
+    ) -> Task<Void, Never>? {
         start(.transcription, for: meeting) {
-            let transcription = TranscriptionEngines.current()
+            let transcription = transcription ?? TranscriptionEngines.current()
             await transcription.prepare()
             if case .unavailable(let message) = transcription.availability {
                 throw JobMessage(message: message)
@@ -178,6 +203,9 @@ final class MeetingJobs {
         let id = meeting.id
         if let running = running[id] { return running.task }
         failures[id] = nil
+        // Before the task, not inside it: whatever yields to user-initiated
+        // work has to have yielded by the time the first request goes out.
+        onWorkStarted?()
         // Keep the app awake through brief app switches so the work isn't
         // suspended part-way through.
         let token = BackgroundTaskToken(name: "MeetingJobs")
@@ -194,6 +222,11 @@ final class MeetingJobs {
             }
             statuses[id] = nil
             running[id] = nil
+            // Outside the do/catch on purpose: this fires on every exit —
+            // finished, stopped, or failed. Whatever yielded to this job at
+            // `onWorkStarted` is waiting for exactly this, and only the success
+            // branch above ever nudges it.
+            onWorkEnded?()
             token.end()
         }
         running[id] = Running(kind: kind, task: task)

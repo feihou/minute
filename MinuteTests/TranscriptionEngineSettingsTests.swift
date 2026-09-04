@@ -112,3 +112,58 @@ struct WhisperLiveSplitTests {
         #expect(split.unconfirmed.isEmpty)
     }
 }
+
+/// The live loop pins the meeting's language for every later pass, so the pin
+/// must wait for evidence: one noisy second is enough for Whisper to guess
+/// wrong, and a wrong pin transliterates the rest of the meeting.
+struct WhisperLanguagePinTests {
+    @MainActor
+    @Test("Speech seconds sum segment durations, not recorded time")
+    func speechSecondsSumSegments() {
+        let segments = [
+            TranscriptSegment(text: "one", start: 12, end: 14),
+            TranscriptSegment(text: "two", start: 14, end: 17.5),
+        ]
+        // 12 seconds of silence before the first word count for nothing.
+        #expect(WhisperTranscriptionService.speechSeconds(of: segments) == 5.5)
+        #expect(WhisperTranscriptionService.speechSeconds(of: []) == 0)
+    }
+
+    @MainActor
+    @Test("One detection is never enough, however much speech it heard")
+    func firstDetectionDoesNotPin() {
+        #expect(WhisperTranscriptionService.languagePin(detected: "zh", matching: nil, speechSeconds: 60) == nil)
+    }
+
+    @MainActor
+    @Test("Two consecutive passes must agree")
+    func disagreeingPassesDoNotPin() {
+        #expect(WhisperTranscriptionService.languagePin(detected: "zh", matching: "en", speechSeconds: 60) == nil)
+    }
+
+    @MainActor
+    @Test("Agreement on too little speech does not pin")
+    func agreementNeedsEnoughSpeech() {
+        #expect(WhisperTranscriptionService.languagePin(
+            detected: "zh",
+            matching: "zh",
+            speechSeconds: WhisperTranscriptionService.languagePinMinimumSpeechSeconds - 0.1
+        ) == nil)
+    }
+
+    @MainActor
+    @Test("Agreement plus enough speech pins the language")
+    func agreementWithEnoughSpeechPins() {
+        #expect(WhisperTranscriptionService.languagePin(
+            detected: "zh",
+            matching: "zh",
+            speechSeconds: WhisperTranscriptionService.languagePinMinimumSpeechSeconds
+        ) == "zh")
+    }
+
+    @MainActor
+    @Test("A pass that detected nothing never pins")
+    func missingDetectionDoesNotPin() {
+        #expect(WhisperTranscriptionService.languagePin(detected: nil, matching: nil, speechSeconds: 60) == nil)
+    }
+}

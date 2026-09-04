@@ -18,6 +18,13 @@ final class AudioPlayerController: NSObject, AVAudioPlayerDelegate {
     private(set) var isPlaying = false
     private(set) var duration: TimeInterval = 0
     var currentTime: TimeInterval = 0
+    /// Why playback couldn't start, for the playback bar to show. Cleared by
+    /// the next successful start and by `stop()`.
+    private(set) var lastError: String?
+
+    /// Shown when AVAudioPlayer refuses to start. Named so the view and the
+    /// tests agree on one string.
+    static let playbackFailedMessage = "Couldn't start playback — another app may be using the audio."
 
     var isLoaded: Bool { player != nil }
 
@@ -85,9 +92,12 @@ final class AudioPlayerController: NSObject, AVAudioPlayerDelegate {
         }
     }
 
-    func load(url: URL) throws {
+    /// Loads the recording at `url`. `makePlayer` is injectable for tests:
+    /// AVAudioPlayer's refusal to start can't be provoked from a unit test any
+    /// other way, and that refusal is the case this controller has to survive.
+    func load(url: URL, makePlayer: (URL) throws -> AVAudioPlayer = { try AVAudioPlayer(contentsOf: $0) }) throws {
         stop()
-        let player = try AVAudioPlayer(contentsOf: url)
+        let player = try makePlayer(url)
         player.delegate = self
         player.prepareToPlay()
         self.player = player
@@ -115,7 +125,19 @@ final class AudioPlayerController: NSObject, AVAudioPlayerDelegate {
         } catch {
             Self.logger.error("Audio session for playback failed: \(error.localizedDescription)")
         }
-        player.play()
+        guard player.play() else {
+            // The player did not start (typically a phone call or another
+            // non-mixable session holds the hardware). Saying "playing" here
+            // is the exact symptom this class exists to prevent: a pause icon
+            // over silence with a clock that never moves.
+            Self.logger.error("AVAudioPlayer refused to start playback")
+            isPlaying = false
+            stopTicker()
+            deactivateSessionIfNeeded()
+            lastError = Self.playbackFailedMessage
+            return
+        }
+        lastError = nil
         isPlaying = true
         startTicker()
     }
@@ -140,6 +162,7 @@ final class AudioPlayerController: NSObject, AVAudioPlayerDelegate {
 
     func stop() {
         pausedByInterruption = false
+        lastError = nil
         player?.stop()
         player = nil
         isPlaying = false

@@ -13,6 +13,14 @@ enum KnowledgeText {
         tokens(text).sorted().joined(separator: " ")
     }
 
+    /// The same normalization with the tokens left in the order they were
+    /// written. `normalized` sorts, which is what dedup wants and what a
+    /// phrase match cannot use: after sorting, the two words of a name are
+    /// adjacent only by accident of the alphabet.
+    static func inOrder(_ text: String) -> String {
+        tokens(text).joined(separator: " ")
+    }
+
     /// Order-preserving equality of two statements.
     ///
     /// `normalized` sorts tokens so dedup can catch a reordering, which also

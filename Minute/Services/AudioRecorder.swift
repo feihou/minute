@@ -21,10 +21,21 @@ enum RecorderError: LocalizedError {
 
 /// Box the audio tap reads on every buffer, so live transcription can attach
 /// after recording has already started (e.g. while the speech model downloads).
-/// A lock guards the closure: the main actor writes it while the realtime tap
+/// A lock guards the state: the main actor writes it while the realtime tap
 /// thread reads it, and an unsynchronized ARC handoff would be a data race.
+///
+/// Buffers offered before a handler attaches are kept — bounded — and replayed
+/// into the handler the moment it arrives. Without that, everything said in
+/// the seconds (on a first run, minutes) between `recorder.start()` and the
+/// engine attaching was written to the file but never transcribed, so every
+/// transcript silently began mid-sentence.
 final class BufferHandlerBox: Sendable {
     typealias Handler = @Sendable (AVAudioPCMBuffer) -> Void
+
+    /// Longest stretch of audio held for a handler that hasn't attached yet.
+    /// This is a lead-in for the transcriber, not a recording buffer — the
+    /// file already has every one of these samples.
+    static let backlogLimit: TimeInterval = 30
 
     /// Keep the closure behind a stable reference. Returning a closure stored
     /// directly as `OSAllocatedUnfairLock` state adds a reabstraction wrapper
@@ -38,29 +49,172 @@ final class BufferHandlerBox: Sendable {
         }
     }
 
-    private let storage = OSAllocatedUnfairLock<HandlerEntry?>(initialState: nil)
+    /// A copy of one captured buffer. `@unchecked Sendable` because
+    /// AVAudioPCMBuffer isn't Sendable: these are private copies the tap's
+    /// buffer never aliases, handed on only under the lock below.
+    private final class PendingBuffer: @unchecked Sendable {
+        let buffer: AVAudioPCMBuffer
+        let seconds: TimeInterval
 
-    var handler: Handler? {
-        get {
-            let entry = storage.withLock { $0 }
-            return entry?.value
+        init(_ buffer: AVAudioPCMBuffer) {
+            self.buffer = buffer
+            seconds = buffer.format.sampleRate > 0
+                ? Double(buffer.frameLength) / buffer.format.sampleRate
+                : 0
         }
-        set {
-            let replacement = newValue.map(HandlerEntry.init)
-            // Hand the old handler back out and let it die at the end of this
-            // scope, i.e. after unlocking. Besides shortening the critical
-            // section, this avoids running arbitrary capture cleanup while the
-            // non-recursive lock is held. Returning it (rather than swapping
-            // with a captured var) also keeps this legal under Swift 6, which
-            // rejects mutating a captured var from a concurrently-executing
-            // closure.
-            let previous = storage.withLock { state -> HandlerEntry? in
-                let old = state
-                state = replacement
-                return old
+    }
+
+    private struct State {
+        var entry: HandlerEntry?
+        /// Captured audio waiting for a handler, oldest first.
+        var backlog: [PendingBuffer] = []
+        var backlogSeconds: TimeInterval = 0
+        /// Cleared by the first `install` call, whatever it installs: after
+        /// the session has decided (engine attached, or engine unavailable),
+        /// a buffer with no handler is dropped instead of held for one that
+        /// is never coming.
+        var isCollecting = true
+        /// True while the backlog is being replayed. Live buffers queue behind
+        /// it so nothing overtakes the lead-in mid-replay.
+        var isDraining = false
+    }
+
+    private let storage = OSAllocatedUnfairLock<State>(initialState: State())
+
+    /// Seconds of captured audio waiting for a handler. The session reads this
+    /// BEFORE installing, to move the transcription engine's clock origin back
+    /// to the start of the lead-in it is about to be handed: the engine stamps
+    /// its first buffer as time zero plus the offset it was given, so an offset
+    /// of "now" would place every replayed segment a whole lead-in too late.
+    var backlogSeconds: TimeInterval {
+        storage.withLock { $0.backlogSeconds }
+    }
+
+    /// Called by the audio tap for every buffer: straight to the handler when
+    /// one is attached, into the backlog while none is.
+    func offer(_ buffer: AVAudioPCMBuffer) {
+        let handler = storage.withLock { state -> Handler? in
+            if let entry = state.entry, !state.isDraining {
+                return entry.value
             }
-            _ = previous
+            guard state.isCollecting || state.isDraining,
+                  let pending = Self.copy(buffer)
+            else { return nil }
+            Self.enqueue(pending, in: &state)
+            return nil
         }
+        handler?(buffer)
+    }
+
+    /// Attaches (or clears) the handler. A handler arriving late gets the
+    /// backlog replayed into it first, in order, before any live buffer.
+    func install(_ handler: Handler?) {
+        let replacement = handler.map(HandlerEntry.init)
+        // Hand the old handler back out and let it die at the end of this
+        // scope, i.e. after unlocking. Besides shortening the critical
+        // section, this avoids running arbitrary capture cleanup while the
+        // non-recursive lock is held.
+        let previous = storage.withLock { state -> HandlerEntry? in
+            let old = state.entry
+            state.entry = replacement
+            state.isCollecting = false
+            if replacement == nil {
+                state.backlog = []
+                state.backlogSeconds = 0
+                state.isDraining = false
+            } else {
+                state.isDraining = !state.backlog.isEmpty
+            }
+            return old
+        }
+        _ = previous
+        if let value = replacement?.value {
+            drain(into: value)
+        }
+    }
+
+    /// Re-arms the box for a new recording: no handler, no backlog, collecting
+    /// again. `install` latches collecting off for the rest of a recording, so
+    /// without this a recorder reused across a stop/start cycle would silently
+    /// drop the next recording's lead-in. Called from
+    /// `AudioRecorder.start(writingTo:quality:)` so the contract lives here
+    /// rather than in the caller.
+    func reset() {
+        // Hand the whole old state back out so the handler and every buffered
+        // copy are released after unlocking, not inside the critical section.
+        let previous = storage.withLock { state -> State in
+            let old = state
+            state = State()
+            return old
+        }
+        _ = previous
+    }
+
+    /// Replays the backlog one buffer at a time. Popping and the "queue is
+    /// empty" verdict happen under the same lock as `offer`'s append, so a
+    /// buffer arriving mid-replay is either picked up by this loop or
+    /// delivered live afterwards — never both, never out of order.
+    private func drain(into handler: Handler) {
+        while true {
+            let next = storage.withLock { state -> PendingBuffer? in
+                guard !state.backlog.isEmpty else {
+                    state.isDraining = false
+                    state.backlogSeconds = 0
+                    return nil
+                }
+                let first = state.backlog.removeFirst()
+                state.backlogSeconds -= first.seconds
+                return first
+            }
+            guard let next else { return }
+            handler(next.buffer)
+        }
+    }
+
+    private static func enqueue(_ pending: PendingBuffer, in state: inout State) {
+        state.backlog.append(pending)
+        state.backlogSeconds += pending.seconds
+        while state.backlogSeconds > backlogLimit, let oldest = state.backlog.first {
+            state.backlog.removeFirst()
+            state.backlogSeconds -= oldest.seconds
+        }
+    }
+
+    /// The tap's buffer is the engine's to reuse once the callback returns, so
+    /// anything held past it has to be a copy.
+    private static func copy(_ buffer: AVAudioPCMBuffer) -> PendingBuffer? {
+        guard buffer.frameLength > 0,
+              !buffer.format.isInterleaved,
+              let source = buffer.floatChannelData,
+              let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength),
+              let destination = copy.floatChannelData
+        else { return nil }
+        copy.frameLength = buffer.frameLength
+        let frames = Int(buffer.frameLength)
+        for channel in 0..<Int(buffer.format.channelCount) {
+            destination[channel].update(from: source[channel], count: frames)
+        }
+        return PendingBuffer(copy)
+    }
+}
+
+/// Frames written to the recording file, counted on the realtime audio tap
+/// thread and read on the main actor. A class (not a stored property) so the
+/// tap closure and the recorder share one counter, and a lock so the
+/// cross-thread read is defined rather than a data race.
+final class RecordedFrameCounter: Sendable {
+    private let storage = OSAllocatedUnfairLock<AVAudioFramePosition>(initialState: 0)
+
+    var value: AVAudioFramePosition {
+        storage.withLock { $0 }
+    }
+
+    func add(_ frames: AVAudioFrameCount) {
+        storage.withLock { $0 += AVAudioFramePosition(frames) }
+    }
+
+    func reset() {
+        storage.withLock { $0 = 0 }
     }
 }
 
@@ -87,8 +241,10 @@ final class AudioRecorder {
     /// Smoothed input level in 0...1 for the recording indicator.
     private(set) var level: Float = 0
 
-    /// Called after the system auto-pauses recording (phone call, Siri, or an
-    /// audio route/configuration change), so the owner can reflect it in UI.
+    /// Called after the system auto-pauses recording — a phone call or Siri
+    /// taking the microphone — so the owner can reflect it in UI. A route
+    /// change no longer arrives here: capture restarts in place against the
+    /// new hardware and only a failed restart falls back to this pause.
     var onAutoPause: (() -> Void)?
 
     /// Called when the recorder resumed itself after the system said the
@@ -106,20 +262,48 @@ final class AudioRecorder {
     var onWriteError: ((Error) -> Void)?
     private var didReportWriteError = false
 
+    /// Called when the input route changed and capture was restarted against
+    /// the new hardware, so the owner can say so briefly. Recording never
+    /// stopped — this is information, not a failure.
+    var onRouteChanged: ((String) -> Void)?
+
     private let engine = AVAudioEngine()
     private let tapHandler = BufferHandlerBox()
     private var file: AVAudioFile?
-    private var accumulatedTime: TimeInterval = 0
-    private var segmentStartedAt: Date?
+    private let frameCounter = RecordedFrameCounter()
+    /// Sample rate of the file's processing format, kept in its own property
+    /// so `stop()` can still convert the frame count after the file is closed.
+    private var fileSampleRate: Double = 0
     /// True only while paused *by* an audio-session interruption, so the
     /// matching "interruption ended" can resume what it interrupted and
     /// nothing else. Cleared by every other route out of `.recording`.
     private var pausedByInterruption = false
     @ObservationIgnored nonisolated(unsafe) private var observerTokens: [any NSObjectProtocol] = []
 
-    /// Total recorded time, excluding paused stretches.
+    /// Total recorded time, excluding paused stretches — derived from the
+    /// frames actually written to the file rather than a `Date()` delta.
+    /// `Date()` is not monotonic: a carrier or NTP correction mid-meeting used
+    /// to stretch (or shrink) the saved duration, the transcript's timestamp
+    /// offset, and the Live Activity's paused clock by the size of the
+    /// correction, while playback still used the file's real length. Frames
+    /// only advance while the tap is running, so pauses bank themselves.
+    ///
+    /// Not observable: `frameCounter` is a `let` and `fileSampleRate` only
+    /// changes at start/stop, so reading this no longer invalidates a SwiftUI
+    /// view on every tick the way the old `Date()` delta did. The one reader
+    /// (`RecordingView`'s elapsed label) is inside a
+    /// `TimelineView(.periodic(from: .now, by: 0.5))` and redraws on its own
+    /// schedule; a plain `Text(recorder.elapsed…)` elsewhere would sit frozen.
     var elapsed: TimeInterval {
-        accumulatedTime + (segmentStartedAt.map { Date().timeIntervalSince($0) } ?? 0)
+        Self.seconds(frames: frameCounter.value, sampleRate: fileSampleRate)
+    }
+
+    /// Seconds of audio a frame count represents. Zero when nothing has been
+    /// written yet (no file, so no sample rate), so a duration can never come
+    /// back infinite or NaN.
+    static func seconds(frames: AVAudioFramePosition, sampleRate: Double) -> TimeInterval {
+        guard frames > 0, sampleRate > 0 else { return 0 }
+        return Double(frames) / sampleRate
     }
 
     /// The stable format buffers are delivered in (the file's processing
@@ -129,9 +313,9 @@ final class AudioRecorder {
     }
 
     init() {
-        let pauseOnNotification: @Sendable (Notification) -> Void = { [weak self] _ in
+        let restartOnNotification: @Sendable (Notification) -> Void = { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.systemPause(causedByInterruption: false)
+                self?.handleConfigurationChange()
             }
         }
         // Phone call / Siri interruption: iOS suspends our audio session.
@@ -170,7 +354,7 @@ final class AudioRecorder {
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
             queue: .main,
-            using: pauseOnNotification
+            using: restartOnNotification
         ))
         // The audio daemon crashed and took the engine, the file's encoder,
         // and the session with it. Nothing can be resumed in place; say so
@@ -184,6 +368,29 @@ final class AudioRecorder {
                 self?.handleMediaServicesReset()
             }
         })
+    }
+
+    /// The input route or its format changed (AirPods connecting or
+    /// auto-switching away, a wired headset being plugged in). Re-arm the tap
+    /// against the new hardware and keep recording: pausing here left the rest
+    /// of a meeting uncaptured whenever a headset switched away with the phone
+    /// locked, since the only signal was the Live Activity flipping to Paused.
+    ///
+    /// No interruption ownership is involved, so `pausedByInterruption` is
+    /// untouched and the `.ended`-pairing logic is unaffected. Only a failed
+    /// restart falls back to the old pause-with-notice, which still leaves
+    /// everything captured so far saveable.
+    private func handleConfigurationChange() {
+        guard state == .recording else { return }
+        do {
+            engine.inputNode.removeTap(onBus: 0)
+            try installTap()
+            try engine.start()
+            onRouteChanged?("Microphone changed — still recording")
+        } catch {
+            Self.logger.error("Restarting after an audio route change failed: \(error.localizedDescription)")
+            systemPause(causedByInterruption: false)
+        }
     }
 
     /// Pauses because the system took the microphone away, not because the
@@ -224,21 +431,18 @@ final class AudioRecorder {
         }
     }
 
-    /// Media services reset: stop pretending to record. The elapsed time is
-    /// banked and the file is closed so what was captured stays playable, and
-    /// the state goes to `.captureLost` rather than `.paused` — there is
-    /// nothing left to resume into, so offering Resume would only ever produce
-    /// an error in place of the explanation the user needs.
+    /// Media services reset: stop pretending to record. The recorded time is
+    /// already banked — the frame count stopped when the tap did — and the file
+    /// is closed so what was captured stays playable, and the state goes to
+    /// `.captureLost` rather than `.paused` — there is nothing left to resume
+    /// into, so offering Resume would only ever produce an error in place of
+    /// the explanation the user needs.
     private func handleMediaServicesReset() {
         guard state == .recording || state == .paused else { return }
-        if let startedAt = segmentStartedAt {
-            accumulatedTime += Date().timeIntervalSince(startedAt)
-        }
-        segmentStartedAt = nil
         pausedByInterruption = false
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        tapHandler.handler = nil
+        tapHandler.install(nil)
         file = nil // Closes and flushes what was captured.
         level = 0
         state = .captureLost
@@ -263,10 +467,21 @@ final class AudioRecorder {
         try session.setActive(true)
     }
 
+    /// Seconds of already-captured audio the next `setBufferHandler(_:)` will
+    /// replay into its handler. Read it BEFORE installing: installing drains
+    /// the queue, so a read afterwards always reports zero. `RecordingSession`
+    /// subtracts it from `elapsed` to place the transcription engine's clock
+    /// origin at the start of that lead-in.
+    var pendingBacklogSeconds: TimeInterval {
+        tapHandler.backlogSeconds
+    }
+
     /// Streams every buffer (already in `recordingFormat`) to `handler` on the
-    /// audio tap thread. Safe to set or clear mid-recording.
+    /// audio tap thread, replaying the lead-in captured before this call.
+    /// Passing nil says no handler is coming and drops that lead-in. Safe to
+    /// call mid-recording.
     func setBufferHandler(_ handler: (@Sendable (AVAudioPCMBuffer) -> Void)?) {
-        tapHandler.handler = handler
+        tapHandler.install(handler)
     }
 
     /// Starts recording to `url` at the given encoder quality.
@@ -284,13 +499,21 @@ final class AudioRecorder {
             AVNumberOfChannelsKey: format.channelCount,
             AVEncoderAudioQualityKey: quality.rawValue,
         ]
-        file = try AVAudioFile(forWriting: url, settings: settings)
+        let file = try AVAudioFile(forWriting: url, settings: settings)
+        self.file = file
+        // The tap counts frames in the file's processing format; keep its rate
+        // so stop() can convert them after the file is closed.
+        fileSampleRate = file.processingFormat.sampleRate
+        frameCounter.reset()
+        // The first `install` of a recording latches the box out of
+        // collecting; re-arm it so a recorder reused after stop() holds this
+        // recording's lead-in exactly like a fresh one would.
+        tapHandler.reset()
 
         didReportWriteError = false
         try installTap()
         engine.prepare()
         try engine.start()
-        segmentStartedAt = Date()
         state = .recording
     }
 
@@ -302,8 +525,11 @@ final class AudioRecorder {
         guard state == .idle else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        tapHandler.handler = nil
+        tapHandler.install(nil)
         file = nil
+        // With the file gone, a rate left over from the half-started recording
+        // would let `elapsed` report seconds for frames nothing counted.
+        fileSampleRate = 0
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         } catch {
@@ -327,19 +553,21 @@ final class AudioRecorder {
         }
 
         let handlerBox = tapHandler
+        let frameCounter = self.frameCounter
         engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: hardwareFormat) { [weak self] buffer, _ in
             // Audio tap thread: normalize format, write to disk, feed the
             // transcriber, meter.
             guard let normalized = converter.convert(buffer) else { return }
             do {
                 try file.write(from: normalized)
+                frameCounter.add(normalized.frameLength)
             } catch {
                 Self.logger.error("Audio write failed: \(error.localizedDescription)")
                 Task { @MainActor [weak self] in
                     self?.reportWriteFailure(error)
                 }
             }
-            handlerBox.handler?(normalized)
+            handlerBox.offer(normalized)
             let rms = Self.rmsLevel(of: normalized)
             Task { @MainActor [weak self] in
                 self?.level = rms
@@ -353,10 +581,6 @@ final class AudioRecorder {
         // immediately afterwards for the one case that is.
         pausedByInterruption = false
         engine.pause()
-        if let startedAt = segmentStartedAt {
-            accumulatedTime += Date().timeIntervalSince(startedAt)
-        }
-        segmentStartedAt = nil
         level = 0
         state = .paused
     }
@@ -408,28 +632,25 @@ final class AudioRecorder {
             }
             throw error
         }
-        segmentStartedAt = Date()
         state = .recording
     }
 
     /// Stops recording, closes the file, and returns the recorded duration.
     @discardableResult
     func stop() -> TimeInterval {
-        guard state != .idle else { return accumulatedTime }
-        if let startedAt = segmentStartedAt {
-            accumulatedTime += Date().timeIntervalSince(startedAt)
-        }
-        segmentStartedAt = nil
+        guard state != .idle else { return 0 }
         pausedByInterruption = false
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        tapHandler.handler = nil
+        tapHandler.install(nil)
         file = nil // Closes and flushes the file.
         level = 0
         state = .idle
 
-        let duration = accumulatedTime
-        accumulatedTime = 0
+        // Read before resetting: this is the number the meeting is saved with.
+        let duration = elapsed
+        frameCounter.reset()
+        fileSampleRate = 0
 
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)

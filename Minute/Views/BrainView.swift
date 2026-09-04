@@ -143,6 +143,23 @@ struct BrainView: View {
             }
             .listRowSeparator(.hidden)
         }
+        // Its own `if`, not another branch: refused chunks and pending
+        // meetings are separate facts, and a meeting can be skip-listed while
+        // the loop is working on the next one. The wording stays out of the
+        // pending row's way — that row is directly above, promising Minute
+        // catches up while the app is open, and "will be retried next time
+        // Minute opens" flatly contradicted it about the same meeting.
+        if !catchUp.skippedChunksByMeeting.isEmpty {
+            let parts = catchUp.skippedChunksByMeeting.values.reduce(0, +)
+            Section {
+                Label("\(parts) part\(parts == 1 ? "" : "s") of your meetings couldn't be read yet — Minute will try them again.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .modifier(BrainRowInsets())
+            }
+            .listRowSeparator(.hidden)
+        }
     }
 
     private func brainHeader(_ title: String) -> some View {

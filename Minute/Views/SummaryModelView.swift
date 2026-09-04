@@ -120,6 +120,11 @@ struct SummaryModelView: View {
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
+                    if let notice = downloads.notices[model.repoID] {
+                        Text(notice)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .buttonStyle(.plain)

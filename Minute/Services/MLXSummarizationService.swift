@@ -92,15 +92,71 @@ enum MLXModelStore {
         )
     }
 
+    private static let logger = Logger(subsystem: "com.minuteapp.Minute", category: "MLXModelStore")
+
     /// Written only after download() finishes the whole snapshot. Weights
     /// alone aren't proof of completeness: an interrupted download can leave
     /// one flushed shard behind, and loading such a partial snapshot would
     /// silently fetch the rest over the network mid-generation — which the
     /// Settings copy promises never happens.
+    ///
+    /// Its contents are the snapshot directory's path relative to
+    /// baseDirectory, so the load path can open that exact directory instead
+    /// of asking Hugging Face what revision "main" points at today. Empty
+    /// contents mean a marker written by an older build.
     private static let completionMarkerName = ".minute-download-complete"
 
     static func completionMarker(for model: MLXSummaryModel) -> URL {
         repoDirectory(for: model).appending(path: completionMarkerName)
+    }
+
+    /// The downloaded snapshot directory this marker recorded, or nil when
+    /// the marker predates the format or the directory is gone — either way
+    /// the loader falls back to resolving it once.
+    static func snapshotDirectory(for model: MLXSummaryModel) -> URL? {
+        guard let contents = try? String(contentsOf: completionMarker(for: model), encoding: .utf8) else {
+            return nil
+        }
+        let relativePath = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !relativePath.isEmpty else { return nil }
+        let directory = baseDirectory.appending(path: relativePath, directoryHint: .isDirectory)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return nil }
+        return directory
+    }
+
+    /// Records a finished download and where it landed. False when the file
+    /// couldn't be written (a disk full at the very end), which must fail the
+    /// download: the UI would otherwise report success while isDownloaded
+    /// keeps rejecting the model forever.
+    static func writeCompletionMarker(for model: MLXSummaryModel, snapshotDirectory: URL) -> Bool {
+        FileManager.default.createFile(
+            atPath: completionMarker(for: model).path,
+            contents: Data(relativeSnapshotPath(for: snapshotDirectory).utf8)
+        )
+    }
+
+    /// The snapshot path relative to the store root — the app's container
+    /// path changes between installs, so an absolute path would rot. Empty
+    /// when the directory isn't inside the store, which records nothing and
+    /// leaves the loader on its fallback.
+    ///
+    /// Both sides are symlink-resolved before comparing: standardizedFileURL
+    /// does NOT resolve symlinks, so /var and /private/var spellings of the
+    /// same directory would fail a plain prefix test and silently record
+    /// nothing — F11 undone with no symptom but a slow first token.
+    static func relativeSnapshotPath(for directory: URL) -> String {
+        let root = baseDirectory.resolvingSymlinksInPath().path
+        let path = directory.resolvingSymlinksInPath().path
+        guard path.hasPrefix(root + "/") else {
+            // Not fatal — the loader keeps resolving once per load — but the
+            // offline load is quietly gone, so leave a trace for the on-device
+            // check (visible in the Xcode console while attached).
+            Self.logger.error("Snapshot directory outside the store, recording no path: \(path)")
+            return ""
+        }
+        return String(path.dropFirst(root.count + 1))
     }
 
     /// True when the snapshot completed AND still holds weights. ponytail:
@@ -118,6 +174,18 @@ enum MLXModelStore {
             return true
         }
         return false
+    }
+
+    /// True when a snapshot directory holds enough to be worth certifying:
+    /// weights and the config that describes them. ponytail: presence check,
+    /// not a manifest diff — a partial missing only a tokenizer file slips
+    /// through; read model.safetensors.index.json if that ever bites.
+    static func holdsCompleteSnapshot(at directory: URL) -> Bool {
+        let snapshot = (try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil
+        )) ?? []
+        return snapshot.contains { $0.pathExtension == "safetensors" }
+            && snapshot.contains { $0.lastPathComponent == "config.json" }
     }
 
     static func delete(_ model: MLXSummaryModel) {
@@ -140,21 +208,34 @@ enum MLXModelStore {
         )
     }
 
+    /// Asks Hugging Face where this repo's snapshot lives, fetching whatever
+    /// isn't cached yet. The only call in the app that may touch the network
+    /// for a summary model: the Get button, and — once, for a model
+    /// downloaded before the marker recorded a directory — the load path.
+    /// Both go through here so neither has to spell out the revision and
+    /// downloader the other uses.
+    static func resolveSnapshotDirectory(
+        for model: MLXSummaryModel,
+        progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
+    ) async throws -> URL {
+        try await resolve(
+            configuration: ModelConfiguration(id: model.repoID),
+            from: #hubDownloader(hubClient()),
+            useLatest: false,
+            progressHandler: progressHandler
+        ).modelDirectory
+    }
+
     /// Streams the model (weights + tokenizer) from Hugging Face into the
     /// store; partially downloaded files are kept so a retry resumes.
     static func download(
         _ model: MLXSummaryModel,
         onProgress: @escaping @MainActor (Double) -> Void
     ) async throws {
-        let resolved = try await resolve(
-            configuration: ModelConfiguration(id: model.repoID),
-            from: #hubDownloader(hubClient()),
-            useLatest: false,
-            progressHandler: { progress in
-                let fraction = progress.fractionCompleted
-                Task { @MainActor in onProgress(fraction) }
-            }
-        )
+        let directory = try await resolveSnapshotDirectory(for: model) { progress in
+            let fraction = progress.fractionCompleted
+            Task { @MainActor in onProgress(fraction) }
+        }
         // A cancel can be swallowed downstream: when the repo listing fails,
         // HubClient falls back to ANY cached snapshot directory with a
         // matching file, so a cancelled retry can "succeed" with partial
@@ -163,21 +244,17 @@ enum MLXModelStore {
         // The same fallback fires on a plain network failure too (an offline
         // retry after an interrupted download), where no cancel is pending —
         // so also require the resolved snapshot to actually hold weights and
-        // config before certifying it. ponytail: presence check, not a
-        // manifest diff — a partial missing only a tokenizer file slips
-        // through; read model.safetensors.index.json if that ever bites.
-        let snapshot = (try? FileManager.default.contentsOfDirectory(
-            at: resolved.modelDirectory, includingPropertiesForKeys: nil
-        )) ?? []
-        guard snapshot.contains(where: { $0.pathExtension == "safetensors" }),
-              snapshot.contains(where: { $0.lastPathComponent == "config.json" }) else {
+        // config before certifying it.
+        guard holdsCompleteSnapshot(at: directory) else {
             throw IncompleteSnapshotFailure()
         }
         // Only a fully resolved snapshot earns the marker isDownloaded
         // needs — and a marker that can't be written (disk full at the very
         // end) must fail the download, or the UI reports success while
-        // isDownloaded keeps rejecting the model forever.
-        guard FileManager.default.createFile(atPath: completionMarker(for: model).path, contents: nil) else {
+        // isDownloaded keeps rejecting the model forever. The marker also
+        // records this exact snapshot directory, which is what lets loading
+        // stay offline.
+        guard writeCompletionMarker(for: model, snapshotDirectory: directory) else {
             throw MarkerWriteFailure()
         }
     }
@@ -192,6 +269,137 @@ enum MLXModelStore {
         var errorDescription: String? {
             "Some model files are still missing — check your connection and try again."
         }
+    }
+}
+
+// MARK: - Job gate
+
+/// Serializes MLX summary jobs across the whole app.
+///
+/// Each summarize job builds its own service instance and loads its own
+/// 1-2.3 GB container (deliberately: keeping the weights resident between
+/// occasional summaries is worse for memory pressure). Nothing else stops two
+/// meetings from summarizing at once — MeetingJobs gates per meeting, and
+/// Auto-Summarize plus a manual Generate on another meeting is two clicks
+/// away — and two containers resident together is what pushes the app past
+/// the foreground memory limit on the very devices the catalog's floors
+/// admit, killing it with both jobs lost and no failure recorded.
+///
+/// Scope is MLX summarization only: Whisper transcription does not run through
+/// this gate, so a resident Whisper model can still sit alongside a container —
+/// the co-residency the `container` comment below names. That is the memory
+/// headroom the catalog's floors already budget for; two summary containers is
+/// the case they do not.
+actor MLXJobGate {
+    static let shared = MLXJobGate()
+
+    /// Progress text a queued job reports, so the summary section explains
+    /// the wait instead of sitting on "Loading the summary model…".
+    static let waitingStatus = "Waiting for another local-model job to finish…"
+
+    /// One queued job. Carrying a ticket rather than relying on position is
+    /// what lets cancellation pull a specific job out of the line without ever
+    /// resuming a continuation `release()` already took — resuming twice traps.
+    private struct QueuedJob {
+        let ticket: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    private var isRunning = false
+    private var waiting: [QueuedJob] = []
+
+    /// Runs `body` once no other local-model job is running, calling
+    /// `onWaiting` first when this job has to queue. The gate reopens as soon
+    /// as `body` returns OR throws — a failed job must never wedge the queue —
+    /// and a job cancelled while queued throws `CancellationError` at once,
+    /// without ever taking the gate.
+    ///
+    /// `body` is a labelled parameter, not a trailing one: callers pass two
+    /// closures, and a labelled-plus-trailing pair is what SwiftLint's
+    /// multiple_closures_with_trailing_closure rejects.
+    ///
+    /// `T: Sendable` because the value crosses from `body`'s main-actor
+    /// isolation back to a nonisolated caller.
+    nonisolated func run<T: Sendable>(
+        onWaiting: @escaping @MainActor @Sendable () -> Void,
+        body: @MainActor () async throws -> T
+    ) async throws -> T {
+        let ticket = UUID()
+        try await withTaskCancellationHandler(
+            operation: { try await acquire(ticket: ticket, onWaiting: onWaiting) },
+            onCancel: {
+                // A fresh unstructured Task because the handler runs
+                // synchronously on whatever thread cancelled and so cannot
+                // touch actor state; Task {} does not inherit the cancellation
+                // that just fired, so this hop actually gets to run.
+                Task { await self.cancelQueuedJob(ticket) }
+            }
+        )
+        // Past this line the gate is held, so it must be reopened however the
+        // job ends. `acquire` throws only when it never took the gate, which is
+        // why the release lives here and not in a defer around the acquire.
+        do {
+            let value = try await body()
+            await release()
+            return value
+        } catch {
+            await release()
+            throw error
+        }
+    }
+
+    private func acquire(ticket: UUID, onWaiting: @escaping @MainActor @Sendable () -> Void) async throws {
+        // A job the user already stopped must not take the gate at all, free or
+        // not: taking it would start minutes of on-device generation for work
+        // nobody is waiting on, and hold every other meeting's job behind it.
+        try Task.checkCancellation()
+        if isRunning {
+            await onWaiting()
+        }
+        // A loop, not a single suspension: release() wakes one waiter, but a
+        // job arriving in between can take the gate first.
+        while isRunning {
+            try await waitForTurn(ticket: ticket)
+        }
+        isRunning = true
+    }
+
+    /// Suspends until `release()` picks this job, or throws the moment the job
+    /// is cancelled.
+    ///
+    /// A plain `withCheckedContinuation` ignores cancellation, which left a
+    /// stopped job pinned to the queue for the whole length of the other
+    /// meeting's generation — minutes, with Stop already tapped — and, because
+    /// MeetingJobs clears its per-meeting in-flight slot only when the task
+    /// body ends, shut that meeting out of every later job as well.
+    private func waitForTurn(ticket: UUID) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            // Cancelled between the check above and this line: the handler has
+            // already run and found nothing in the queue to pull out, so this
+            // job has to fail itself rather than wait for a wake-up nobody will
+            // send. Safe to read here because the body runs on this actor,
+            // before the suspension.
+            if Task.isCancelled {
+                continuation.resume(throwing: CancellationError())
+            } else {
+                waiting.append(QueuedJob(ticket: ticket, continuation: continuation))
+            }
+        }
+    }
+
+    /// Fails a queued job's suspension so Stop is felt while it is still in
+    /// line. A no-op once the job left the queue — it either already holds the
+    /// gate or was resumed by `release()`, and in both cases it releases on its
+    /// own way out, so no wake-up is lost.
+    private func cancelQueuedJob(_ ticket: UUID) {
+        guard let index = waiting.firstIndex(where: { $0.ticket == ticket }) else { return }
+        waiting.remove(at: index).continuation.resume(throwing: CancellationError())
+    }
+
+    private func release() {
+        isRunning = false
+        guard !waiting.isEmpty else { return }
+        waiting.removeFirst().continuation.resume()
     }
 }
 
@@ -250,6 +458,38 @@ final class MLXSummarizationService: SummarizationEngine {
         let chunks = TranscriptChunker.chunks(from: transcript, maxChars: TranscriptChunker.defaultMaxChars)
         guard !chunks.isEmpty else { throw SummarizerError.emptyTranscript }
 
+        // One local-model job at a time, app-wide: see MLXJobGate. Both
+        // closures are labelled arguments — a labelled closure plus a
+        // trailing one trips SwiftLint's
+        // multiple_closures_with_trailing_closure, which CI enforces.
+        return try await MLXJobGate.shared.run(
+            onWaiting: { onProgress?(MLXJobGate.waitingStatus) },
+            body: {
+                try await self.generate(chunks: chunks, template: template, context: context, onProgress: onProgress)
+            }
+        )
+    }
+
+    /// The whole generation, from model load to finished notes, run while
+    /// holding MLXJobGate.
+    private func generate(
+        chunks: [String],
+        template: SummaryTemplate,
+        context: String,
+        onProgress: (@MainActor @Sendable (String) -> Void)?
+    ) async throws -> MeetingSummary {
+        // The weights go the moment this job ends: the gate opens for the
+        // next job immediately afterwards, and two resident containers is the
+        // failure the gate exists to prevent. Spelled `self.` because a local
+        // `let container` is declared below and this defer clears the
+        // instance property, not that local.
+        defer { self.container = nil }
+        // Backstop for the one interleaving the gate deliberately doesn't
+        // cover: a job cancelled at the very instant release() woke it takes
+        // the gate rather than dropping that wake-up on the floor, and must
+        // not start a full generation now that its turn came.
+        try Task.checkCancellation()
+
         onProgress?("Loading the summary model…")
         // Outside the do/catch below, which only wraps generation: a corrupt
         // or half-downloaded snapshot would otherwise reach the summary
@@ -277,7 +517,7 @@ final class MLXSummarizationService: SummarizationEngine {
             var skipped = 0
             for (index, chunk) in chunks.enumerated() {
                 try Task.checkCancellation()
-                await onProgress?("Reading part \(index + 1) of \(chunks.count)…")
+                onProgress?("Reading part \(index + 1) of \(chunks.count)…")
                 do {
                     notes.append(try await extractNotes(from: chunk, part: index + 1, of: chunks.count, contextBlock: contextBlock, container: container))
                 } catch is CancellationError {
@@ -292,8 +532,28 @@ final class MLXSummarizationService: SummarizationEngine {
                 throw SummarizerError.generationFailed(Self.unreadableMessage)
             }
             try Task.checkCancellation()
-            await onProgress?("Combining notes…")
-            var summary = try await merge(notes, template: template, contextBlock: contextBlock, container: container)
+            onProgress?("Combining notes…")
+            var summary: MeetingSummary
+            do {
+                summary = try await merge(notes, template: template, contextBlock: contextBlock, container: container)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Every part already succeeded, at minutes of on-device
+                // generation apiece. A garbled merge or condense reply —
+                // the largest prompt of the run, and the one a small
+                // model misformats most — degrades the summary (no
+                // overview, title, or template sections) instead of
+                // destroying it, the same finish line the Apple engine
+                // protects.
+                // MLX has no typed cancellation, so a cancel that landed
+                // inside the generation can arrive here as an ordinary
+                // error — folding it would save a summary the user just
+                // asked not to have.
+                try Task.checkCancellation()
+                Self.logger.error("Local merge failed, combining notes in code: \(error.localizedDescription)")
+                summary = try Self.degradedSummary(from: notes)
+            }
             if skipped > 0 {
                 summary.skippedParts = skipped
             }
@@ -311,19 +571,48 @@ final class MLXSummarizationService: SummarizationEngine {
 
     // MARK: Model loading
 
-    /// Loads through the same downloader path as Settings' download — with
-    /// the snapshot already cached this is an offline cache hit, and it
-    /// avoids hardcoding HubCache's snapshot-revision layout.
+    /// Loads the weights straight out of the directory the download recorded.
+    /// Loading by repo id instead would resolve revision "main" through
+    /// huggingface.co on EVERY summary — a request the user never asked for,
+    /// a ~60 s stall before the first token on a network where the host is
+    /// reachable but dead, and a chance of pulling newly added files
+    /// mid-generation. Only the Get button may touch the network.
+    ///
+    /// A model downloaded by a build that recorded no directory is resolved
+    /// the old way ONCE — the same call the download makes, so a cached
+    /// snapshot is found — and recorded so every later load is local.
     private func loadedContainer() async throws -> ModelContainer {
         if let container { return container }
         guard let model = MLXModelCatalog.model(for: AppSettings.localSummaryModel) else {
             throw SummarizerError.unavailable("The selected summary model is no longer offered. Choose another in Settings → Summary Model.")
         }
+        let recorded = MLXModelStore.snapshotDirectory(for: model)
+        let directory: URL
+        if let recorded {
+            directory = recorded
+        } else {
+            directory = try await MLXModelStore.resolveSnapshotDirectory(for: model)
+        }
         let loaded = try await LLMModelFactory.shared.loadContainer(
-            from: #hubDownloader(MLXModelStore.hubClient()),
-            using: #huggingFaceTokenizerLoader(),
-            configuration: ModelConfiguration(id: model.repoID)
+            from: directory,
+            using: #huggingFaceTokenizerLoader()
         )
+        // Recorded only after the load returned, never beside the resolve
+        // above: every later load opens the recorded directory on nothing but
+        // an existence check, so writing one that hasn't proved itself is
+        // permanent. Offline — the case this fallback exists for — a failed
+        // repo listing makes HubClient hand back ANY cached snapshot
+        // directory with a matching file, which after an interrupted earlier
+        // download can be a partial snapshot; recorded, it would fail every
+        // future load while isDownloaded still called the model fine, and the
+        // only way out would be a delete and a multi-gigabyte re-download.
+        // A load that returned is proof the whole snapshot is there — a
+        // stronger check than the weights-and-config one download() settles
+        // for. Best effort: a marker that can't be written costs one resolve
+        // per load, not a failed summary.
+        if recorded == nil {
+            _ = MLXModelStore.writeCompletionMarker(for: model, snapshotDirectory: directory)
+        }
         container = loaded
         return loaded
     }
@@ -572,6 +861,95 @@ final class MLXSummarizationService: SummarizationEngine {
             return lines.joined(separator: "\n")
         }
         .joined(separator: "\n\n")
+    }
+
+    // MARK: Code-level fallback
+
+    /// Folds chunk notes together in code — concatenate, dedupe, group
+    /// speakers — for when the model garbles the one request it is already
+    /// too late to retry. Loses the rephrasing, keeps every fact. The Apple
+    /// engine degrades exactly this way on a refusal
+    /// (SummarizationService.mechanicallyCombined).
+    static func mechanicallyCombined(_ notes: [LocalChunkNotes]) -> LocalChunkNotes {
+        var actionItems: [LocalActionItem] = []
+        for item in notes.flatMap({ $0.actionItems ?? [] }) {
+            let task = (item.task ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !task.isEmpty else { continue }
+            // Same wording with a conflicting specified owner or deadline is
+            // two commitments, not overlap — keep both.
+            if let index = actionItems.firstIndex(where: {
+                ($0.task ?? "").caseInsensitiveCompare(task) == .orderedSame
+                    && !fieldsConflict($0.owner, item.owner)
+                    && !fieldsConflict($0.deadline, item.deadline)
+            }) {
+                // Overlapping parts repeat tasks; keep the copy that names an
+                // owner or deadline.
+                if SummarizationService.normalizedField(actionItems[index].owner ?? "") == ActionItem.notSpecified {
+                    actionItems[index].owner = item.owner
+                }
+                if SummarizationService.normalizedField(actionItems[index].deadline ?? "") == ActionItem.notSpecified {
+                    actionItems[index].deadline = item.deadline
+                }
+            } else {
+                actionItems.append(LocalActionItem(task: task, owner: item.owner, deadline: item.deadline))
+            }
+        }
+
+        var perspectives: [LocalPerspective] = []
+        for perspective in notes.flatMap({ $0.speakerPerspectives ?? [] }) {
+            let speaker = (perspective.speaker ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !speaker.isEmpty else { continue }
+            if let index = perspectives.firstIndex(where: { ($0.speaker ?? "").caseInsensitiveCompare(speaker) == .orderedSame }) {
+                perspectives[index].points = SummarizationService.cleaned((perspectives[index].points ?? []) + (perspective.points ?? []))
+            } else {
+                perspectives.append(LocalPerspective(speaker: speaker, points: SummarizationService.cleaned(perspective.points ?? [])))
+            }
+        }
+
+        return LocalChunkNotes(
+            keyPoints: SummarizationService.cleaned(notes.flatMap { $0.keyPoints ?? [] }),
+            decisions: SummarizationService.cleaned(notes.flatMap { $0.decisions ?? [] }),
+            actionItems: actionItems,
+            openQuestions: SummarizationService.cleaned(notes.flatMap { $0.openQuestions ?? [] }),
+            speakerPerspectives: perspectives
+        )
+    }
+
+    /// True when both values are specified and disagree — e.g. the same task
+    /// wording owned by two different people.
+    private static func fieldsConflict(_ first: String?, _ second: String?) -> Bool {
+        let lhs = SummarizationService.normalizedField(first ?? "")
+        let rhs = SummarizationService.normalizedField(second ?? "")
+        return lhs != ActionItem.notSpecified && rhs != ActionItem.notSpecified
+            && lhs.caseInsensitiveCompare(rhs) != .orderedSame
+    }
+
+    /// The no-model fallback summary: combined notes with an empty overview
+    /// and no suggested title — the detail view hides both when empty, so the
+    /// notes never claim a model wrote something it didn't.
+    static func mechanicalSummary(from notes: [LocalChunkNotes]) -> MeetingSummary {
+        let combined = mechanicallyCombined(notes)
+        return MeetingSummary(
+            overview: "",
+            keyPoints: combined.keyPoints ?? [],
+            decisions: combined.decisions ?? [],
+            actionItems: (combined.actionItems ?? []).normalized(),
+            openQuestions: combined.openQuestions ?? [],
+            generatedAt: .now,
+            suggestedTitle: nil,
+            speakerPerspectives: (combined.speakerPerspectives ?? []).normalized()
+        )
+    }
+
+    /// The fold is only a rescue when there is something in it to rescue.
+    /// Explicitly empty arrays are a valid "nothing noteworthy in this part",
+    /// so every part can succeed and still leave nothing to combine — and a
+    /// summary with no content at all would replace the meeting's Generate
+    /// empty-state with blank notes. Same guard as a model-written summary:
+    /// an empty fold rethrows the unreadable-merge error instead of saving
+    /// over the affordance the user needs to try again.
+    static func degradedSummary(from notes: [LocalChunkNotes]) throws -> MeetingSummary {
+        try validated(mechanicalSummary(from: notes))
     }
 
     // MARK: JSON handling

@@ -12,12 +12,12 @@ struct RecordingLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    StatusBadge(isPaused: context.state.isPaused)
+                    StatusBadge(isPaused: context.state.isPaused, isStale: context.isStale)
                         .font(.callout)
                         .padding(.leading, 6)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    TimerText(state: context.state)
+                    TimerText(state: context.state, isStale: context.isStale)
                         .font(.title3.weight(.medium))
                         .padding(.trailing, 6)
                 }
@@ -28,18 +28,27 @@ struct RecordingLiveActivity: Widget {
                         .lineLimit(1)
                 }
             } compactLeading: {
-                StatusIcon(isPaused: context.state.isPaused)
+                StatusIcon(isPaused: context.state.isPaused, isStale: context.isStale)
             } compactTrailing: {
-                TimerText(state: context.state)
+                TimerText(state: context.state, isStale: context.isStale)
                     .font(.caption2)
-                    .foregroundStyle(context.state.isPaused ? Color.orange : Color.red)
+                    .foregroundStyle(statusTint(isPaused: context.state.isPaused, isStale: context.isStale))
                     .frame(maxWidth: 52)
             } minimal: {
-                StatusIcon(isPaused: context.state.isPaused)
+                StatusIcon(isPaused: context.state.isPaused, isStale: context.isStale)
             }
             .keylineTint(.red)
         }
     }
+}
+
+/// What every presentation colours itself by. Stated once because the same
+/// activity is drawn three ways at once — expanded, compact, minimal — and a
+/// live red glyph beside a card reading "Minute isn't running" is the drift
+/// that costs the user a recording they think is still going.
+private func statusTint(isPaused: Bool, isStale: Bool) -> Color {
+    if isStale { return .secondary }
+    return isPaused ? .orange : .red
 }
 
 /// Matches the in-app recording screen: dark studio backdrop, red/orange
@@ -66,11 +75,11 @@ private struct LockScreenView: View {
                 Text(context.attributes.title)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
-                StatusBadge(isPaused: context.state.isPaused)
+                StatusBadge(isPaused: context.state.isPaused, isStale: context.isStale)
                     .font(.caption)
             }
             Spacer(minLength: 8)
-            TimerText(state: context.state)
+            TimerText(state: context.state, isStale: context.isStale)
                 .font(.system(size: 30, weight: .medium, design: .rounded))
         }
         .padding(16)
@@ -82,9 +91,12 @@ private struct LockScreenView: View {
 
 private struct TimerText: View {
     let state: RecordingActivityAttributes.ContentState
+    /// A stale card's app is gone: freeze the clock at the last value it sent
+    /// rather than keep counting up over a recording that is not happening.
+    var isStale = false
 
     var body: some View {
-        if state.isPaused {
+        if state.isPaused || isStale {
             Text(Duration.seconds(state.elapsed)
                 .formatted(.time(pattern: state.elapsed >= 3600 ? .hourMinuteSecond : .minuteSecond)))
                 .monospacedDigit()
@@ -100,24 +112,39 @@ private struct TimerText: View {
 
 private struct StatusBadge: View {
     let isPaused: Bool
+    var isStale = false
+
+    private var tint: Color { statusTint(isPaused: isPaused, isStale: isStale) }
 
     var body: some View {
         HStack(spacing: 5) {
             Circle()
-                .fill(isPaused ? Color.orange : Color.red)
+                .fill(tint)
                 .frame(width: 7, height: 7)
-            Text(isPaused ? "Paused" : "Recording")
+            // The app stopped refreshing this card: it can no longer claim a
+            // recording is running, and saying so is the only cue the user
+            // gets to reopen Minute.
+            Text(isStale ? "Minute isn't running" : (isPaused ? "Paused" : "Recording"))
                 .fontWeight(.semibold)
-                .foregroundStyle(isPaused ? Color.orange : Color.red)
+                .foregroundStyle(tint)
         }
     }
 }
 
 private struct StatusIcon: View {
     let isPaused: Bool
+    var isStale = false
+
+    /// A struck-through waveform, not a quieter one: the compact Island is a
+    /// glyph and a clock with no room for the lock screen's "Minute isn't
+    /// running", so the shape has to carry the whole message on its own.
+    private var symbol: String {
+        if isStale { return "waveform.slash" }
+        return isPaused ? "pause.fill" : "waveform"
+    }
 
     var body: some View {
-        Image(systemName: isPaused ? "pause.fill" : "waveform")
-            .foregroundStyle(isPaused ? Color.orange : Color.red)
+        Image(systemName: symbol)
+            .foregroundStyle(statusTint(isPaused: isPaused, isStale: isStale))
     }
 }

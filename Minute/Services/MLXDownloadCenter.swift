@@ -19,6 +19,15 @@ final class MLXDownloadCenter {
     /// screen is reopened.
     private(set) var finishedCount = 0
 
+    /// repoID → a non-failure explanation for a stopped download. iOS ending
+    /// the app's background window is not a failure: the partial files stay
+    /// on disk and Get resumes, so this renders in secondary text while
+    /// `errors` stays red.
+    private(set) var notices: [String: String] = [:]
+
+    /// Shown when iOS ended the background window mid-download.
+    static let backgroundPauseNotice = "Paused when Minute went to the background. Tap Get to resume."
+
     private var tasks: [String: Task<Void, Never>] = [:]
 
     private init() {}
@@ -28,8 +37,22 @@ final class MLXDownloadCenter {
         // Already in flight — never start a second task on the same cache.
         guard tasks[repoID] == nil else { return }
         errors[repoID] = nil
+        notices[repoID] = nil
         progress[repoID] = 0
         tasks[repoID] = Task {
+            // A 1-2.3 GB transfer over an ordinary URLSession dies the moment
+            // iOS suspends the app, which happens seconds after the user
+            // switches away. The token buys the OS-granted window; when it
+            // expires we cancel the transfer ourselves so it ends as a
+            // resumable pause with the partial files kept, instead of a
+            // "the network connection was lost" error the user reads as a
+            // failure of the download itself.
+            let token = BackgroundTaskToken(name: "Summary model download") { [weak self] in
+                guard let self else { return }
+                self.notices[repoID] = Self.backgroundPauseNotice
+                self.tasks[repoID]?.cancel()
+            }
+            defer { token.end() }
             do {
                 try await MLXModelStore.download(model) { [weak self] fraction in
                     // A straggler callback can land after cleanup below;

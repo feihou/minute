@@ -19,10 +19,23 @@ struct MinuteApp: App {
     private let storeIsEphemeral: Bool
 
     init() {
-        if let persistent = try? ModelContainer(
-            for: Meeting.self, KnowledgeEntity.self, KnowledgeFact.self,
-            configurations: MeetingStore.modelConfiguration()
-        ) {
+        var persistent: ModelContainer?
+        var failure: String?
+        do {
+            persistent = try ModelContainer(
+                for: Meeting.self, KnowledgeEntity.self, KnowledgeFact.self,
+                configurations: MeetingStore.modelConfiguration()
+            )
+        } catch {
+            // Recorded, not swallowed. This is the one failure the user can
+            // neither see nor act on, and the same open is retried identically
+            // at every launch — so a deterministic cause (a lightweight
+            // migration that cannot run, the case KnowledgeFact documents)
+            // strands the store and every recording forever. Settings reads
+            // this to say what went wrong and to offer the reset.
+            failure = error.localizedDescription
+        }
+        if let persistent {
             container = persistent
             storeIsEphemeral = false
         } else if let inMemory = try? ModelContainer(
@@ -36,6 +49,9 @@ struct MinuteApp: App {
         } else {
             fatalError("Unable to create a SwiftData container")
         }
+        // Written on every launch, success included, so a store that recovers
+        // retires the message and the reset button with it.
+        AppSettings.persistentStoreFailure = failure
         // In fallback mode, route new audio to a session-only directory; wipe
         // whatever a previous fallback session left there — no meeting can
         // reference those files anymore.
@@ -45,6 +61,10 @@ struct MinuteApp: App {
         // recordings may still sit in Application Support — apply the user's
         // backup choice to it regardless of which directory receives new audio.
         MeetingStore.applyBackupPolicy()
+        // After the container above, not before: the store files exist only
+        // once ModelContainer has created them, and a class set on the
+        // directory never reaches a file that already exists.
+        MeetingStore.applyDataProtection()
         // A crash or force-quit mid-recording leaves its Live Activity on the
         // lock screen; no recording survives process death, so clear them.
         RecordingLiveActivityController.endOrphans()
@@ -59,6 +79,14 @@ struct MinuteApp: App {
         let catchUp = KnowledgeCatchUp()
         let mainContext = container.mainContext
         jobs.onContentChanged = { catchUp.nudge(context: mainContext) }
+        // Extraction yields to work the user is waiting on: every job (the
+        // automatic post-save summary included) pauses the loop, and the loop
+        // starts again once every job has left the field. Ending, not
+        // succeeding, is the signal: a summary the user stopped and a
+        // re-transcription that failed never nudge, and a pause waiting on a
+        // nudge would keep the Brain silent for the rest of the session.
+        jobs.onWorkStarted = { catchUp.pauseForWork() }
+        jobs.onWorkEnded = { catchUp.workEnded(context: mainContext) }
         _meetingJobs = State(initialValue: jobs)
         _knowledgeCatchUp = State(initialValue: catchUp)
     }
@@ -106,7 +134,10 @@ struct MinuteApp: App {
             backgroundMirror?.cancel()
             backgroundMirror = nil
             if scenePhase == .active {
-                knowledgeCatchUp.nudge(context: container.mainContext)
+                // Resume, not nudge: a scene pause is lifted only by a resume,
+                // so a plain nudge would leave the loop parked after the first
+                // background trip.
+                knowledgeCatchUp.resume(context: container.mainContext)
             } else {
                 // Foreground-only: FM rate-limits background apps anyway.
                 knowledgeCatchUp.pause()

@@ -121,10 +121,28 @@ final class TranscriptionService: TranscriptionEngine {
                         self.volatileText = text
                     }
                 }
+            } catch is CancellationError {
+                // `cancel()` and the no-analyzer branch of `finish()` cancel
+                // this task on purpose. That is the user discarding, not the
+                // stream dying, and reporting it would put a failure message
+                // on a screen that is closing.
             } catch {
-                // Losing live results is non-fatal; the recording continues.
+                // Losing live results is non-fatal for the recording — but
+                // silence here left the panel showing stale segments (or
+                // "Listening…") for the rest of the meeting and the saved
+                // transcript simply stopped mid-sentence. Say it where the
+                // user is looking. Everything finalized so far stays in
+                // `segments` and is still saved.
                 Self.logger.error("Transcriber results stream failed: \(error.localizedDescription)")
                 self?.volatileText = ""
+                // Only over "everything is fine". `start()` writes its own,
+                // more specific message when the analyzer refuses to start —
+                // and it cancels this task right afterwards, so the generic
+                // "live transcription stopped" would land on top of the one
+                // sentence that actually explains what happened.
+                if self?.availability == .available {
+                    self?.availability = .unavailable(Self.liveStoppedMessage(error))
+                }
             }
         }
 
@@ -188,6 +206,12 @@ final class TranscriptionService: TranscriptionEngine {
             } else {
                 await analyzer.cancelAndFinishNow()
             }
+            // The caller replaces the meeting's entire transcript with what
+            // comes back, so a re-transcription the user stopped must be
+            // thrown away rather than applied. `collector` is an unstructured
+            // Task and does not inherit this cancellation, which is why the
+            // check has to be explicit.
+            try Task.checkCancellation()
         } catch {
             await analyzer.cancelAndFinishNow()
             collector.cancel()
@@ -222,6 +246,14 @@ final class TranscriptionService: TranscriptionEngine {
             volatileText = ""
         }
         return segments
+    }
+
+    /// What the recording screen shows once the live results stream has died.
+    /// The recording itself is unaffected, so the message has to say that as
+    /// well as what stopped — otherwise a user watching the panel assumes the
+    /// meeting is being lost and stops it.
+    static func liveStoppedMessage(_ error: any Error) -> String {
+        "Live transcription stopped: \(error.localizedDescription). Recording continues; you can re-transcribe the audio after saving."
     }
 
     /// Abandons the session without waiting for final results (user discarded).

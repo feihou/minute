@@ -216,6 +216,72 @@ struct KnowledgeIngestTests {
         #expect(facts[0].status == .suggested)
     }
 
+    /// The guardrails refused part of the transcript, so this pass speaks for
+    /// only the part it read. Treating it as the meeting's whole extraction
+    /// would delete facts found in passages this pass never reached — and the
+    /// meeting stays unstamped, so the same trimming happens again on every
+    /// later retry until nothing is left.
+    @Test func aPartialApplyKeepsFactsFromChunksItNeverRead() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "m")
+        context.insert(meeting)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        context.insert(KnowledgeFact(
+            text: "Sarah leads Atlas", originalText: "Sarah leads Atlas",
+            status: .suggested, sourceMeetingID: meeting.id, capturedAt: .now, entity: entity
+        ))
+        try context.save()
+
+        try KnowledgeIngest.apply([], from: meeting, context: context, replacingExisting: false)
+
+        let facts = try context.fetch(FetchDescriptor<KnowledgeFact>())
+        #expect(facts.map(\.originalText) == ["Sarah leads Atlas"])
+        #expect(facts[0].sourceMeetingIDs == [meeting.id])
+    }
+
+    /// The other half of the same pin: a pass that read the whole transcript
+    /// IS the meeting's extraction, so what it leaves out goes.
+    @Test func aWholeMeetingApplyStillReplacesWhatItLeavesOut() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "m")
+        context.insert(meeting)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        context.insert(KnowledgeFact(
+            text: "Sarah leads Atlas", originalText: "Sarah leads Atlas",
+            status: .suggested, sourceMeetingID: meeting.id, capturedAt: .now, entity: entity
+        ))
+        try context.save()
+
+        try KnowledgeIngest.apply([], from: meeting, context: context)
+
+        #expect(try context.fetch(FetchDescriptor<KnowledgeFact>()).isEmpty)
+    }
+
+    @Test func aPartialApplyAddsWithoutDisturbingWhatCameBefore() throws {
+        let context = try makeContext()
+        let meeting = Meeting(title: "m")
+        context.insert(meeting)
+        let entity = KnowledgeEntity(name: "Sarah", kind: .person)
+        context.insert(entity)
+        context.insert(KnowledgeFact(
+            text: "Sarah leads Atlas", originalText: "Sarah leads Atlas",
+            status: .suggested, sourceMeetingID: meeting.id, capturedAt: .now, entity: entity
+        ))
+        try context.save()
+
+        let result = try KnowledgeIngest.apply(
+            [candidate("Dana", "Dana runs the migration", quote: nil)],
+            from: meeting, context: context, replacingExisting: false
+        )
+
+        #expect(result.suggested == 1)
+        #expect(result.duplicatesDropped == 0)
+        let texts = try context.fetch(FetchDescriptor<KnowledgeFact>()).map(\.originalText).sorted()
+        #expect(texts == ["Dana runs the migration", "Sarah leads Atlas"])
+    }
+
     @Test func ingestInvalidatesSynthesisOnlyForTouchedEntities() throws {
         let context = try makeContext()
         let meeting = Meeting(title: "m")

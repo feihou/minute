@@ -3,9 +3,14 @@ import OSLog
 
 /// Converts PCM buffers between formats (used for the recording file after a
 /// route change, and for the speech analyzer's preferred format).
-/// Only ever used serially on the audio tap thread.
+/// Only ever used serially, though not always from the same thread: the
+/// transcription converter runs on the main actor while `BufferHandlerBox`
+/// replays the lead-in captured before the engine attached, and on the audio
+/// tap thread afterwards. The box's lock orders that handoff and keeps live
+/// buffers queued behind the replay, so `convert` never has two callers at
+/// once.
 /// ponytail: @unchecked Sendable because AVAudioConverter isn't Sendable; safe
-/// while the single tap thread is the only caller.
+/// only while callers stay serialized as above.
 final class AudioBufferConverter: @unchecked Sendable {
     private static let logger = Logger(subsystem: "com.minuteapp.Minute", category: "AudioBufferConverter")
 

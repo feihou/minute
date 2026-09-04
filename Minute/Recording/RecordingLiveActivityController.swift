@@ -13,13 +13,23 @@ final class RecordingLiveActivityController {
     /// stop can't land out of order and leave a stale card on the lock screen.
     private var chain: Task<Void, Never>?
 
+    /// How long a lock-screen card is trusted after the app last touched it.
+    /// The session refreshes well inside this window while it is alive, so the
+    /// date only lapses when the process is gone — the one case where the card
+    /// would otherwise keep counting up over a recording that ended.
+    static let staleAfter: TimeInterval = 180
+
+    static func staleDate(from now: Date = .now) -> Date {
+        now.addingTimeInterval(staleAfter)
+    }
+
     func start(title: String) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         let state = RecordingActivityAttributes.ContentState(startedAt: .now, isPaused: false, elapsed: 0)
         do {
             activity = try Activity.request(
                 attributes: RecordingActivityAttributes(title: title),
-                content: ActivityContent(state: state, staleDate: nil)
+                content: ActivityContent(state: state, staleDate: Self.staleDate())
             )
         } catch {
             // The activity is a convenience mirror — never fail recording over it.
@@ -34,7 +44,8 @@ final class RecordingLiveActivityController {
             isPaused: isPaused,
             elapsed: elapsed
         )
-        enqueue { await activity.update(ActivityContent(state: state, staleDate: nil)) }
+        let staleDate = Self.staleDate()
+        enqueue { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
     }
 
     func end() {

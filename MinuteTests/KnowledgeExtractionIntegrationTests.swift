@@ -12,8 +12,12 @@ struct KnowledgeExtractionIntegrationTests {
             [00:12] Bob: Great. I'll keep owning the Mercury migration then.
             [00:20] Sarah: Also decided: Atlas ships at the end of Q3.
             """
-        let candidates = try await KnowledgeExtractionService()
+        let result = try await KnowledgeExtractionService()
             .extract(transcript: transcript, knownEntityNames: ["Sarah Chen"])
+        let candidates = result.candidates
+
+        // Nothing in this transcript should trip the guardrails.
+        #expect(result.refusedChunkCount == 0)
 
         #expect(!candidates.isEmpty)
         let names = candidates.map { KnowledgeText.normalized($0.entityName) }

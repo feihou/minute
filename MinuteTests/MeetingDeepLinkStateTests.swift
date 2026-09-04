@@ -45,4 +45,48 @@ struct MeetingDeepLinkStateTests {
         #expect(state.pendingMeetingID == secondID)
         #expect(state.resolve(availableMeetingIDs: [secondID]) == secondID)
     }
+
+    // MARK: - What to do with a link, given what is already on screen
+
+    /// F40: `beginNewMeeting()` resets `draftTitle` unconditionally, so a
+    /// widget tap while the sheet is up wiped the title the user had typed
+    /// into it. The sheet already IS the state the link asks for.
+    @Test func aNewMeetingLinkIsIgnoredWhileTheSheetIsAlreadyOpen() {
+        #expect(MeetingDeepLinkState.action(
+            for: .newMeeting,
+            isRecording: false,
+            isShowingNewMeeting: true
+        ) == .ignore)
+    }
+
+    @Test func aNewMeetingLinkIsIgnoredWhileARecordingIsRunning() {
+        #expect(MeetingDeepLinkState.action(
+            for: .newMeeting,
+            isRecording: true,
+            isShowingNewMeeting: false
+        ) == .ignore)
+    }
+
+    @Test func aNewMeetingLinkPresentsTheSheetWhenNothingIsInTheWay() {
+        #expect(MeetingDeepLinkState.action(
+            for: .newMeeting,
+            isRecording: false,
+            isShowingNewMeeting: false
+        ) == .presentNewMeeting)
+    }
+
+    /// F64: a meeting link is always honored — the list dismisses whatever is
+    /// covering the stack first, rather than pushing the detail behind it.
+    @Test func aMeetingLinkAlwaysOpensTheMeeting() {
+        #expect(MeetingDeepLinkState.action(
+            for: .meeting(firstID),
+            isRecording: true,
+            isShowingNewMeeting: true
+        ) == .openMeeting)
+        #expect(MeetingDeepLinkState.action(
+            for: .meeting(firstID),
+            isRecording: false,
+            isShowingNewMeeting: false
+        ) == .openMeeting)
+    }
 }

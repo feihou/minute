@@ -8,6 +8,7 @@ import UIKit
 /// on-device capability status.
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var context
     @Environment(MeetingJobs.self) private var jobs
     @Query private var meetings: [Meeting]
@@ -36,6 +37,13 @@ struct SettingsView: View {
     @State private var deleteAllFailed = false
     @State private var backupPolicyFailed = false
     @State private var mirrorTask: Task<Void, Never>?
+    @State private var confirmingStoreReset = false
+    @State private var storeResetFailed = false
+    /// Set once the reset has run. The process keeps the in-memory container
+    /// it opened at launch, so the library only comes back empty-and-working
+    /// after a relaunch — the row says so instead of leaving the user to
+    /// wonder why nothing changed.
+    @State private var didResetStore = false
 
     var body: some View {
         NavigationStack {
@@ -44,11 +52,17 @@ struct SettingsView: View {
                 recordingSection
                 summaryContextSection
                 modelsSection
-                // In fallback mode the usage figure and local deletion promise
-                // would be wrong. Backup controls stay visible because the
-                // device-backup choice still governs old persistent data, and
-                // the user must be able to turn either privacy setting off.
-                if !MeetingStore.useEphemeralStorage {
+                // In fallback mode the usage figure and the local deletion
+                // promise would both be wrong — the usage row counts the
+                // session-only tmp directory, and Delete All Meetings iterates
+                // an empty in-memory library — so that mode gets its own
+                // section, which is also the only way out of it. Backup
+                // controls stay visible in both: the device-backup choice
+                // still governs old persistent data, and the user must be able
+                // to turn either privacy setting off.
+                if MeetingStore.useEphemeralStorage {
+                    fallbackStorageSection
+                } else {
                     storageSection
                 }
                 backupSection
@@ -63,13 +77,22 @@ struct SettingsView: View {
                     Button("Done") { dismiss() }
                 }
             }
-            // task(id:) so returning from the engine/model picker refreshes
-            // the capability row without reopening Settings. finishedCount:
-            // a download can finish (and auto-select) after the picker is
-            // popped, and @AppStorage never observes the center's direct
-            // write to the dotted key — re-check on every terminal outcome.
-            .task(id: transcriptionStatusKey) { await refreshTranscriptionStatus() }
+            // task(id:) so returning from an engine/model picker refreshes the
+            // capability rows without reopening Settings; see modelStatusKey
+            // for why both download centers are part of the key.
+            .task(id: modelStatusKey) { await refreshTranscriptionStatus() }
             .task { usage = MeetingStore.recordingsUsage() }
+            // The background mirror records its verdict with a direct
+            // UserDefaults write, which @AppStorage does not observe on these
+            // dotted keys — so while this sheet stays open across a
+            // background/foreground cycle the warning below is stale in both
+            // directions. Most concretely: the user reads the warning, leaves
+            // to sign in to iCloud (which backgrounds the app and runs a now
+            // successful mirror), comes back, and the warning is still there.
+            .onChange(of: scenePhase) {
+                guard scenePhase == .active else { return }
+                driveLastSyncFailed = AppSettings.iCloudDriveLastSyncFailed
+            }
             .confirmationDialog(
                 "Delete all meetings?",
                 isPresented: $confirmingDeleteAll,
@@ -89,14 +112,16 @@ struct SettingsView: View {
             }
             .alert(
                 MeetingStore.useEphemeralStorage
-                    ? "Storage is temporarily unavailable"
+                    ? "Storage isn't available"
                     : "iCloud Drive isn't available",
                 isPresented: $driveUnavailable
             ) {
                 Button("OK", role: .cancel) {}
             } message: {
                 if MeetingStore.useEphemeralStorage {
-                    Text("Minute is using temporary in-memory storage. Try again after the persistent meeting store recovers.")
+                    // Same failure the Storage section describes, so it can't
+                    // promise a recovery that section says only a reset brings.
+                    Text("Minute couldn't open its meeting store and is keeping this session in memory only. The Storage section in Settings explains it and offers the reset.")
                 } else {
                     Text("Sign in to iCloud and turn on iCloud Drive in iOS Settings, then try again. A build signed without iCloud entitlements can't use this.")
                 }
@@ -105,6 +130,23 @@ struct SettingsView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text("Storage may be unavailable. The remaining meetings are still in your library — try again later.")
+            }
+            .confirmationDialog(
+                "Delete stored meetings and start over?",
+                isPresented: $confirmingStoreReset,
+                titleVisibility: .visible
+            ) {
+                Button("Delete and Start Over", role: .destructive) {
+                    resetStoredMeetings()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The unreadable meeting database and every recording still on this iPhone will be permanently deleted. This can't be undone.")
+            }
+            .alert("Couldn't delete the stored meetings", isPresented: $storeResetFailed) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Some files couldn't be removed. Storage may be unavailable — try again later.")
             }
         }
     }
@@ -149,11 +191,15 @@ struct SettingsView: View {
                 settingsLabel("Live Transcription", systemImage: "captions.bubble", tint: .blue)
             }
 
+            // Deliberately not gated on Live Transcription: this setting also
+            // governs imported audio (MeetingListView.startImport reads it,
+            // and AudioImporter transcribes regardless of the live setting).
+            // Gating it left a user who records without live transcription
+            // unable to turn it on for imports at all — and left it stuck ON,
+            // greyed out and looking inert, while imports kept auto-summarizing.
             Toggle(isOn: $autoSummarize) {
                 settingsLabel("Auto-Summarize", systemImage: "sparkles", tint: .purple)
             }
-            // Without a transcript there is nothing to summarize.
-            .disabled(!liveTranscription)
 
             Picker(selection: $summaryTemplate) {
                 ForEach(SummaryTemplate.all) { template in
@@ -176,7 +222,7 @@ struct SettingsView: View {
         } header: {
             Text("Recording")
         } footer: {
-            Text("\(selectedQuality.label): \(selectedQuality.detail). Settings apply to new recordings. Auto-Summarize generates the summary on device right after a meeting is saved — it needs Live Transcription to produce the transcript it summarizes. The template controls how notes are organized (e.g. Yesterday/Today/Blockers for standups).")
+            Text("\(selectedQuality.label): \(selectedQuality.detail). Settings apply to new recordings. Auto-Summarize generates the summary on device as soon as a meeting has a transcript — after a recording made with Live Transcription on, and after importing audio. The template controls how notes are organized (e.g. Yesterday/Today/Blockers for standups).")
         }
     }
 
@@ -271,6 +317,34 @@ struct SettingsView: View {
         }
     }
 
+    /// The way out of fallback mode, and the only delete path the on-disk
+    /// audio and transcripts have while it lasts.
+    private var fallbackStorageSection: some View {
+        Section {
+            if let message = AppSettings.persistentStoreFailure {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if didResetStore {
+                Label("Quit and reopen Minute to finish.", systemImage: "checkmark.circle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.green)
+            } else {
+                Button(role: .destructive) {
+                    confirmingStoreReset = true
+                } label: {
+                    settingsLabel("Delete stored meetings and start over", systemImage: "trash", tint: .red)
+                        .foregroundStyle(.red)
+                }
+            }
+        } header: {
+            Text("Storage")
+        } footer: {
+            Text("Minute couldn't open its meeting database, so nothing from this session is being saved. Deleting removes that database and every recording still on this iPhone, and the next launch starts with an empty library. This can't be undone.")
+        }
+    }
+
     private var backupSection: some View {
         Section {
             Toggle(isOn: $iCloudBackup) {
@@ -332,7 +406,12 @@ struct SettingsView: View {
             Text("Backup")
         } footer: {
             if MeetingStore.useEphemeralStorage {
-                Text("The persistent meeting store is temporarily unavailable. iCloud Backup still controls whether existing on-device data is included in future device backups, and either backup option can still be turned off. iCloud Drive Folder can't start a new mirror until storage recovers.")
+                // "Temporarily unavailable" was written before the Storage
+                // section above existed: that section says the store could not
+                // be opened at all and offers the reset that is the only way
+                // out. Two sections about the same failure must not disagree
+                // about whether it passes on its own.
+                Text("Minute couldn't open its meeting store — see the Storage section above. iCloud Backup still controls whether existing on-device data is included in future device backups, and either backup option can still be turned off. iCloud Drive Folder can't start a new mirror until the store opens again.")
             } else {
                 Text("Both are off by default. iCloud Backup includes meeting data in this iPhone's device backup — it comes back only by restoring the iPhone from that backup. iCloud Drive Folder keeps a browsable copy in Files → iCloud Drive → Minute → this iPhone's folder (one folder per meeting with its notes and audio), updated when you leave the app. Turning either off stops future copies; files already in iCloud Drive stay until you delete them in Files. Nothing else is uploaded — there is still no account and no server.")
             }
@@ -479,15 +558,43 @@ struct SettingsView: View {
         deleteAllFailed = !allSucceeded
     }
 
-    private var transcriptionStatusKey: String {
-        "\(transcriptionEngineRaw)|\(whisperModelRaw)|\(WhisperDownloadCenter.shared.finishedCount)"
+    /// Fallback mode only. Deletes the unreadable store and the recordings it
+    /// stranded; the persistent container is only re-created at the next
+    /// launch, so success asks for a relaunch rather than claiming the library
+    /// is back.
+    private func resetStoredMeetings() {
+        if MeetingStore.resetPersistentStore() {
+            didResetStore = true
+        } else {
+            storeResetFailed = true
+        }
+    }
+
+    /// Everything whose change has to re-run the capability check and re-read
+    /// the model rows. Both centers' `finishedCount` is in here because a
+    /// download can finish — and auto-select the model it just fetched — after
+    /// its picker has been popped, and @AppStorage never observes the center's
+    /// direct write to the dotted selection key. Reading them during `body` is
+    /// also what makes the plain computed rows (`summaryModelName`, the
+    /// availability footnote, `summarizationStatus`) re-evaluate at all: the
+    /// summary side had no dependency on MLXDownloadCenter, so a finished
+    /// ~1 GB download kept reading "Local Model / Unavailable / not downloaded
+    /// yet" until Settings was dismissed and reopened.
+    private var modelStatusKey: String {
+        "\(transcriptionEngineRaw)|\(whisperModelRaw)|\(WhisperDownloadCenter.shared.finishedCount)|\(MLXDownloadCenter.shared.finishedCount)"
     }
 
     private func refreshTranscriptionStatus() async {
         if AppSettings.transcriptionEngine == .whisper {
-            transcriptionStatus = WhisperModelStore.isDownloaded(AppSettings.whisperModel)
-                ? "Ready"
-                : "Model not downloaded"
+            if WhisperModelStore.isDownloaded(AppSettings.whisperModel) {
+                transcriptionStatus = "Ready"
+            } else if WhisperModelStore.needsTokenizerUpdate(AppSettings.whisperModel) {
+                // The model is downloaded; only its tokenizer is missing. This
+                // row must not tell someone who has the model that they don't.
+                transcriptionStatus = "Update needed"
+            } else {
+                transcriptionStatus = "Model not downloaded"
+            }
             return
         }
         guard SpeechTranscriber.isAvailable else {

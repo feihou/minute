@@ -67,28 +67,200 @@ enum MeetingStore {
         return applied
     }
 
-    /// Sets the backup-exclusion flag on one directory, and pins the data
-    /// protection class while we are here. Split out so tests can exercise the
-    /// flip on a scratch directory instead of racing concurrent tests over the
-    /// shared Application Support tree.
+    /// Sets the backup-exclusion flag on one directory. Split out so tests can
+    /// exercise the flip on a scratch directory instead of racing concurrent
+    /// tests over the shared Application Support tree. The data protection
+    /// class is applied separately — see `applyDataProtection`, which has to
+    /// run after the SwiftData container exists.
     static func setExcludedFromBackup(_ excluded: Bool, at url: URL) throws {
         var url = url
         var values = URLResourceValues()
         values.isExcludedFromBackup = excluded
         try url.setResourceValues(values)
-        // Meeting audio and transcripts are about as sensitive as this app's
-        // data gets. The default class keeps them readable once the phone has
-        // been unlocked a single time since boot — i.e. essentially always,
-        // which is exactly the state a stolen phone is in. `completeUnlessOpen`
-        // keeps an in-progress recording writable across a lock while leaving
-        // everything at rest unreadable until the next unlock.
-        //
-        // Set on the directory, which is what new files inherit; recordings
-        // made before this shipped keep the class they were created with.
-        try FileManager.default.setAttributes(
-            [.protectionKey: FileProtectionType.completeUnlessOpen],
-            ofItemAtPath: url.path
-        )
+    }
+
+    /// The subdirectory of Application Support that holds meeting audio.
+    private static let recordingsDirectoryName = "Recordings"
+
+    /// SwiftData's on-disk files for the default configuration: the database
+    /// plus its write-ahead log and shared-memory siblings. Named explicitly
+    /// because both the data-protection pass and the fallback reset have to
+    /// address them one by one — a directory attribute never reaches a file
+    /// that already exists, and deleting only `default.store` leaves a -wal a
+    /// later open replays.
+    static let storeFileNames = ["default.store", "default.store-wal", "default.store-shm"]
+
+    /// The data protection class Minute pins on its own files.
+    ///
+    /// Not `completeUnlessOpen` (class B), which is what this used to set.
+    /// A class-B file that is closed cannot be reopened once the device locks,
+    /// and Minute reads its own files precisely then: the iCloud Drive mirror
+    /// starts on `scenePhase == .background`, which is exactly what locking the
+    /// phone produces, and it copies each recording with `FileManager.copyItem`
+    /// after the class key has been discarded; re-transcription and speaker
+    /// identification open the audio (and the Whisper/MLX model files) after a
+    /// model-preparation wait the user may well spend with the phone locked.
+    /// The failures surfaced as "the last backup to iCloud Drive didn't
+    /// finish — check that you're signed in to iCloud" while iCloud was fine.
+    /// `completeUntilFirstUserAuthentication` still leaves everything
+    /// unreadable until the first unlock after a reboot — the state a stolen
+    /// powered-off phone is in — without breaking those reads.
+    static let dataProtectionClass = FileProtectionType.completeUntilFirstUserAuthentication
+
+    /// The Application Support subdirectories the model caches live in.
+    /// `WhisperModelStore.baseDirectory` and `MLXModelStore.baseDirectory`
+    /// build these paths inline, so the names are duplicated here rather than
+    /// shared — rename one there and this needs the same edit.
+    private static let modelDirectoryNames = ["WhisperKitModels", "MLXModels"]
+
+    /// Pins the data protection class on Minute's Application Support tree and
+    /// the App Group container: the Application Support directory itself (so
+    /// new files inherit it), the Recordings directory *and every file already
+    /// inside it*, whichever of the two model-cache directories exist, the
+    /// SwiftData store files, which `ModelContainer` creates before any policy
+    /// runs, and the group container's root and Preferences directory. Call
+    /// once at launch, after the container is open. Returns false when
+    /// something could not be set.
+    ///
+    /// `setAttributes` on a directory is not recursive and only governs what is
+    /// created inside it afterwards, which is why each of these is named. That
+    /// is the whole point for audio: an install upgraded from the build that
+    /// set class B carries a library of recordings a stamp on the directory
+    /// would never reach, and those are exactly the files the iCloud Drive
+    /// mirror copies from the background with the phone locked. Stamping only
+    /// the directory would fix new recordings and leave the reported failure
+    /// in place for everybody who already has meetings.
+    ///
+    /// The model directories are the same trap one level up. Both stores create
+    /// their directory lazily, so on an install upgraded from the class-B build
+    /// a model directory created afterwards inherited class B — and every file
+    /// downloaded into it inherits class B in turn, for as long as that
+    /// directory lives, not just once. Re-stamping the two roots closes that
+    /// forward path, which is the half `dataProtectionClass` names when it says
+    /// re-transcription opens the model files after a wait spent with the phone
+    /// locked. What it does not do is reach the model files already inside:
+    /// walking a downloaded weight tree on the launch path would cost more than
+    /// it buys, and unlike a recording a model is re-downloadable — deleting
+    /// and re-downloading it from Settings rewrites those files under the
+    /// current class. The directories are stamped only if they are there; this
+    /// pass does not materialise a cache for someone who downloaded no model.
+    ///
+    /// The App Group container gets the same treatment, in three targets: its
+    /// root, `<group>/Library/Preferences` when it is there — the directory
+    /// `UserDefaults` writes the widget snapshot plist into — and that plist
+    /// itself, `<group>/Library/Preferences/<app group>.plist`. The reader that
+    /// decides this is the widget extension's timeline provider, which runs
+    /// while the device is locked; a snapshot it cannot open is a blank widget
+    /// on the lock screen, the same symptom class as the recordings above. The
+    /// group root is the same upgrade trap as everything else here: an install
+    /// upgraded from the shipped build carries class B there —
+    /// `setExcludedFromBackup` used to stamp it — and keeps it until something
+    /// re-stamps it, so naming the root is what closes the forward path for a
+    /// plist written later. The plist is named for the backward path, because
+    /// stamping the directory does not reach inside it: an existing snapshot
+    /// file keeps class B, and `WidgetSnapshotStore` skips a save whose value
+    /// has not changed, so a library that is not growing never rewrites it.
+    /// All three are stamped only if they are there; this pass creates nothing
+    /// in the container, and the container itself is nil wherever the
+    /// entitlement is not in force, which is the case the `appGroup` default
+    /// resolves.
+    ///
+    /// `apply` is injected so tests can assert what gets which class: the
+    /// simulator accepts `.protectionKey` and then reports it back as nil, so
+    /// reading the attribute afterwards would assert nothing.
+    @discardableResult
+    static func applyDataProtection(
+        base: URL? = nil,
+        appGroup: URL? = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: WidgetConstants.appGroupIdentifier
+        ),
+        apply: (URL, FileProtectionType) throws -> Void = { url, protection in
+            try FileManager.default.setAttributes([.protectionKey: protection], ofItemAtPath: url.path)
+        }
+    ) -> Bool {
+        let root: URL
+        do {
+            root = try base ?? FileManager.default.url(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+        } catch {
+            logger.error("Applying data protection failed: \(error.localizedDescription)")
+            return false
+        }
+        var succeeded = true
+        var targets = [root]
+        // Scoped so a failure reaching the audio — a stray file where the
+        // directory should be, a full disk — costs only the audio and still
+        // leaves the store files stamped, which is the other half of the fix.
+        do {
+            let recordings = root.appendingPathComponent(recordingsDirectoryName, isDirectory: true)
+            try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+            targets.append(recordings)
+            // The directory is flat by construction — one file per recording —
+            // so a shallow listing is the whole library, and this runs once per
+            // launch. Sorted only to make the order deterministic: the file
+            // system's is not, and a test that asserts what gets stamped needs
+            // one.
+            let existing = try FileManager.default.contentsOfDirectory(
+                at: recordings,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+            targets.append(contentsOf: existing.sorted { $0.lastPathComponent < $1.lastPathComponent })
+        } catch {
+            logger.error("Reaching the recordings for the data protection pass failed: \(error.localizedDescription)")
+            succeeded = false
+        }
+        // Not created when absent, unlike Recordings: a model directory that is
+        // not there means nothing has been downloaded, and whatever creates it
+        // later will inherit the class from the root stamped above.
+        for name in modelDirectoryNames {
+            let url = root.appendingPathComponent(name, isDirectory: true)
+            if FileManager.default.fileExists(atPath: url.path) {
+                targets.append(url)
+            }
+        }
+        for name in storeFileNames {
+            let url = root.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: url.path) {
+                targets.append(url)
+            }
+        }
+        // Stamped, never created: `UserDefaults` owns the layout inside the
+        // container, and a Preferences directory conjured here would be one it
+        // never asked for.
+        if let appGroup {
+            targets.append(appGroup)
+            let preferences = appGroup.appendingPathComponent("Library/Preferences", isDirectory: true)
+            if FileManager.default.fileExists(atPath: preferences.path) {
+                targets.append(preferences)
+            }
+            // The plist itself, not only the directory holding it — the same
+            // non-recursive trap the recordings hit. On an install upgraded
+            // from the build that stamped the group `.completeUnlessOpen` the
+            // existing snapshot file keeps that class, and WidgetSnapshotStore
+            // suppresses a write whose value has not changed, so a user whose
+            // library is stable never rewrites it: the widget would stay blank
+            // while locked for good. `UserDefaults` names a suite's plist after
+            // the suite, which is the App Group identifier.
+            let snapshot = preferences
+                .appendingPathComponent("\(WidgetConstants.appGroupIdentifier).plist")
+            if FileManager.default.fileExists(atPath: snapshot.path) {
+                targets.append(snapshot)
+            }
+        }
+        for url in targets {
+            do {
+                try apply(url, dataProtectionClass)
+            } catch {
+                logger.error("Pinning the data protection class on \(url.lastPathComponent) failed: \(error.localizedDescription)")
+                succeeded = false
+            }
+        }
+        return succeeded
     }
 
     /// A local-only SwiftData configuration. The iCloud Documents
@@ -138,7 +310,7 @@ enum MeetingStore {
             appropriateFor: nil,
             create: true
         )
-        let directory = base.appendingPathComponent("Recordings", isDirectory: true)
+        let directory = base.appendingPathComponent(recordingsDirectoryName, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }
@@ -157,6 +329,55 @@ enum MeetingStore {
         } catch {
             logger.error("Removing ephemeral recordings failed: \(error.localizedDescription)")
         }
+    }
+
+    /// Deletes the persistent store and every recording under it, so the next
+    /// launch starts from an empty library.
+    ///
+    /// The only exit from fallback mode. When the persistent container cannot
+    /// open, nothing else in the app can reach these files: Settings' Delete
+    /// All Meetings iterates the empty in-memory library, and `delete` resolves
+    /// audio through `recordingsDirectory()`, which points at the session-only
+    /// temporary directory there. So the audio and transcripts on disk would
+    /// otherwise sit at rest with no delete path at all — exactly what the
+    /// "no data at rest without a delete path" invariant forbids — while the
+    /// same failing open repeats at every launch. Removing the files is the
+    /// whole operation: SwiftData recreates the store at the next launch, and
+    /// this process keeps the in-memory container it already opened, which is
+    /// why the caller tells the user to quit and reopen.
+    ///
+    /// Everything else in Application Support is left alone: downloaded
+    /// Whisper and summary models are not meeting data and cost gigabytes to
+    /// fetch again. Returns false when something could not be removed, so the
+    /// caller can say so rather than promise a clean slate. `base` is a
+    /// parameter so tests run against a scratch tree instead of the real
+    /// Application Support directory.
+    @discardableResult
+    static func resetPersistentStore(base: URL? = nil) -> Bool {
+        var succeeded = true
+        do {
+            let root = try base ?? FileManager.default.url(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+            var targets = storeFileNames.map { root.appendingPathComponent($0) }
+            targets.append(root.appendingPathComponent(recordingsDirectoryName, isDirectory: true))
+            for url in targets {
+                guard FileManager.default.fileExists(atPath: url.path) else { continue }
+                do {
+                    try FileManager.default.removeItem(at: url)
+                } catch {
+                    logger.error("Resetting the store could not remove \(url.lastPathComponent): \(error.localizedDescription)")
+                    succeeded = false
+                }
+            }
+        } catch {
+            logger.error("Resetting the store failed: \(error.localizedDescription)")
+            succeeded = false
+        }
+        return succeeded
     }
 
     static func newAudioFileName() -> String {
@@ -206,8 +427,13 @@ enum MeetingStore {
     /// can tell the user instead of silently claiming success.
     @discardableResult
     static func delete(_ meeting: Meeting, context: ModelContext) -> Bool {
-        let audioFileName = meeting.audioFileName
+        // A foreground mirror started from the Settings toggle may still be
+        // walking its snapshot; it must not write this meeting's notes to
+        // iCloud Drive after the user deleted it. Captured before the delete:
+        // the id has to survive into the rollback path below.
         let meetingID = meeting.id
+        ICloudDriveBackup.noteMeetingDeleted(meetingID)
+        let audioFileName = meeting.audioFileName
         context.delete(meeting)
         do {
             try context.save()
@@ -221,18 +447,25 @@ enum MeetingStore {
             // context-wide rollback(), which would also discard unrelated
             // unsaved edits in the shared main context.
             context.insert(meeting)
+            // The delete didn't commit, so the note above was a prediction that
+            // turned out wrong: retract it, or the mirror would skip a meeting
+            // the user still has for the rest of the process.
+            ICloudDriveBackup.noteMeetingDeleteFailed(meetingID)
             return false
         }
         if let audioFileName {
             deleteAudioFile(named: audioFileName)
         }
         // A fact's sources are a codable list rather than a SwiftData
-        // relationship, so nothing cascades to them — drop this meeting's
-        // support explicitly, or a deleted meeting keeps speaking through the
-        // facts it produced. Deliberately after the meeting delete commits: a
-        // failure here must not resurrect the meeting, and the launch pass in
-        // MeetingListView catches whatever a failed save leaves behind.
-        _ = meetingID
+        // relationship, so nothing cascades to them — a deleted meeting would
+        // keep speaking through the facts it produced. `reconcile` takes no
+        // meeting on purpose: with sources a uniform list, dropping one
+        // deleted meeting's support and reconciling the whole library are the
+        // same pass, so this both retires the facts only this meeting
+        // supported and clears anything an earlier failed pass left behind.
+        // Deliberately after the meeting delete commits: a failure here must
+        // not resurrect the meeting, and the launch pass in MeetingListView
+        // catches whatever a failed save leaves behind.
         KnowledgeStore.reconcile(context: context)
         return true
     }
