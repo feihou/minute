@@ -148,4 +148,42 @@ struct SummaryEditorParsingTests {
         #expect(SummaryEditorView.parseActionItems(serialized)
             == [ActionItem(task: "Ship it | Alice", owner: "Mon", deadline: "Tue")])
     }
+
+    /// B12: a row typed left to right and abandoned after the owner —
+    /// "Ship it | Alice |" — ends with a separator that opens a field nobody
+    /// filled. The backwards search finds the whole separator before it first,
+    /// so that empty tail came back attached to the owner: "Alice |" saved as
+    /// the person's name, dangling pipe and all, and there is no undo. An empty
+    /// trailing field is what "nothing typed there" looks like, so it is
+    /// dropped. The trailing-space form is the same line with the separator
+    /// fully typed out.
+    @Test func splitActionItemLineDropsATrailingEmptyFieldInsteadOfMakingItAnOwner() {
+        #expect(SummaryEditorView.splitActionItemLine("Ship it | Alice |") == ["Ship it", "Alice"])
+        #expect(SummaryEditorView.splitActionItemLine("Ship it | Alice | ") == ["Ship it", "Alice"])
+        #expect(SummaryEditorView.splitActionItemLine("Ship it |") == ["Ship it"])
+        // Repeated, or the pipe the first shed leaves behind rides along on the
+        // task: "Ship it | |" is two openings, not a task called "Ship it |".
+        #expect(SummaryEditorView.splitActionItemLine("Ship it | |") == ["Ship it"])
+    }
+
+    @Test func parseActionItemsSavesAnOwnerWithoutTheDanglingPipe() {
+        let parsed = SummaryEditorView.parseActionItems("Ship it | Alice |")
+        #expect(parsed == [ActionItem(task: "Ship it", owner: "Alice", deadline: "Not specified")])
+    }
+
+    /// What dropping a trailing empty field costs, pinned like this file's
+    /// other accepted limits: a deadline that is itself a bare "|" serializes
+    /// to a line ending in " |", and now reads as a field the user never
+    /// filled. Owners are names and deadlines are dates — a lone pipe in one is
+    /// not something anyone types, while "Ship it | Alice |" is exactly what
+    /// people do type.
+    @Test func aTrailingBarePipeDeadlineIsDroppedRatherThanKept() {
+        let serialized = SummaryEditorView.serializeActionItems([
+            ActionItem(task: "Ship it", owner: "Alice", deadline: "|"),
+        ])
+
+        #expect(serialized == "Ship it | Alice | |")
+        #expect(SummaryEditorView.parseActionItems(serialized)
+            == [ActionItem(task: "Ship it", owner: "Alice", deadline: "Not specified")])
+    }
 }
