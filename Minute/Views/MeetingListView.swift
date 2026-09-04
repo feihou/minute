@@ -475,11 +475,11 @@ struct MeetingListView: View {
         showingNewMeeting = true
     }
 
-    /// Lets the Brain read a meeting that has just arrived from a recording or
-    /// an import. The loop is otherwise only nudged by a finished job or a
-    /// scene activation, so with Auto-Summarize off (the default) neither
-    /// happens and the meeting goes unread until the app is backgrounded and
-    /// reopened.
+    /// Whether a meeting that has just arrived from a recording or an import
+    /// should nudge the Brain now. The loop is otherwise only nudged by a
+    /// finished job or a scene activation, so with Auto-Summarize off (the
+    /// default) neither happens and the meeting goes unread until the app is
+    /// backgrounded and reopened.
     ///
     /// Two cases skip the nudge. A meeting with no transcript (a silent save,
     /// an import whose transcription failed) has nothing to read, and the loop
@@ -499,8 +499,21 @@ struct MeetingListView: View {
     /// claimed — since no job means no end to nudge from. The meeting then
     /// waits for the Brain tab's own `.task` or the next scene activation to be
     /// read: later than a nudge here, but never lost.
+    ///
+    /// Static and parameterized rather than folded into the call below, because
+    /// both skips are silent when they regress and a private view method is
+    /// unreachable from the tests that would say so.
+    static func shouldNudgeBrain(hasTranscript: Bool, destinationAutoSummarizes: Bool) -> Bool {
+        hasTranscript && !destinationAutoSummarizes
+    }
+
+    /// Lets the Brain read a meeting that has just arrived — see
+    /// `shouldNudgeBrain` for which arrivals qualify and why.
     private func nudgeBrain(for meeting: Meeting) {
-        guard meeting.hasTranscript, !destinationAutoSummarizes else { return }
+        guard Self.shouldNudgeBrain(
+            hasTranscript: meeting.hasTranscript,
+            destinationAutoSummarizes: destinationAutoSummarizes
+        ) else { return }
         catchUp.nudge(context: context)
     }
 
