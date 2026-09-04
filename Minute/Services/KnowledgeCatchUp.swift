@@ -257,9 +257,6 @@ final class KnowledgeCatchUp {
     }
 
     private func run(context: ModelContext) async {
-        // Count before any guard can bail: even when the model isn't ready
-        // or the device is warm, the Brain tab must know unread work exists.
-        refreshPendingCount(context: context)
         // Not a per-meeting failure: when the model isn't ready, leave the
         // queue untouched and wait for a later nudge (mirrors the thermal
         // guard's return-without-consuming semantics).
@@ -273,7 +270,19 @@ final class KnowledgeCatchUp {
         // clear already have a door: turning Apple Intelligence on happens in
         // Settings, which backgrounds the app, and the scene coming back
         // nudges — as does the Brain tab appearing, or any job finishing.
-        guard availabilityMessage() == nil else { return }
+        guard availabilityMessage() == nil else {
+            // The Brain tab still has to know unread work exists — but this
+            // is the path an ineligible iPhone takes on every nudge, and the
+            // nudges are frequent (the tab's `.task` on each appearance, every
+            // job that ends) while its unstamped set only grows. Pay for a
+            // count, not for fetching every unstamped meeting and decoding its
+            // `segments`.
+            refreshBlockedPendingCount(context: context)
+            return
+        }
+        // Counted before the thermal guard can bail: even on a warm phone the
+        // Brain tab must know unread work exists.
+        refreshPendingCount(context: context)
 
         while !Task.isCancelled {
             // Sustained ANE work on a warm phone throttles everything; wait
@@ -383,14 +392,20 @@ final class KnowledgeCatchUp {
         }
     }
 
-    /// Unstamped meetings the loop can actually read. `segments` can't be
-    /// predicated, so the transcript filter runs in memory.
-    private func pendingMeetings(context: ModelContext) -> [Meeting] {
+    /// Unstamped meetings the loop can actually read, or nil when the fetch
+    /// itself failed. `segments` can't be predicated, so the transcript filter
+    /// runs in memory.
+    ///
+    /// nil rather than []: a store error is not "nothing left to read".
+    /// Folding it into an empty list drops `pendingCount` to 0 and the Brain
+    /// tab tells the user everything has been read, over a queue that is still
+    /// entirely there.
+    private func pendingMeetings(context: ModelContext) -> [Meeting]? {
         let descriptor = FetchDescriptor<Meeting>(
             predicate: #Predicate { $0.knowledgeExtractedAt == nil },
             sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
         )
-        let unstamped = (try? context.fetch(descriptor)) ?? []
+        guard let unstamped = try? context.fetch(descriptor) else { return nil }
         // A meeting with no transcript is deliberately left unstamped (text
         // may arrive later), but it is not "still to read" — counting it
         // shows the Brain tab a number that never goes down.
@@ -403,8 +418,8 @@ final class KnowledgeCatchUp {
     /// row for the rest of the session — telling the user that parts of a
     /// meeting they deleted are still waiting to be read. Every read of the
     /// queue goes through here, so the record can't outlive its subject.
-    private func livePendingMeetings(context: ModelContext) -> [Meeting] {
-        let pending = pendingMeetings(context: context)
+    private func livePendingMeetings(context: ModelContext) -> [Meeting]? {
+        guard let pending = pendingMeetings(context: context) else { return nil }
         guard !skippedChunksByMeeting.isEmpty else { return pending }
         let ids = Set(pending.map(\.id))
         let kept = skippedChunksByMeeting.filter { ids.contains($0.key) }
@@ -417,14 +432,38 @@ final class KnowledgeCatchUp {
         return pending
     }
 
+    /// A failed fetch ends the pass without touching `pendingCount`: nothing
+    /// can be read this time round, and the next nudge tries again.
     private func nextPending(context: ModelContext) -> Meeting? {
-        let pending = livePendingMeetings(context: context)
+        guard let pending = livePendingMeetings(context: context) else { return nil }
         pendingCount = pending.count
         return pending.first { !isSkipped($0) }
     }
 
+    /// Keeps the last known count when the fetch fails, for the same reason:
+    /// a transient store error must not tell the Brain tab the queue is empty.
     private func refreshPendingCount(context: ModelContext) {
-        pendingCount = livePendingMeetings(context: context).count
+        pendingCount = livePendingMeetings(context: context)?.count ?? pendingCount
+    }
+
+    /// The count for a pass that is not going to read anything. `fetchCount`
+    /// asks the store for a number instead of materializing every unstamped
+    /// Meeting and decoding its `segments` for `hasTranscript`. It cannot
+    /// apply that filter, so it over-counts transcript-less meetings — which
+    /// the loop's own count corrects the moment extraction can run, and which
+    /// is not on screen meanwhile: a store with no entities renders the "Brain
+    /// Needs Apple Intelligence" state instead.
+    ///
+    /// It also skips `livePendingMeetings`, so this pass does not prune
+    /// `skippedChunksByMeeting`. A device that has always been blocked has no
+    /// refusals to prune — recording one takes a pass that actually ran the
+    /// extractor. One that has Apple Intelligence switched off mid-session can
+    /// hold a stale refused-parts row until the next unblocked pass, which is
+    /// the moment the user could act on it anyway.
+    private func refreshBlockedPendingCount(context: ModelContext) {
+        let descriptor = FetchDescriptor<Meeting>(predicate: #Predicate { $0.knowledgeExtractedAt == nil })
+        guard let count = try? context.fetchCount(descriptor) else { return }
+        pendingCount = count
     }
 
     private func knownEntityNames(context: ModelContext) -> [String] {

@@ -259,6 +259,43 @@ struct KnowledgeCatchUpTests {
         #expect(catchUp.pendingCount == 1)
     }
 
+    /// A phone that cannot run Apple Intelligence takes this path on EVERY
+    /// nudge — BrainView's `.task` fires on each appearance of the tab, and
+    /// every finished job nudges too — and its unstamped set only ever grows.
+    /// Counting there must not fetch every unstamped Meeting and decode its
+    /// `segments` to test `hasTranscript`, which would hold every transcript
+    /// in mainContext on exactly those devices.
+    @Test func theBlockedPathCountsWithoutReadingTranscripts() async throws {
+        let context = try makeContext()
+        context.insert(meetingWithTranscript("Readable", createdAt: .now))
+        // No segments at all: the honest count leaves this one out, and a
+        // count that never touches `segments` cannot tell the difference.
+        context.insert(Meeting(title: "Silent", createdAt: .now.addingTimeInterval(-60)))
+        try context.save()
+
+        var calls = 0
+        let blocked = KnowledgeCatchUp(
+            availabilityMessage: { "This iPhone doesn't support Apple Intelligence." },
+            extract: { _, _ in calls += 1; return .empty }
+        )
+        blocked.nudge(context: context)
+        await blocked.waitUntilIdle()
+
+        #expect(calls == 0)
+        // Both unstamped meetings are counted. Over-counting a transcript-less
+        // one is the accepted price of not decoding any transcript here: with
+        // no entities in the store the Brain tab renders the "needs Apple
+        // Intelligence" state, so this number is not on screen.
+        #expect(blocked.pendingCount == 2)
+
+        // And the count the loop itself keeps is still the honest one: the
+        // meeting with nothing to read never sits in it.
+        let ready = makeCatchUp { _, _ in .empty }
+        ready.nudge(context: context)
+        await ready.waitUntilIdle()
+        #expect(ready.pendingCount == 0)
+    }
+
     @Test func isWorkingIsTrueOnlyWhileTheLoopRuns() async throws {
         let context = try makeContext()
         context.insert(meetingWithTranscript("Only", createdAt: .now))
