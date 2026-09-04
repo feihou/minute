@@ -283,14 +283,16 @@ final class MeetingJobs {
     }
 
     /// Adopts the model's title only while the meeting still carries the
-    /// default "Meeting <date>" name — never over a user-chosen title. The
-    /// stored default is authoritative; re-deriving it is only a fallback for
-    /// meetings saved before the default was persisted, and can miss when the
-    /// locale or time zone changed since then.
+    /// auto-generated name — never over a user-chosen title.
+    ///
+    /// What counts as that name is `Meeting.titleFallback`, the same property
+    /// the title editor reverts an emptied field to. Deciding it a second time
+    /// here is how the two drift: a change to the fallback rule — locale,
+    /// format, a stored column — would fix the editor and silently stop every
+    /// suggested title from ever being adopted, with no test failing.
     private func applySuggestedTitleIfDefault(_ summary: MeetingSummary, to meeting: Meeting) {
         guard let suggested = summary.suggestedTitle else { return }
-        let baseline = meeting.defaultTitle ?? RecordingSession.defaultTitle(for: meeting.createdAt)
-        guard meeting.title == baseline else { return }
+        guard meeting.title == meeting.titleFallback else { return }
         meeting.title = suggested
     }
 }
