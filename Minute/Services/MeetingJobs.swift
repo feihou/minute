@@ -259,9 +259,20 @@ final class MeetingJobs {
         meeting.knowledgeExtractedAt = nil
     }
 
-    /// Sets one speaker's display name. The Brain reads the transcript with
-    /// names in it, so a rename resets the extraction cursor: facts about
-    /// "Speaker 2" become facts about the person.
+    /// Sets one speaker's display name and resets the extraction cursor: the
+    /// Brain reads the transcript with the names in it, so the NEXT extraction
+    /// can attribute this meeting's facts to the person.
+    ///
+    /// It does not re-point anything already stored, and there is nothing to
+    /// re-point: a candidate named "Speaker N" never reaches ingest
+    /// (KnowledgeExtractionService.candidate drops it) and historical
+    /// placeholder entities are deleted at launch (KnowledgeStore), so no fact
+    /// is ever filed under a placeholder entity. What the rename does not
+    /// change is wording. An approved or auto-captured row this meeting alone
+    /// states survives re-extraction untouched (KnowledgeIngest.apply), so a
+    /// fact reading "Speaker 2 will ship Atlas" keeps that text on the Atlas
+    /// page, and the re-extracted "Sarah will ship Atlas" is either dropped as
+    /// a near-duplicate or filed as a second suggested row.
     static func applySpeakerName(_ name: String, at index: Int, to meeting: Meeting) {
         var names = meeting.speakerNames ?? []
         while names.count <= index {
