@@ -354,6 +354,20 @@ final class RecordingSession: Identifiable {
         }
     }
 
+    /// Whether "Save without transcript" still has anything to do. The phase
+    /// stays `.saving` until the parked finalization returns, so the phase
+    /// alone can't drive the button: without this it stays lit behind the same
+    /// ProgressView after the first tap has already banked the segments, and
+    /// every further tap hits the guard below and does nothing — which is what
+    /// the user with a slow engine keeps doing. It is also already false on
+    /// the retry-after-a-failed-transcript-save path, where the transcript is
+    /// banked and there is nothing left to skip, so the dead case is never
+    /// offered at all. Mirrors the guard exactly, and the guard reads it, so
+    /// the two cannot drift apart.
+    var canSaveWithoutTranscript: Bool {
+        phase == .saving && pendingSegments == nil
+    }
+
     /// Stops waiting for the transcript and finishes the save with whatever the
     /// engine has already produced. Nothing bounds a finalization — Whisper's
     /// final pass covers up to five minutes of retained tail, and Apple Speech
@@ -361,7 +375,7 @@ final class RecordingSession: Identifiable {
     /// controls, so without this the user has no way out of a recording that is
     /// already safely on disk.
     func saveWithoutTranscript() async {
-        guard phase == .saving, pendingSegments == nil else { return }
+        guard canSaveWithoutTranscript else { return }
         // Bank first: cancelling clears the engine's own collection, and the
         // whole point of this action is to keep what it heard.
         var banked = transcription.segments

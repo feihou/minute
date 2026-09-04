@@ -284,6 +284,49 @@ struct RecordingSessionSaveTests {
         #expect(session.phase == .idle)
     }
 
+    /// The phase stays `.saving` after the segments are banked — the parked
+    /// finish() is still running — so the phase alone can't drive the button.
+    /// Without this property the button stays lit behind the same
+    /// ProgressView and every further tap is a silent no-op, which is exactly
+    /// what the user with a slow engine does.
+    @Test func saveWithoutTranscriptIsOfferedOnlyWhileThereIsSomethingToSkip() async throws {
+        let context = try makeContext()
+        let engine = ParkedTranscriptionEngine()
+        engine.segments = [TranscriptSegment(text: "heard so far", start: 0, end: 1)]
+        // Hold the park across the cancel, so "banked but still .saving" is a
+        // state the test can observe rather than race.
+        engine.releasesOnCancel = false
+        let session = RecordingSession(
+            title: "Slow engine",
+            prefilledDefaultTitle: "Slow engine",
+            transcription: engine
+        )
+
+        // Nothing is being saved yet, so there is nothing to skip.
+        #expect(session.canSaveWithoutTranscript == false)
+
+        let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        engine.onFinishEntered = { enteredContinuation.yield(()) }
+        let finishTask = Task { @MainActor in await session.finish(in: context)?.id }
+        var iterator = entered.makeAsyncIterator()
+        _ = await iterator.next()
+
+        // Parked in `.saving` with nothing banked: the way out is live.
+        #expect(session.canSaveWithoutTranscript)
+
+        await session.saveWithoutTranscript()
+
+        // Still `.saving` — finish() hasn't returned — but there is nothing
+        // left to skip, so the control has to be dead rather than inert.
+        #expect(session.phase == .saving)
+        #expect(session.canSaveWithoutTranscript == false)
+
+        engine.release()
+        _ = await finishTask.value
+        #expect(session.phase == .idle)
+        #expect(session.canSaveWithoutTranscript == false)
+    }
+
     /// A delete that doesn't commit is undone by MeetingStore, so the meeting
     /// is still in the library. Deleting its audio anyway — or reporting the
     /// discard as done and letting the screen dismiss — produces the one state
