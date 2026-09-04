@@ -58,6 +58,12 @@ struct KnowledgeTextTests {
         )
         // Words the transcript never says are still refused.
         #expect(!KnowledgeText.contains(transcript: chinese, quote: "李娜"))
+
+        // Cyrillic spells words out, so the cut-into-a-word rule has to hold
+        // there too — the fragment leniency is only for unspaced scripts.
+        let russian = "[0:03] Иван: я не собственник плана."
+        #expect(!KnowledgeText.contains(transcript: russian, quote: "обственник плана"))
+        #expect(KnowledgeText.contains(transcript: russian, quote: "собственник плана"))
     }
 
     @Test func fingerprintIsStablePerInstallAndEntity() {

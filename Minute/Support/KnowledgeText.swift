@@ -75,9 +75,14 @@ enum KnowledgeText {
     /// only when it spans complete punctuation-delimited clauses — routing
     /// every ordinary fragment to `.suggested` with no sourceQuote. So a
     /// second pass accepts an unpadded occurrence whose neighbouring
-    /// characters are not ASCII alphanumerics: that is still a word boundary
-    /// wherever words are spelled out, so "own the atlas plan" stays refused
-    /// inside "disown", while a verbatim CJK fragment validates.
+    /// characters are not word-internal — cased letters and ASCII digits.
+    /// Case is what separates the two families: a script with letter case
+    /// spells its words out (Latin, Cyrillic, Greek), so cutting into one is
+    /// the abuse the gate exists to refuse, while the uncased scripts (Han,
+    /// kana, Hangul, Thai, Arabic, Hebrew, Devanagari) are the ones with no
+    /// boundary to land on. So "own the atlas plan" stays refused inside
+    /// "disown" and "обственник" inside "собственник", while a verbatim CJK
+    /// fragment validates.
     static func contains(transcript: String, quote: String) -> Bool {
         let q = tokens(quote).joined(separator: " ")
         guard !q.isEmpty else { return false }
@@ -91,15 +96,19 @@ enum KnowledgeText {
                 ? nil
                 : haystack[haystack.index(before: found.lowerBound)]
             let after = found.upperBound == haystack.endIndex ? nil : haystack[found.upperBound]
-            if !isASCIIAlphanumeric(before), !isASCIIAlphanumeric(after) { return true }
+            if !isWordInternal(before), !isWordInternal(after) { return true }
             searchFrom = haystack.index(after: found.lowerBound)
         }
         return false
     }
 
-    private static func isASCIIAlphanumeric(_ character: Character?) -> Bool {
+    /// Whether a neighbouring character means the occurrence cut into a word.
+    /// `isCased` covers every script that has words to cut — including the
+    /// letters diacritic folding leaves alone (ø, æ, ł, đ) — and digits ride
+    /// along so "plan" can't be carved out of "plan2".
+    private static func isWordInternal(_ character: Character?) -> Bool {
         guard let character else { return false }
-        return character.isASCII && (character.isLetter || character.isNumber)
+        return character.isCased || (character.isASCII && character.isNumber)
     }
 
     /// Salted SHA-256 of the normalized text + entity ID — all a rejected
