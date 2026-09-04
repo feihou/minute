@@ -1,4 +1,4 @@
-# Minute v1.0 — App Store Product Page and Compliance Draft
+# Minute v1.1 — App Store Product Page and Compliance Draft
 
 **Verified against the repository and official Apple guidance: August 17, 2026.**
 
@@ -68,7 +68,7 @@ The list does not repeat words from the recommended app name. App Store Connect 
 
 ### 6. What's New
 
-App Store Connect does not show a What's New field for an app's first version. For the first update, adapt this copy to the changes that actually ship:
+App Store Connect does not show a What's New field for an app's first version — first meaning the first one ever released, whatever number it carries, so a first submission numbered 1.1 still has no What's New field. For the first update, adapt this copy to the changes that actually ship:
 
 Minute brings private meeting notes to your iPhone:
 
