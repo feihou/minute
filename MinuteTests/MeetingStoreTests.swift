@@ -396,6 +396,76 @@ struct MeetingStoreTests {
         #expect(applied == [base.lastPathComponent, "default.store"])
     }
 
+    /// B10: the pass walked every recording in the library, one `setAttributes`
+    /// per file, on the main thread, at every cold launch — forever, long after
+    /// every file already carried the right class. Once a full pass has
+    /// succeeded, new files inherit the class from the directories it stamped,
+    /// so there is nothing left for the walk to do: the marker turns it into a
+    /// one-shot per install per class.
+    ///
+    /// Driven against the app's own tree (`base: nil`) because that is the only
+    /// pass the marker describes — a caller that injects `base` is stamping
+    /// some other directory, which says nothing about this install. The nine
+    /// injected-base tests above are what pin that they still run in full: the
+    /// test host's own launch sets this marker before any of them run.
+    @Test func dataProtectionWalksOncePerInstallAndThenSkipsTheWalk() {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: AppSettings.dataProtectionClassKey)
+        defer {
+            if let previous {
+                defaults.set(previous, forKey: AppSettings.dataProtectionClassKey)
+            } else {
+                defaults.removeObject(forKey: AppSettings.dataProtectionClassKey)
+            }
+        }
+        AppSettings.appliedDataProtectionClass = nil
+
+        var firstPass: [String] = []
+        let firstSucceeded = MeetingStore.applyDataProtection(base: nil, appGroup: nil) { url, _ in
+            firstPass.append(url.lastPathComponent)
+        }
+
+        #expect(firstSucceeded)
+        // The Application Support root at least; whatever else this install
+        // holds rides along.
+        #expect(!firstPass.isEmpty)
+        #expect(AppSettings.appliedDataProtectionClass == MeetingStore.dataProtectionClass.rawValue)
+
+        var secondPass: [String] = []
+        let secondSucceeded = MeetingStore.applyDataProtection(base: nil, appGroup: nil) { url, _ in
+            secondPass.append(url.lastPathComponent)
+        }
+
+        // Not one target, and — the point of the fix — not one listing of the
+        // Recordings directory either.
+        #expect(secondSucceeded)
+        #expect(secondPass.isEmpty)
+    }
+
+    /// A pass that could not finish must not be remembered as one that did, or
+    /// a transient refusal at one launch would leave the files unstamped for
+    /// the life of the install. This is also the first reader the pass's
+    /// `Bool` has ever had: `MinuteApp` discards it.
+    @Test func aFailedDataProtectionPassLeavesTheMarkerUnsetSoTheNextLaunchRetries() {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: AppSettings.dataProtectionClassKey)
+        defer {
+            if let previous {
+                defaults.set(previous, forKey: AppSettings.dataProtectionClassKey)
+            } else {
+                defaults.removeObject(forKey: AppSettings.dataProtectionClassKey)
+            }
+        }
+        AppSettings.appliedDataProtectionClass = nil
+
+        let succeeded = MeetingStore.applyDataProtection(base: nil, appGroup: nil) { _, _ in
+            throw CocoaError(.fileWriteNoPermission)
+        }
+
+        #expect(!succeeded)
+        #expect(AppSettings.appliedDataProtectionClass == nil)
+    }
+
     @Test func ephemeralModeRoutesAudioToTemporaryDirectoryAndWipesIt() throws {
         MeetingStore.useEphemeralStorage = true
         defer { MeetingStore.useEphemeralStorage = false }
