@@ -304,6 +304,52 @@ enum MeetingStore {
         return succeeded
     }
 
+    /// The container the app runs on, plus what the launch has to record about
+    /// how it got there. A named type rather than a tuple because a three-member
+    /// tuple is a `large_tuple` lint error, and `isEphemeral` is computed
+    /// because it is exactly "the persistent store did not open" — one fact, one
+    /// place.
+    struct ResolvedContainer {
+        let container: ModelContainer
+        /// The persistent store's error when it would not open, else nil.
+        let failure: String?
+        /// Whether meetings now live only in memory: drives the session-only
+        /// recordings directory and the warning banner the whole app shows.
+        var isEphemeral: Bool { failure != nil }
+    }
+
+    /// Opens the app's container, falling back to a session-only one when the
+    /// persistent store will not open.
+    ///
+    /// Extracted from `MinuteApp.init` because that initializer is `@main`
+    /// scaffolding no test can drive, and both of its outcomes are load-bearing
+    /// and silent when wrong. The error is recorded, not swallowed: this is the
+    /// one failure the user can neither see nor act on, the same open is
+    /// retried identically at every launch, and so a deterministic cause (a
+    /// lightweight migration that cannot run, the case `KnowledgeFact`
+    /// documents) strands the store and every recording forever unless Settings
+    /// can say what went wrong and offer the reset. And a launch that succeeds
+    /// has to clear it again, or a store that recovered keeps a destructive
+    /// reset button on screen.
+    ///
+    /// Both constructors are injected so a test can drive either branch; the
+    /// app passes the real `ModelContainer` initializers.
+    static func resolveContainer(
+        makePersistent: () throws -> ModelContainer,
+        makeInMemory: () throws -> ModelContainer
+    ) -> ResolvedContainer {
+        do {
+            return ResolvedContainer(container: try makePersistent(), failure: nil)
+        } catch {
+            // ponytail: corrupt store falls back to a session-only container so
+            // recording still works; the list view shows a warning banner.
+            guard let inMemory = try? makeInMemory() else {
+                fatalError("Unable to create a SwiftData container")
+            }
+            return ResolvedContainer(container: inMemory, failure: error.localizedDescription)
+        }
+    }
+
     /// A local-only SwiftData configuration. The iCloud Documents
     /// entitlement makes SwiftData's `.automatic` mode assume CloudKit
     /// mirroring and reject the schema — Minute copies files to iCloud,

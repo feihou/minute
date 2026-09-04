@@ -19,39 +19,29 @@ struct MinuteApp: App {
     private let storeIsEphemeral: Bool
 
     init() {
-        var persistent: ModelContainer?
-        var failure: String?
-        do {
-            persistent = try ModelContainer(
-                for: Meeting.self, KnowledgeEntity.self, KnowledgeFact.self,
-                configurations: MeetingStore.modelConfiguration()
-            )
-        } catch {
-            // Recorded, not swallowed. This is the one failure the user can
-            // neither see nor act on, and the same open is retried identically
-            // at every launch — so a deterministic cause (a lightweight
-            // migration that cannot run, the case KnowledgeFact documents)
-            // strands the store and every recording forever. Settings reads
-            // this to say what went wrong and to offer the reset.
-            failure = error.localizedDescription
-        }
-        if let persistent {
-            container = persistent
-            storeIsEphemeral = false
-        } else if let inMemory = try? ModelContainer(
-            for: Meeting.self, KnowledgeEntity.self, KnowledgeFact.self,
-            configurations: MeetingStore.modelConfiguration(inMemory: true)
-        ) {
-            // ponytail: corrupt store falls back to a session-only container so
-            // recording still works; the list view shows a warning banner.
-            container = inMemory
-            storeIsEphemeral = true
-        } else {
-            fatalError("Unable to create a SwiftData container")
-        }
+        // The resolution itself lives in MeetingStore so both of its outcomes
+        // can be driven from a test — this initializer is @main scaffolding no
+        // test can reach, and what happens to the failure here is the whole of
+        // the user's ability to see a stranded store and act on it.
+        let resolved = MeetingStore.resolveContainer(
+            makePersistent: {
+                try ModelContainer(
+                    for: Meeting.self, KnowledgeEntity.self, KnowledgeFact.self,
+                    configurations: MeetingStore.modelConfiguration()
+                )
+            },
+            makeInMemory: {
+                try ModelContainer(
+                    for: Meeting.self, KnowledgeEntity.self, KnowledgeFact.self,
+                    configurations: MeetingStore.modelConfiguration(inMemory: true)
+                )
+            }
+        )
+        container = resolved.container
+        storeIsEphemeral = resolved.isEphemeral
         // Written on every launch, success included, so a store that recovers
         // retires the message and the reset button with it.
-        AppSettings.persistentStoreFailure = failure
+        AppSettings.persistentStoreFailure = resolved.failure
         // In fallback mode, route new audio to a session-only directory; wipe
         // whatever a previous fallback session left there — no meeting can
         // reference those files anymore.
