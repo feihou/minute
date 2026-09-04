@@ -980,7 +980,8 @@ struct KnowledgeCatchUpTests {
         #expect(meeting.knowledgeExtractedAt != nil)
     }
 
-    @Test func anUnavailableModelSchedulesNoRepeatingPoll() async throws {
+    @Test(.timeLimit(.minutes(1)))
+    func anUnavailableModelSchedulesNoRepeatingPoll() async throws {
         let context = try makeContext()
         context.insert(meetingWithTranscript("Unread", createdAt: .now))
         try context.save()
@@ -998,18 +999,46 @@ struct KnowledgeCatchUpTests {
         await catchUp.waitUntilIdle()
         #expect(passes == 1)
 
+        // A positive control rather than a wall-clock guess: a second loop on
+        // its own store, with the same retry delay, failing in a way that DOES
+        // earn a retry. Waiting for its retry to fire proves a retry window
+        // really elapsed — a fixed sleep on a loaded runner would pass this
+        // test for the wrong reason.
+        let controlContext = try makeContext()
+        controlContext.insert(meetingWithTranscript("Control", createdAt: .now))
+        try controlContext.save()
+        var controlCalls = 0
+        let (controlPasses, controlContinuation) = AsyncStream.makeStream(of: Void.self)
+        let control = KnowledgeCatchUp(
+            availabilityMessage: { nil },
+            retryDelay: .milliseconds(20),
+            extract: { _, _ in
+                controlCalls += 1
+                controlContinuation.yield(())
+                throw LanguageModelSession.GenerationError.rateLimited(.init(debugDescription: "test"))
+            }
+        )
+        control.nudge(context: controlContext)
+        var controlIterator = controlPasses.makeAsyncIterator()
+        _ = await controlIterator.next()   // its first pass
+        _ = await controlIterator.next()   // its retry fired: a delay has passed
+        // Its extractor always fails, so it would retry forever; stop it here.
+        control.pause()
+        await control.waitUntilIdle()
+        #expect(controlCalls >= 2)
+
         // An ineligible iPhone never becomes eligible. A retry on this guard
         // re-arms itself on the next pass, so it would refetch every unstamped
         // meeting once a delay for the whole foreground lifetime — on exactly
         // the phones whose pending set can only grow.
-        try await Task.sleep(for: .milliseconds(200))
         #expect(passes == 1)
         #expect(calls == 0)
         // Bailing still has to leave the Brain tab an honest count.
         #expect(catchUp.pendingCount == 1)
     }
 
-    @Test func aPendingRetryStartsNothingWhileTheAppIsAway() async throws {
+    @Test(.timeLimit(.minutes(1)))
+    func aPendingRetryStartsNothingWhileTheAppIsAway() async throws {
         let context = try makeContext()
         let meeting = meetingWithTranscript("A", createdAt: .now)
         context.insert(meeting)
@@ -1033,7 +1062,34 @@ struct KnowledgeCatchUpTests {
         // waking a rate-limited model in the background is how the app gets
         // suspended mid-request.
         catchUp.pause()
-        try await Task.sleep(for: .milliseconds(200))
+
+        // A positive control rather than a wall-clock guess: the same failure
+        // and the same delay on its own store, left in the foreground. Waiting
+        // for ITS retry to fire is what makes the silence above meaningful —
+        // a fixed sleep would also "pass" on a runner too loaded to have run
+        // any timer at all.
+        let controlContext = try makeContext()
+        controlContext.insert(meetingWithTranscript("Control", createdAt: .now))
+        try controlContext.save()
+        var controlCalls = 0
+        let (controlPasses, controlContinuation) = AsyncStream.makeStream(of: Void.self)
+        let control = KnowledgeCatchUp(
+            availabilityMessage: { nil },
+            retryDelay: .milliseconds(50),
+            extract: { _, _ in
+                controlCalls += 1
+                controlContinuation.yield(())
+                throw LanguageModelSession.GenerationError.rateLimited(.init(debugDescription: "test"))
+            }
+        )
+        control.nudge(context: controlContext)
+        var controlIterator = controlPasses.makeAsyncIterator()
+        _ = await controlIterator.next()   // its first pass
+        _ = await controlIterator.next()   // its retry fired: a delay has passed
+        control.pause()
+        await control.waitUntilIdle()
+        #expect(controlCalls >= 2)
+
         await catchUp.waitUntilIdle()
         #expect(calls == 1)
         #expect(meeting.knowledgeExtractedAt == nil)
