@@ -75,14 +75,17 @@ enum KnowledgeText {
     /// only when it spans complete punctuation-delimited clauses — routing
     /// every ordinary fragment to `.suggested` with no sourceQuote. So a
     /// second pass accepts an unpadded occurrence whose neighbouring
-    /// characters are not word-internal — cased letters and ASCII digits.
-    /// Case is what separates the two families: a script with letter case
-    /// spells its words out (Latin, Cyrillic, Greek), so cutting into one is
-    /// the abuse the gate exists to refuse, while the uncased scripts (Han,
-    /// kana, Hangul, Thai, Arabic, Hebrew, Devanagari) are the ones with no
-    /// boundary to land on. So "own the atlas plan" stays refused inside
-    /// "disown" and "обственник" inside "собственник", while a verbatim CJK
-    /// fragment validates.
+    /// characters are not word-internal.
+    ///
+    /// Segmentation, not case, is what separates the two families. A script
+    /// that puts spaces between its words has a boundary to land on whether or
+    /// not it has letter case — Latin, Cyrillic and Greek do, and so do Arabic,
+    /// Hebrew and Devanagari — so cutting into one of their words is the abuse
+    /// the gate exists to refuse. Only the scripts written without inter-word
+    /// spaces (Han, kana, Hangul, Thai, Lao, Khmer, Myanmar, Tibetan) have
+    /// nothing for a fragment to align to. So "own the atlas plan" stays
+    /// refused inside "disown", "обственник" inside "собственник" and
+    /// "درسة" inside "المدرسة", while a verbatim CJK fragment validates.
     static func contains(transcript: String, quote: String) -> Bool {
         let q = tokens(quote).joined(separator: " ")
         guard !q.isEmpty else { return false }
@@ -103,13 +106,43 @@ enum KnowledgeText {
     }
 
     /// Whether a neighbouring character means the occurrence cut into a word.
-    /// `isCased` covers every script that has words to cut — including the
-    /// letters diacritic folding leaves alone (ø, æ, ł, đ) — and digits ride
-    /// along so "plan" can't be carved out of "plan2".
+    /// Any letter or number does — including the letters diacritic folding
+    /// leaves alone (ø, æ, ł, đ), and digits so "plan" can't be carved out of
+    /// "plan2" — unless it belongs to a script that writes without spaces, the
+    /// one family where a fragment has no boundary to land on.
     private static func isWordInternal(_ character: Character?) -> Bool {
-        guard let character else { return false }
-        return character.isCased || (character.isASCII && character.isNumber)
+        guard let character, character.isLetter || character.isNumber else { return false }
+        guard let scalar = character.unicodeScalars.first else { return false }
+        return !isUnsegmentedScript(scalar)
     }
+
+    /// Whether a scalar is written in a script that does not separate words
+    /// with spaces. Block ranges rather than `Unicode.Script`, which Foundation
+    /// does not expose: the boundary this draws is coarse by design — one
+    /// scalar of a neighbouring word is all the second pass ever inspects.
+    private static func isUnsegmentedScript(_ scalar: Unicode.Scalar) -> Bool {
+        unsegmentedScriptBlocks.contains { $0.contains(scalar.value) }
+    }
+
+    private static let unsegmentedScriptBlocks: [ClosedRange<UInt32>] = [
+        0x0E00...0x0E7F,  // Thai
+        0x0E80...0x0EFF,  // Lao
+        0x0F00...0x0FFF,  // Tibetan
+        0x1000...0x109F,  // Myanmar
+        0x1100...0x11FF,  // Hangul Jamo
+        0x1780...0x17FF,  // Khmer
+        0x3040...0x309F,  // Hiragana
+        0x30A0...0x30FF,  // Katakana
+        0x3100...0x312F,  // Bopomofo
+        0x3130...0x318F,  // Hangul Compatibility Jamo
+        0x31F0...0x31FF,  // Katakana Phonetic Extensions
+        0x3400...0x4DBF,  // CJK Unified Ideographs Extension A
+        0x4E00...0x9FFF,  // CJK Unified Ideographs
+        0xAC00...0xD7AF,  // Hangul Syllables
+        0xF900...0xFAFF,  // CJK Compatibility Ideographs
+        0xFF66...0xFF9F,  // Halfwidth CJK forms (halfwidth katakana, Hangul)
+        0x20000...0x2FA1F,  // CJK Unified Ideographs Extensions B+ and compatibility supplement
+    ]
 
     /// Salted SHA-256 of the normalized text + entity ID — all a rejected
     /// tombstone retains. Salt is per-install so fingerprints can't be
