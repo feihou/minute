@@ -229,10 +229,15 @@ struct MeetingListView: View {
         // closure arguments, and SwiftLint's multiple_closures_with_trailing_closure
         // — live in this repo, fatal under --strict — rejects the trailing form
         // as soon as a second closure is passed.
+        // `!showingNewMeeting` for the same reason MeetingDeepLinkState ignores
+        // a New Meeting link while that sheet is up: dismissal takes ~0.3 s, and
+        // a second link arriving inside it opens the sheet directly — Settings
+        // is already down by then — so firing the latch afterwards would reset
+        // `draftTitle` under a sheet the user is already typing in.
         .sheet(isPresented: $showingSettings, onDismiss: {
             if presentNewMeetingAfterSettings {
                 presentNewMeetingAfterSettings = false
-                beginNewMeeting()
+                if !showingNewMeeting { beginNewMeeting() }
             }
         }, content: {
             SettingsView()

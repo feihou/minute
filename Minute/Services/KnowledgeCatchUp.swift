@@ -290,10 +290,11 @@ final class KnowledgeCatchUp {
             let thermal = ProcessInfo.processInfo.thermalState
             guard thermal == .nominal || thermal == .fair else { return }
 
-            // pendingCount is owned by nextPending, which sets it from the
-            // pre-skip-list fetch on every call — it only reaches 0 when
-            // that fetch itself is empty, not merely when everything left is
-            // skip-listed.
+            // pendingCount comes from nextPending's pre-skip-list fetch, so it
+            // only reaches 0 when that fetch itself is empty, not merely when
+            // everything left is skip-listed. A failed fetch is the one call
+            // that leaves the number alone rather than reporting an empty
+            // queue — the same rule the two refresh helpers below follow.
             guard let meeting = nextPending(context: context) else { return }
             // Read once, before the await: every branch below — the staleness
             // guard and both skip-listing catches — must reason about the text
@@ -451,8 +452,14 @@ final class KnowledgeCatchUp {
     /// Meeting and decoding its `segments` for `hasTranscript`. It cannot
     /// apply that filter, so it over-counts transcript-less meetings — which
     /// the loop's own count corrects the moment extraction can run, and which
-    /// is not on screen meanwhile: a store with no entities renders the "Brain
-    /// Needs Apple Intelligence" state instead.
+    /// IS on screen until then: only an entity-less store swaps in the "Brain
+    /// Needs Apple Intelligence" state, so an install that has read anything
+    /// at all renders the list and its "N meetings still to read" row. Nor is
+    /// that state the whole blocked population — `availabilityMessage` is
+    /// non-nil for transient reasons too, a model still downloading among
+    /// them. So the row can read one or two high while the block lasts, which
+    /// is accepted: the alternative is decoding every transcript on a device
+    /// that cannot use the result.
     ///
     /// It also skips `livePendingMeetings`, so this pass does not prune
     /// `skippedChunksByMeeting`. A device that has always been blocked has no

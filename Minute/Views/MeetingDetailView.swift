@@ -520,8 +520,11 @@ struct MeetingDetailView: View {
                     // dead end: the row that explains the wait — "Re-transcribing
                     // on device…" — lives on the Transcript tab, and the tab
                     // picker means a user sitting on Summary never sees it.
-                    // Same text the transcript row shows, with a fixed fallback
-                    // for a job that reports no progress string.
+                    // Speaker identification publishes a progress string, so
+                    // that is what shows. Re-transcription publishes none —
+                    // its own row is a fixed caption, not a job status — so
+                    // for the case this state is most often reached in, the
+                    // fallback is what renders.
                     Text(jobStatus ?? "Available once the current job finishes.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)

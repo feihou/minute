@@ -466,6 +466,41 @@ struct MeetingStoreTests {
         #expect(AppSettings.appliedDataProtectionClass == nil)
     }
 
+    /// The other half of the marker's contract: it is per install *per class*,
+    /// so raising `MeetingStore.dataProtectionClass` in a future build has to
+    /// send the walk back over a tree already stamped with the old one. A
+    /// marker naming a different class must therefore read as "not done", not
+    /// merely as "set".
+    @Test func aMarkerNamingAnotherProtectionClassSendsTheWalkRoundAgain() {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: AppSettings.dataProtectionClassKey)
+        defer {
+            if let previous {
+                defaults.set(previous, forKey: AppSettings.dataProtectionClassKey)
+            } else {
+                defaults.removeObject(forKey: AppSettings.dataProtectionClassKey)
+            }
+        }
+        // Stands in for the class a previous build pinned. `.complete` is the
+        // one this app deliberately does not use — it would lock recording out
+        // of its own audio the moment the screen went dark.
+        let stale = FileProtectionType.complete
+        #expect(stale != MeetingStore.dataProtectionClass)
+        AppSettings.appliedDataProtectionClass = stale.rawValue
+
+        var applied: [FileProtectionType] = []
+        let succeeded = MeetingStore.applyDataProtection(base: nil, appGroup: nil) { _, protection in
+            applied.append(protection)
+        }
+
+        #expect(succeeded)
+        // The walk ran, and stamped the class the app asks for today.
+        #expect(!applied.isEmpty)
+        #expect(applied.allSatisfy { $0 == MeetingStore.dataProtectionClass })
+        // And the marker now names that class, so the next launch skips again.
+        #expect(AppSettings.appliedDataProtectionClass == MeetingStore.dataProtectionClass.rawValue)
+    }
+
     @Test func ephemeralModeRoutesAudioToTemporaryDirectoryAndWipesIt() throws {
         MeetingStore.useEphemeralStorage = true
         defer { MeetingStore.useEphemeralStorage = false }

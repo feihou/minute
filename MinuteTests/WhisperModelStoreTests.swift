@@ -67,13 +67,12 @@ struct WhisperModelStoreTests {
         // must resolve to itself, never to a shorter name it happens to
         // contain: "large-v3" must not answer .large, "base.en" not .base.
         let sizes = WhisperModelStore.tokenizerVariants.map(\.description)
-        #expect(!sizes.isEmpty)
-        // The assertion that holds the DERIVATION, not just the table: a list
-        // maintained by hand matches allCases only until WhisperKit ships a
-        // twelfth size. This is what goes red on that day, instead of the
-        // wrong tokenizer being loaded in silence. It cannot fail on today's
-        // eleven-entry hand-written list — nothing can, short of a package
-        // update — so it is a forward lock, not this task's RED.
+        // Tautological as long as the table is derived from allCases, and kept
+        // for exactly that reason: it is what goes red if anyone reverts
+        // `tokenizerVariants` to a hand-written list, which would then quietly
+        // miss whatever size the next WhisperKit update ships. It cannot catch
+        // that missing size by itself — the derivation is what does — so this
+        // guards the derivation, not the contents.
         #expect(sizes.count == ModelVariant.allCases.count)
         #expect(Set(sizes).count == sizes.count)
         for size in sizes {
