@@ -40,13 +40,21 @@ private final class ParkedTranscriptionEngine: TranscriptionEngine {
         return didCancel ? [] : finalSegments
     }
 
+    /// Whether `cancel()` also lets a parked `finish()` return. The real
+    /// engines do. A test that has to observe the session *while* it is still
+    /// `.saving` with the transcript already banked sets this false, so the
+    /// park holds and the observation isn't a race with the save completing.
+    var releasesOnCancel = true
+
     func cancel() async {
         didCancel = true
         // The real engines clear their own collection here — which is why the
         // session has to bank the segments before cancelling.
         segments = []
         volatileText = ""
-        release()
+        if releasesOnCancel {
+            release()
+        }
     }
 
     func transcribe(file: AVAudioFile) async throws -> [TranscriptSegment] { [] }
@@ -212,6 +220,67 @@ struct RecordingSessionSaveTests {
         // of the last one, so the transcript's timeline stays sane.
         #expect(saved.first?.segments.last?.start == 1)
         #expect(saved.first?.segments.last?.end == 1)
+        #expect(session.phase == .idle)
+    }
+
+    /// Nothing is being saved, so there is nothing to stop waiting for. Without
+    /// the guard this banks an empty transcript over a session that hasn't
+    /// finished, and cancels an engine that is still listening mid-recording.
+    @Test func saveWithoutTranscriptDoesNothingOutsideASave() async {
+        let engine = ParkedTranscriptionEngine()
+        engine.segments = [TranscriptSegment(text: "still being heard", start: 0, end: 1)]
+        let session = RecordingSession(
+            title: "Not saving yet",
+            prefilledDefaultTitle: "Not saving yet",
+            transcription: engine
+        )
+        #expect(session.phase == .idle)
+
+        await session.saveWithoutTranscript()
+
+        #expect(engine.didCancel == false)
+        #expect(engine.segments.map(\.text) == ["still being heard"])
+        #expect(session.phase == .idle)
+    }
+
+    /// The tap a user with a slow engine makes: the phase stays `.saving` and
+    /// the screen doesn't change, so they tap "Save without transcript" again.
+    /// Cancelling emptied the engine's own collection, so without the
+    /// `pendingSegments == nil` half of the guard the second tap banks `[]`
+    /// over what the first tap saved and the meeting is written with an empty
+    /// transcript.
+    @Test func aSecondSaveWithoutTranscriptDoesNotOverwriteWhatTheFirstBanked() async throws {
+        let context = try makeContext()
+        let engine = ParkedTranscriptionEngine()
+        engine.segments = [TranscriptSegment(text: "banked by the first tap", start: 0, end: 1)]
+        // Hold the park across the cancel, so the second call lands while the
+        // session is still `.saving` — the state the guard is written for.
+        engine.releasesOnCancel = false
+        let session = RecordingSession(
+            title: "Tapped twice",
+            prefilledDefaultTitle: "Tapped twice",
+            transcription: engine
+        )
+
+        let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        engine.onFinishEntered = { enteredContinuation.yield(()) }
+        let finishTask = Task { @MainActor in await session.finish(in: context)?.id }
+        var iterator = entered.makeAsyncIterator()
+        _ = await iterator.next()
+
+        await session.saveWithoutTranscript()
+        // The engine's own copy is gone now — cancel() cleared it.
+        #expect(engine.segments.isEmpty)
+        #expect(session.phase == .saving)
+
+        await session.saveWithoutTranscript()
+
+        engine.release()
+        let finishedID = await finishTask.value
+        #expect(finishedID != nil)
+        let saved = try context.fetch(FetchDescriptor<Meeting>())
+        #expect(saved.count == 1)
+        #expect(saved.first?.segments.map(\.text) == ["banked by the first tap"])
         #expect(session.phase == .idle)
     }
 
