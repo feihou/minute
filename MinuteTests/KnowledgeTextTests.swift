@@ -76,6 +76,16 @@ struct KnowledgeTextTests {
         let hebrew = "[0:07] דנה: בית הספר מוכן היום."
         #expect(!KnowledgeText.contains(transcript: hebrew, quote: "ית הספר"))
         #expect(KnowledgeText.contains(transcript: hebrew, quote: "בית הספר"))
+
+        // The characters an unspaced script writes *inside* its words are part
+        // of that script for this purpose even when Unicode files them under
+        // punctuation. The iteration mark 々 (U+3005) is an ordinary Japanese
+        // letter mid-word, so a verbatim quote that starts right after one has
+        // to validate like any other CJK fragment.
+        let japanese = "[0:09] 田中: 人々が担当します。"
+        #expect(KnowledgeText.contains(transcript: japanese, quote: "が担当"))
+        #expect(KnowledgeText.contains(transcript: japanese, quote: "人々が担当"))
+        #expect(!KnowledgeText.contains(transcript: japanese, quote: "佐藤が担当"))
     }
 
     @Test func fingerprintIsStablePerInstallAndEntity() {

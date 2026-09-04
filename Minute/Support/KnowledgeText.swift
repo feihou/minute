@@ -119,7 +119,9 @@ enum KnowledgeText {
     /// Whether a scalar is written in a script that does not separate words
     /// with spaces. Block ranges rather than `Unicode.Script`, which Foundation
     /// does not expose: the boundary this draws is coarse by design — one
-    /// scalar of a neighbouring word is all the second pass ever inspects.
+    /// scalar of a neighbouring word is all the second pass ever inspects, and
+    /// a block is admitted whenever the script writes any of its letters inside
+    /// a word.
     private static func isUnsegmentedScript(_ scalar: Unicode.Scalar) -> Bool {
         unsegmentedScriptBlocks.contains { $0.contains(scalar.value) }
     }
@@ -131,6 +133,11 @@ enum KnowledgeText {
         0x1000...0x109F,  // Myanmar
         0x1100...0x11FF,  // Hangul Jamo
         0x1780...0x17FF,  // Khmer
+        // Unicode files the iteration marks 々 (U+3005) and 〆 (U+3006) under
+        // punctuation, but Japanese writes them inside words and `isLetter`
+        // agrees, so they belong to the unspaced family like the kana beside
+        // them — otherwise a verbatim quote next to one reads as a cut word.
+        0x3000...0x303F,  // CJK Symbols and Punctuation
         0x3040...0x309F,  // Hiragana
         0x30A0...0x30FF,  // Katakana
         0x3100...0x312F,  // Bopomofo
