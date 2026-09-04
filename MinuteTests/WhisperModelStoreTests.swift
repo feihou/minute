@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import WhisperKit
 @testable import Minute
 
 /// hasLocalData/isDownloaded drive the picker's Delete swipe action: a
@@ -57,6 +58,29 @@ struct WhisperModelStoreTests {
             // …nor one another fixture owns, since they run in parallel.
             #expect(fixtureFolders.insert(folder).inserted)
         }
+    }
+
+    @Test("Every Whisper size WhisperKit knows maps to its own tokenizer")
+    func everyWhisperSizeMapsToItself() {
+        // Derived from ModelVariant.allCases, so a size a future WhisperKit
+        // release adds is in this table the day the package updates — and it
+        // must resolve to itself, never to a shorter name it happens to
+        // contain: "large-v3" must not answer .large, "base.en" not .base.
+        let sizes = WhisperModelStore.tokenizerVariants.map(\.description)
+        #expect(!sizes.isEmpty)
+        // The assertion that holds the DERIVATION, not just the table: a list
+        // maintained by hand matches allCases only until WhisperKit ships a
+        // twelfth size. This is what goes red on that day, instead of the
+        // wrong tokenizer being loaded in silence. It cannot fail on today's
+        // eleven-entry hand-written list — nothing can, short of a package
+        // update — so it is a forward lock, not this task's RED.
+        #expect(sizes.count == ModelVariant.allCases.count)
+        #expect(Set(sizes).count == sizes.count)
+        for size in sizes {
+            #expect(WhisperModelStore.tokenizerVariant(for: "openai_whisper-\(size)")?.description == size)
+        }
+        // A name that is not a Whisper model at all still maps to nothing.
+        #expect(WhisperModelStore.tokenizerVariant(for: "nonexistent-model-variant") == nil)
     }
 
     @Test("Partial downloads are deletable but never report as downloaded")

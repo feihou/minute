@@ -86,9 +86,27 @@ enum WhisperModelStore {
 
     /// Whisper sizes, most specific name first: "large-v3" must win over
     /// "large", and "base.en" over "base".
-    private static let tokenizerVariants: [ModelVariant] = [
-        .largev3, .largev2, .large, .mediumEn, .medium, .smallEn, .small, .baseEn, .base, .tinyEn, .tiny,
-    ]
+    ///
+    /// Derived from WhisperKit's own enum rather than listed by hand, because
+    /// a hand-written list fails WRONG rather than open. A catalog row added
+    /// later — say "openai_whisper-large-v4-…" — contains "large", so a stale
+    /// list answers .large, hasTokenizer checks the whisper-large folder,
+    /// isDownloaded reports true, and the load quietly gets the wrong
+    /// tokenizer with no error path anywhere.
+    ///
+    /// Longest description first IS the most-specific-first rule: a size's
+    /// name can only be contained in a strictly longer one, so the longest
+    /// match is always the most specific. Ties are between distinct
+    /// equal-length names, which cannot contain each other, so `sorted`
+    /// making no promise about their order is harmless.
+    ///
+    /// Computed, not stored: eleven cases sort in nanoseconds, and a stored
+    /// static of a public enum from another module (ModelVariant is not
+    /// Sendable) is a concurrency-checking question this simply doesn't have.
+    /// Internal rather than private so the derivation itself is testable.
+    static var tokenizerVariants: [ModelVariant] {
+        ModelVariant.allCases.sorted { $0.description.count > $1.description.count }
+    }
 
     /// The Whisper size a catalog folder name belongs to
     /// ("openai_whisper-large-v3-v20240930_626MB" → .largev3), or nil when
