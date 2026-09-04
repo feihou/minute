@@ -19,6 +19,22 @@ enum RecorderError: LocalizedError {
     }
 }
 
+/// Why the recorder paused itself. Both causes reach the same callback, but
+/// they send the user to different places, so the owner has to be able to tell
+/// them apart: an interruption is a call or Siri and the system will offer to
+/// resume it, while a failed restart is the audio device that just changed
+/// under them and will not announce anything further.
+///
+/// File-scope rather than nested in `AudioRecorder` so it carries no
+/// main-actor isolation of its own.
+enum AutoPauseCause: CaseIterable {
+    /// A phone call or Siri took the microphone.
+    case interruption
+    /// The input route changed and capture could not be restarted in place
+    /// against the new hardware.
+    case restartFailed
+}
+
 /// Box the audio tap reads on every buffer, so live transcription can attach
 /// after recording has already started (e.g. while the speech model downloads).
 /// A lock guards the state: the main actor writes it while the realtime tap
@@ -244,8 +260,9 @@ final class AudioRecorder {
     /// Called after the system auto-pauses recording — a phone call or Siri
     /// taking the microphone — so the owner can reflect it in UI. A route
     /// change no longer arrives here: capture restarts in place against the
-    /// new hardware and only a failed restart falls back to this pause.
-    var onAutoPause: (() -> Void)?
+    /// new hardware and only a failed restart falls back to this pause, which
+    /// is why the cause is passed: those two need different words on screen.
+    var onAutoPause: ((AutoPauseCause) -> Void)?
 
     /// Called when the recorder resumed itself after the system said the
     /// interruption is over, so the owner can clear the "paused" notice.
@@ -329,7 +346,7 @@ final class AudioRecorder {
             switch rawType.flatMap(AVAudioSession.InterruptionType.init(rawValue:)) {
             case .began:
                 Task { @MainActor [weak self] in
-                    self?.systemPause(causedByInterruption: true)
+                    self?.systemPause(cause: .interruption)
                 }
             case .ended:
                 // The system tells us when it is safe to pick the microphone
@@ -389,7 +406,7 @@ final class AudioRecorder {
             onRouteChanged?("Microphone changed — still recording")
         } catch {
             Self.logger.error("Restarting after an audio route change failed: \(error.localizedDescription)")
-            systemPause(causedByInterruption: false)
+            systemPause(cause: .restartFailed)
         }
     }
 
@@ -398,11 +415,11 @@ final class AudioRecorder {
     /// gets no matching "ended" callback, so treating it as resumable would
     /// let an unrelated later interruption restart a recording nobody asked to
     /// restart.
-    private func systemPause(causedByInterruption: Bool) {
+    private func systemPause(cause: AutoPauseCause) {
         guard state == .recording else { return }
         pause()
-        pausedByInterruption = causedByInterruption
-        onAutoPause?()
+        pausedByInterruption = cause == .interruption
+        onAutoPause?(cause)
     }
 
     /// The interruption that paused us is over. Picks capture back up, but

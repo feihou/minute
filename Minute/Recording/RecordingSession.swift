@@ -131,15 +131,10 @@ final class RecordingSession: Identifiable {
             return
         }
 
-        recorder.onAutoPause = { [weak self] in
+        recorder.onAutoPause = { [weak self] cause in
             guard let self, self.phase == .recording else { return }
             self.phase = .paused
-            // Names what actually gets here: a call or Siri taking the
-            // microphone. A route change restarts capture in place now, and
-            // the transient "Microphone changed — still recording" notice says
-            // so; blaming an "audio change" here sent people looking at their
-            // headphones for a pause a phone call caused.
-            self.notice = "Recording was paused by the system (a call or Siri). Tap resume to continue."
+            self.notice = Self.autoPauseNotice(for: cause)
         }
 
         recorder.onAutoResume = { [weak self] in
@@ -529,5 +524,21 @@ final class RecordingSession: Identifiable {
     static func savedTitles(draft: String, prefilledDefault: String) -> (title: String, defaultTitle: String) {
         let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         return (trimmed.isEmpty ? prefilledDefault : trimmed, prefilledDefault)
+    }
+
+    /// What the recording screen says after the system paused capture. The two
+    /// causes send the user to two different places, so they must not share a
+    /// sentence: a call or Siri resolves itself and the system offers the
+    /// resume, while a failed restart is the audio device that just changed
+    /// under them. Blaming a call for a headset that switched away sent people
+    /// looking at their phone, and naming an "audio change" for a call sent
+    /// them to their headphones — the recorder knows which it was, so say it.
+    static func autoPauseNotice(for cause: AutoPauseCause) -> String {
+        switch cause {
+        case .interruption:
+            "Recording was paused by the system (a call or Siri). Tap resume to continue."
+        case .restartFailed:
+            "Recording paused — the audio device changed and capture couldn't restart. Tap resume to continue."
+        }
     }
 }
